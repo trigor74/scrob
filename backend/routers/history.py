@@ -1538,7 +1538,55 @@ def _iso_utc_now() -> str:
 
 
 class DropShowRequest(BaseModel):
-    show_id: int
+    show_id: int | None = None
+    tmdb_id: int | None = None
+
+
+async def _resolve_show_id(
+    db: AsyncSession, user_id: int, show_id: int | None, tmdb_id: int | None, *, create: bool
+) -> int | None:
+    """Turn a (show_id | tmdb_id) drop/undrop request into a local Show.id.
+    create=True materialises the row from TMDB when it doesn't exist yet (drop);
+    create=False just looks up existing (undrop)."""
+    if show_id and show_id > 0:
+        return show_id
+    if not tmdb_id:
+        return None
+    existing = (await db.execute(
+        select(Show).where(Show.tmdb_id == tmdb_id)
+    )).scalars().first()
+    if existing:
+        return existing.id
+    if not create:
+        return None
+    from routers.media import get_user_tmdb_key
+    api_key = await get_user_tmdb_key(db, user_id)
+    try:
+        data = await tmdb.get_show(tmdb_id, api_key=api_key)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Show not found on TMDB: {e}")
+    show = Show(
+        tmdb_id=tmdb_id,
+        title=data.get("name") or "Unknown",
+        poster_path=tmdb.poster_url(data.get("poster_path")),
+        backdrop_path=tmdb.poster_url(data.get("backdrop_path"), size="w1280"),
+        tmdb_rating=data.get("vote_average"),
+        status=data.get("status"),
+        first_air_date=data.get("first_air_date"),
+        tmdb_data={
+            "genres": [g["name"] for g in data.get("genres", [])],
+            "seasons": [
+                {
+                    "season_number": s["season_number"],
+                    "episode_count": s["episode_count"],
+                    "name": s["name"],
+                } for s in data.get("seasons", [])
+            ]
+        }
+    )
+    db.add(show)
+    await db.flush()
+    return show.id
 
 
 @router.post("/drop/show")
@@ -1553,15 +1601,18 @@ async def drop_show(
     settings = settings_result.scalar_one_or_none()
     if not settings:
         raise HTTPException(status_code=404, detail="Settings not found")
+    show_id = await _resolve_show_id(db, current_user.id, body.show_id, body.tmdb_id, create=True)
+    if not show_id:
+        raise HTTPException(status_code=400, detail="show_id or tmdb_id is required")
     dropped = list(settings.dropped_shows or []) if settings else []
 
-    if body.show_id not in dropped:
-        dropped.append(body.show_id)
+    if show_id not in dropped:
+        dropped.append(show_id)
         settings.dropped_shows = dropped
         flag_modified(settings, "dropped_shows")
         await db.commit()
 
-    show_result = await db.execute(select(Show).where(Show.id == body.show_id))
+    show_result = await db.execute(select(Show).where(Show.id == show_id))
     show = show_result.scalar_one_or_none()
     if show and show.tmdb_id:
         await _push_show_dropped_to_providers(db, settings, show.tmdb_id, remove=False)
@@ -1583,7 +1634,8 @@ async def drop_show(
 
 @router.delete("/drop/show")
 async def undrop_show(
-    show_id: int = Query(...),
+    show_id: int | None = Query(None),
+    tmdb_id: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
@@ -1591,30 +1643,31 @@ async def undrop_show(
     settings = settings_result.scalar_one_or_none()
     if not settings:
         raise HTTPException(status_code=404, detail="Settings not found")
+    resolved_id = await _resolve_show_id(db, current_user.id, show_id, tmdb_id, create=False)
     dropped = list(settings.dropped_shows or []) if settings else []
 
-    if show_id in dropped:
-        dropped.remove(show_id)
+    if resolved_id is not None and resolved_id in dropped:
+        dropped.remove(resolved_id)
         settings.dropped_shows = dropped
         flag_modified(settings, "dropped_shows")
         await db.commit()
 
-    show_result = await db.execute(select(Show).where(Show.id == show_id))
-    show = show_result.scalar_one_or_none()
-    if show and show.tmdb_id:
-        await _push_show_dropped_to_providers(db, settings, show.tmdb_id, remove=True)
+        show_result = await db.execute(select(Show).where(Show.id == resolved_id))
+        show = show_result.scalar_one_or_none()
+        if show and show.tmdb_id:
+            await _push_show_dropped_to_providers(db, settings, show.tmdb_id, remove=True)
 
-    # Emit real-time event to socket subscribers
-    from core.socket.manager import socket_manager
-    await socket_manager.emit(
-        username=current_user.username,
-        event_type="show.undropped",
-        payload={
-            "show_id": show_id,
-            "tmdb_id": show.tmdb_id if show else None,
-            "title": show.title if show else None,
-        },
-    )
+        # Emit real-time event to socket subscribers
+        from core.socket.manager import socket_manager
+        await socket_manager.emit(
+            username=current_user.username,
+            event_type="show.undropped",
+            payload={
+                "show_id": resolved_id,
+                "tmdb_id": show.tmdb_id if show else None,
+                "title": show.title if show else None,
+            },
+        )
 
     return {"status": "ok"}
 
