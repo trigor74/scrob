@@ -38,7 +38,7 @@ from models.users import User, UserSettings
 router = APIRouter()
 
 CALENDAR_TTL = timedelta(hours=24)
-CALENDAR_SCHEMA = 4
+CALENDAR_SCHEMA = 5
 CALENDAR_WINDOW_DAYS = 14
 FETCH_CONCURRENCY = 8
 
@@ -164,6 +164,8 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
                     "show_tvdb_id": show.tvdb_id,
                     "show_title": show.title,
                     "poster_path": show.poster_path,
+                    "backdrop_path": show.backdrop_path,
+                    "still_path": ep.get("still_path"),
                     "season_number": ep.get("season_number"),
                     "episode_number": ep.get("episode_number"),
                     "episode_name": ep.get("name"),
