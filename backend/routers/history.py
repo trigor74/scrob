@@ -2856,10 +2856,7 @@ async def _get_or_create_media_for_session(
             if show:
                 show_id = show.id
             else:
-                from routers.media import get_user_tmdb_key
-                api_key = await get_user_tmdb_key(db, user_id)
                 try:
-                    import core.tmdb as tmdb
                     data = await tmdb.get_show(body.show_tmdb_id, api_key=api_key)
                     show = Show(
                         tmdb_id=body.show_tmdb_id,
