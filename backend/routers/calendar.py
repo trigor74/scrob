@@ -119,7 +119,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     if not check_tmdb_key(api_key) or not candidates:
         return {
             "schema": CALENDAR_SCHEMA, "generated_at": datetime.utcnow().isoformat(),
-            "today": today.isoformat(), "shows_checked": 0, "entries": [],
+            "today": today.isoformat(), "shows_checked": 0, "entries": [], "degraded": False,
         }
 
     language = await get_user_metadata_language(db, user_id)
@@ -127,12 +127,16 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     window_end = today + timedelta(days=CALENDAR_WINDOW_DAYS - 1)
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
 
-    async def _fetch(show: Show) -> list[dict]:
+    async def _fetch(show: Show) -> tuple[list[dict], bool]:
+        # Другий елемент кортежу — failed: True означає, що сам запит до TMDB
+        # зламався (мережа/circuit breaker), а не що в серіала справді немає
+        # епізодів у вікні. Викликач має розрізняти ці випадки, щоб не
+        # закешувати результат зі збою як «сьогоднішню правду» на весь день.
         async with sem:
             try:
                 detail = await tmdb_client.get_show_light(show.tmdb_id, api_key=api_key, language=language)
             except Exception:
-                return []
+                return [], True
             season_numbers: set[int] = set()
             next_ep = detail.get("next_episode_to_air")
             if next_ep and next_ep.get("season_number") is not None:
@@ -143,12 +147,14 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
             if any((s or {}).get("season_number") == 0 for s in detail.get("seasons") or []):
                 season_numbers.add(0)
             if not season_numbers:
-                return []
+                return [], False
             seasons: list[dict] = []
+            season_fetch_failed = False
             for sn in season_numbers:
                 try:
                     seasons.append(await tmdb_client.get_season(show.tmdb_id, sn, api_key=api_key, language=language))
                 except Exception:
+                    season_fetch_failed = True
                     continue
 
         out = []
@@ -168,10 +174,14 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
                     "episode_number": ep.get("episode_number"),
                     "episode_name": ep.get("name"),
                 })
-        return out
+        return out, season_fetch_failed
 
     fetched = await asyncio.gather(*(_fetch(s) for s in candidates))
-    entries = [e for group in fetched for e in group]
+    entries = [e for group, _ in fetched for e in group]
+    # True, якщо TMDB-запит зламався хоч для одного серіала — на відміну від
+    # легітимного «немає епізодів у вікні». Прапорець читає _load_or_compute,
+    # щоб не переписати валідний кеш зіпсованим/неповним результатом.
+    degraded = any(failed for _, failed in fetched)
 
     # Batch-resolve collected/watched status against local Media rows - an
     # episode with no local row at all just hasn't been scanned/aired into
@@ -216,6 +226,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
         "today": today.isoformat(),
         "shows_checked": len(candidates),
         "entries": entries,
+        "degraded": degraded,
     }
 
 
@@ -258,6 +269,16 @@ async def _load_or_compute(db: AsyncSession, user_id: int, force: bool) -> dict:
     if not force and _is_cache_fresh(row):
         return {"computed_at": row.computed_at.isoformat(), "cached": True, "calendar": row.payload}
     payload = await compute_calendar(db, user_id)
+    if payload.get("degraded"):
+        # Збій TMDB-запиту хоч для одного серіала — цьому результату не можна
+        # довіряти як повній «сьогоднішній правді». Не переписуємо валідний
+        # кеш неповним/порожнім результатом, а віддаємо стару версію, якщо вона
+        # є (навіть протермінована по TTL/добі — це все одно краще за дірку).
+        # Якщо старого кешу нема взагалі — віддаємо щойно обчислений результат,
+        # але НЕ зберігаємо його: наступний запит спробує обчислити ще раз.
+        if row:
+            return {"computed_at": row.computed_at.isoformat(), "cached": True, "calendar": row.payload}
+        return {"computed_at": None, "cached": False, "calendar": payload}
     if row:
         row.payload = payload
         row.computed_at = datetime.utcnow()
