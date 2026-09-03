@@ -392,6 +392,11 @@ class ManualSessionStart(BaseModel):
 class ManualSessionUpdate(BaseModel):
     progress_seconds: int
     state: Optional[str] = None  # "playing" | "paused"
+    # Real runtime (minutes) once the client's player has actually loaded the stream and
+    # knows its true duration - takes precedence over whatever was guessed at session start
+    # (client-side fallback or TMDB's listed runtime), since the specific file being played
+    # can genuinely differ (intro/outro cards, network bumpers, a director's cut, etc.).
+    runtime: Optional[int] = None
 
 
 class UserProfileUpdate(BaseModel):
