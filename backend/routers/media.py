@@ -2328,6 +2328,7 @@ def _enrich_movie_list(results: list[dict], library_ids: set[int]) -> list[dict]
             "tmdb_rating": r.get("vote_average"),
             "in_library": r["id"] in library_ids,
             "adult": r.get("adult", False),
+            "overview": r.get("overview"),
         }
         for r in results if r.get("id")
     ]
@@ -2346,6 +2347,7 @@ def _enrich_show_list(results: list[dict], library_ids: set[int]) -> list[dict]:
             "tmdb_rating": r.get("vote_average"),
             "in_library": r["id"] in library_ids,
             "adult": r.get("adult", False),
+            "overview": r.get("overview"),
         }
         for r in results if r.get("id")
     ]
