@@ -386,20 +386,39 @@ async def get_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     type: str | None = Query(None),
+    q: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
     offset = (page - 1) * page_size
 
+    # Watch history is movie/episode only. A watched show or season is a
+    # derived state (all of its episodes watched), never a watch event of its
+    # own - so a series-level row is always junk from an older buggy import
+    # path. Constrain every history query to the two real types so those rows
+    # can't surface (they previously leaked into the unfiltered "All" tab and
+    # then 404'd trying to open as a movie). See #358.
+    type_filter = [type] if type in ("movie", "episode") else ["movie", "episode"]
+
+    # A show's title lives on Show, not on its episode Media rows (those only
+    # carry the episode's own title) - so a search for the show name has to
+    # reach through the same outer join enrich_with_state/format_event already
+    # rely on downstream, not just Media.title.
+    search_term = q.strip() if q else None
+
     base_query = (
         select(func.count())
         .select_from(WatchEvent)
         .join(Media, Media.id == WatchEvent.media_id)
+        .outerjoin(Show, Show.id == Media.show_id)
         .where(WatchEvent.user_id == current_user.id)
         .where(WatchEvent.completed == True)
+        .where(Media.media_type.in_(type_filter))
     )
-    if type and type in ("movie", "episode"):
-        base_query = base_query.where(Media.media_type == type)
+    if search_term:
+        base_query = base_query.where(
+            or_(Media.title.ilike(f"%{search_term}%"), Show.title.ilike(f"%{search_term}%"))
+        )
 
     total_result = await db.execute(base_query)
     total_count = total_result.scalar_one()
@@ -408,13 +427,17 @@ async def get_history(
     query = (
         select(WatchEvent, Media)
         .join(Media, Media.id == WatchEvent.media_id)
+        .outerjoin(Show, Show.id == Media.show_id)
         .options(selectinload(WatchEvent.media).selectinload(Media.show))
         .where(WatchEvent.user_id == current_user.id)
         .where(WatchEvent.completed == True)
+        .where(Media.media_type.in_(type_filter))
         .order_by(WatchEvent.watched_at.desc().nulls_last(), WatchEvent.id.desc())
     )
-    if type and type in ("movie", "episode"):
-        query = query.where(Media.media_type == type)
+    if search_term:
+        query = query.where(
+            or_(Media.title.ilike(f"%{search_term}%"), Show.title.ilike(f"%{search_term}%"))
+        )
 
     query = query.offset(offset).limit(page_size)
 
@@ -1302,6 +1325,14 @@ async def get_next_up(
     for item in items:
         item["next_up_hidden"] = item.get("show_id") in hidden_set
         item["dropped"] = item.get("show_id") in dropped_show_ids
+        # The show's most recent watch (or, mid-rewatch, the rewatch's own
+        # progress/start time) - already computed above for the sort just
+        # below, just not previously returned. Lets a client interleave this
+        # feed with /continue-watching (whose items already carry a
+        # comparable top-level watched_at) into one activity-sorted row, the
+        # way Stremio/Nuvio-style addons do (#237).
+        show_last_watched_at = last_watched_at.get(item.get("show_id"))
+        item["last_watched_at"] = show_last_watched_at.isoformat() if show_last_watched_at else None
         show_stats = remaining_stats.get(item.get("show_id"))
         if show_stats:
             item["episodes_left"] = show_stats["episodes_left"]
@@ -1783,6 +1814,16 @@ async def mark_as_watched(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
+    # A watch event is only ever a movie or an episode. Marking a whole show or
+    # season watched is a bulk-of-episodes operation and has its own endpoints
+    # (/history/show-all, /history/season) - accepting media_type=series here
+    # would create a bogus series-level watch event. See #358.
+    if event_in.media_type not in (MediaType.movie, MediaType.episode):
+        raise HTTPException(
+            status_code=422,
+            detail="media_type must be 'movie' or 'episode'; use /history/show-all or /history/season to mark a show or season watched",
+        )
+
     # 1. Check if Media exists locally
     media = None
     show = None
@@ -2875,10 +2916,10 @@ async def _get_or_create_media_for_session(
             runtime=body.runtime,
             season_number=body.season_number,
             episode_number=body.episode_number,
-            show_id=show_id,
+            show_id=show.id if show else None,
         )
-        if show_id is not None and media.show_id is None:
-            media.show_id = show_id
+        if show is not None and media.show_id is None:
+            media.show_id = show.id
 
     return media
 

@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func, or_
+from sqlalchemy import select, delete, func, or_, and_
 from sqlalchemy.orm.exc import StaleDataError
 
 from db import get_db
@@ -625,12 +625,20 @@ async def _write_watch_event(
     progress_percent: float,
     progress_seconds: int,
     completed: bool,
-) -> None:
+) -> bool:
+    """Returns False only when this call was consumed as a push-watched echo
+    (see the _recently_pushed_watched comment above) - True in every other
+    case, including the "already have a recent one" duplicate branch below
+    and the plain progress-update branch, since both are real, non-echo
+    events. A caller looping over multiple media in one webhook (a
+    multi-episode file) uses this to also skip forwarding an echoed row on as
+    a scrobble "stop" - an echo is not a play, nothing should leave the
+    building for it (#369)."""
     if completed:
         # Echo of a mark-watched call Scrob itself just pushed to this server
         # (see the _recently_pushed_watched comment above) - not a real play.
         if _consume_recently_pushed_watched(user_id, media_id):
-            return
+            return False
 
         # A single completed viewing is often reported by more than one webhook
         # event for the same session (e.g. Plex sends both `media.scrobble` at
@@ -641,14 +649,22 @@ async def _write_watch_event(
             select(WatchEvent.id).where(
                 WatchEvent.user_id == user_id,
                 WatchEvent.media_id == media_id,
-                # NULL >= cutoff is false in SQL, so an unknown-dated event
-                # (manually logged without a date) needs an explicit OR here
-                # to still be recognized by this guard.
-                or_(WatchEvent.watched_at.is_(None), WatchEvent.watched_at >= recent_cutoff),
+                or_(
+                    WatchEvent.watched_at >= recent_cutoff,
+                    # NULL >= cutoff is never true in SQL, so an unknown-dated
+                    # event (manually logged without a date) needs its own
+                    # branch to still be caught here — but watched_at can't
+                    # say when that row was actually written, so it must be
+                    # bounded by created_at instead, same as the dated branch
+                    # above. Without that bound this matched an unknown-dated
+                    # event forever, silently swallowing every real rewatch
+                    # of a title logged that way as a "duplicate" (#355).
+                    and_(WatchEvent.watched_at.is_(None), WatchEvent.created_at >= recent_cutoff),
+                ),
             ).limit(1)
         )
         if existing.scalar_one_or_none() is not None:
-            return
+            return True
         event = WatchEvent(
             user_id=user_id,
             media_id=media_id,
@@ -672,9 +688,27 @@ async def _write_watch_event(
         )
         await db.flush()
         await record_rewatch_progress(db, user_id, media_id, event.id)
+        return True
     else:
         # Just update in-progress state, don't add to WatchEvent (History)
         await _update_playback_progress(db, user_id, media_id, progress_percent, progress_seconds)
+        return True
+
+
+async def _write_completed_events_and_filter_echoes(
+    db: AsyncSession, user_id: int, media_list: list["Media"], progress_seconds: int
+) -> list["Media"]:
+    """Writes a completed WatchEvent for each item in media_list (a Jellyfin/
+    Emby "mark played" webhook can carry more than one for a multi-episode
+    file), returning only the ones that weren't push-watched echoes - see
+    _write_watch_event's docstring. Every mark-played/TogglePlayed handler
+    below scrobbles "stop" onward for whatever this returns, not for
+    media_list itself, so an echoed row - not a real play - never reaches
+    Trakt/MDBList/Simkl/Bingebase either (#369)."""
+    return [
+        m for m in media_list
+        if await _write_watch_event(db, user_id, m.id, 1.0, progress_seconds, True)
+    ]
 
 
 async def _handle_unwatch_toggle(db: AsyncSession, user_id: int, media: Media) -> bool:
@@ -1339,11 +1373,17 @@ async def _handle_jellyfin_webhook(request: Request, db: AsyncSession, api_key: 
         # Same reasoning as PlaybackStop above: _close_session's pending delete
         # needs committing regardless of sync_watched, not only when it fires.
         await _close_session(db, session_key)
+        # A row _write_watch_event reports back as an echo of Scrob's own
+        # mark-watched push is not a real play - forwarding it as a scrobble
+        # "stop" anyway used to write a spurious now-dated play to every
+        # connected Trakt/MDBList/Simkl/Bingebase (#369).
+        non_echo_media = media_list
         if not conn or conn.sync_watched:
-            for m in media_list:
-                await _write_watch_event(db, user.id, m.id, 1.0, data["progress_seconds"], True)
+            non_echo_media = await _write_completed_events_and_filter_echoes(
+                db, user.id, media_list, data["progress_seconds"]
+            )
         await db.commit()
-        for m in media_list:
+        for m in non_echo_media:
             await _maybe_trakt_scrobble(settings, m, "stop", 1.0, db=db)
             await _maybe_mdblist_scrobble(settings, m, "stop", 1.0, db=db)
             await _maybe_simkl_scrobble(settings, m, "stop", 1.0, db=db)
@@ -1359,10 +1399,12 @@ async def _handle_jellyfin_webhook(request: Request, db: AsyncSession, api_key: 
             played = data.get("played")
             if played:
                 await _close_session(db, session_key)
-                for m in media_list:
-                    await _write_watch_event(db, user.id, m.id, 1.0, data["progress_seconds"], True)
+                # See the matching comment in the MarkPlayed branch above (#369).
+                non_echo_media = await _write_completed_events_and_filter_echoes(
+                    db, user.id, media_list, data["progress_seconds"]
+                )
                 await db.commit()
-                for m in media_list:
+                for m in non_echo_media:
                     await _maybe_trakt_scrobble(settings, m, "stop", 1.0, db=db)
                     await _maybe_mdblist_scrobble(settings, m, "stop", 1.0, db=db)
                     await _maybe_simkl_scrobble(settings, m, "stop", 1.0, db=db)
@@ -1574,11 +1616,15 @@ async def _handle_emby_webhook(request: Request, db: AsyncSession, api_key: str,
         # Same reasoning as PlaybackStop above: _close_session's pending delete
         # needs committing regardless of sync_watched, not only when it fires.
         await _close_session(db, session_key)
+        # See the matching comment in _handle_jellyfin_webhook's MarkPlayed
+        # branch - an echoed row must not scrobble onward either (#369).
+        non_echo_media = media_list
         if not conn or conn.sync_watched:
-            for m in media_list:
-                await _write_watch_event(db, user.id, m.id, 1.0, data["progress_seconds"], True)
+            non_echo_media = await _write_completed_events_and_filter_echoes(
+                db, user.id, media_list, data["progress_seconds"]
+            )
         await db.commit()
-        for m in media_list:
+        for m in non_echo_media:
             await _maybe_trakt_scrobble(settings, m, "stop", 1.0, db=db)
             await _maybe_mdblist_scrobble(settings, m, "stop", 1.0, db=db)
             await _maybe_simkl_scrobble(settings, m, "stop", 1.0, db=db)
@@ -1740,12 +1786,16 @@ async def _handle_jellyfin_scrobble_webhook(
         # Same reasoning as PlaybackStop above: _close_session's pending delete
         # needs committing regardless of sync_watched, not only when it fires.
         await _close_session(db, session_key)
+        # See the matching comment in _handle_jellyfin_webhook's MarkPlayed
+        # branch - an echoed row must not scrobble onward either (#369).
+        non_echo_media = media_list
         if conn.sync_watched:
-            for m in media_list:
-                await _write_watch_event(db, user.id, m.id, 1.0, data["progress_seconds"], True)
+            non_echo_media = await _write_completed_events_and_filter_echoes(
+                db, user.id, media_list, data["progress_seconds"]
+            )
         await db.commit()
         if not is_duplicate:
-            for m in media_list:
+            for m in non_echo_media:
                 await _maybe_trakt_scrobble(settings, m, "stop", 1.0, db=db)
                 await _maybe_mdblist_scrobble(settings, m, "stop", 1.0, db=db)
                 await _maybe_simkl_scrobble(settings, m, "stop", 1.0, db=db)
@@ -1762,11 +1812,13 @@ async def _handle_jellyfin_scrobble_webhook(
             played = data.get("played")
             if played:
                 await _close_session(db, session_key)
-                for m in media_list:
-                    await _write_watch_event(db, user.id, m.id, 1.0, data["progress_seconds"], True)
+                # See the matching comment in the MarkPlayed branch above (#369).
+                non_echo_media = await _write_completed_events_and_filter_echoes(
+                    db, user.id, media_list, data["progress_seconds"]
+                )
                 await db.commit()
                 if not is_duplicate:
-                    for m in media_list:
+                    for m in non_echo_media:
                         await _maybe_trakt_scrobble(settings, m, "stop", 1.0, db=db)
                         await _maybe_mdblist_scrobble(settings, m, "stop", 1.0, db=db)
                         await _maybe_simkl_scrobble(settings, m, "stop", 1.0, db=db)
@@ -2968,6 +3020,17 @@ def parse_kodi_payload(payload: dict) -> dict | None:
     }
 
 
+def _kodi_episode_matches(media: Media, data: dict, show: Show | None) -> bool:
+    """Is a tmdb_id hit really the episode Kodi is playing?"""
+    if show is not None and media.show_id is not None and media.show_id != show.id:
+        return False
+    for field, key in (("season_number", "season_number"), ("episode_number", "episode_number")):
+        want = data.get(key)
+        if want is not None and getattr(media, field) is not None and getattr(media, field) != want:
+            return False
+    return True
+
+
 async def find_or_create_media_kodi(
     data: dict, db: AsyncSession, api_key: str = None, user_id: int | None = None
 ) -> Media | None:
@@ -3003,8 +3066,27 @@ async def find_or_create_media_kodi(
                 except Exception:
                     pass
 
+    # Kodi stores the *show* TMDB id in an episode's uniqueid when its scraper
+    # has no episode-level id, so an episode payload's tmdb_id is only a hint.
+    episode_tmdb_id_unverified = data["media_type"] == "episode" and bool(data.get("tmdb_id"))
     show = None
-    if series_tmdb_id:
+    if episode_tmdb_id_unverified and not series_tmdb_id:
+        try:
+            candidate = int(data["tmdb_id"])
+        except (TypeError, ValueError):
+            candidate = None
+        if candidate:
+            local = await db.execute(select(Show).where(Show.tmdb_id == candidate))
+            candidate_show = local.scalars().first()
+            if candidate_show is not None:
+                series_tmdb_id = candidate
+                # Already fetched the row above - _find_or_create_show below
+                # would only repeat this exact query and hit its found-branch
+                # again, never its create-from-TMDB one, since a match is
+                # what was just confirmed.
+                show = candidate_show
+
+    if series_tmdb_id and show is None:
         try:
             show = await _find_or_create_show(db, series_tmdb_id, api_key)
         except Exception:
@@ -3018,6 +3100,11 @@ async def find_or_create_media_kodi(
             )
         )
         media = result.scalars().first()
+        if media and episode_tmdb_id_unverified and not _kodi_episode_matches(media, data, show):
+            # Show and episode ids share one number space on TMDB, so an
+            # unverified id can land on an unrelated episode. Fall through to
+            # the show + season/episode lookup instead.
+            media = None
         if media:
             if media.media_type == MediaType.episode and media.show_id is None and show:
                 media.show_id = show.id
@@ -3067,12 +3154,38 @@ async def find_or_create_media_kodi(
         if media:
             return media
 
-    if data["media_type"] == "episode" and not data.get("tmdb_id") and data.get("season_number") is None:
-        return None
+    if data["media_type"] == "episode" and data.get("season_number") is None:
+        if not data.get("tmdb_id") or episode_tmdb_id_unverified:
+            return None
+
+    new_tmdb_id = None if episode_tmdb_id_unverified else data.get("tmdb_id")
+    if (
+        data["media_type"] == "episode"
+        and show is None
+        and new_tmdb_id is None
+        and data.get("season_number") is not None
+        and data.get("episode_number") is not None
+    ):
+        # create_media_safely's unique index skips a null tmdb_id entirely, so
+        # without this the next webhook for this same episode (pause/resume/
+        # stop, a repeat play) would fail the tmdb_id lookup above and mint a
+        # fresh duplicate row every time, forever.
+        result = await db.execute(
+            select(Media).where(
+                Media.media_type == MediaType.episode,
+                Media.show_id.is_(None),
+                Media.season_number == data["season_number"],
+                Media.episode_number == data["episode_number"],
+                Media.title.ilike(data["title"]),
+            )
+        )
+        media = result.scalars().first()
+        if media:
+            return media
 
     media, _created = await create_media_safely(
         db,
-        int(data["tmdb_id"]) if data.get("tmdb_id") else None,
+        int(new_tmdb_id) if new_tmdb_id else None,
         MediaType(data["media_type"]),
         title=data["title"],
         season_number=data.get("season_number"),
