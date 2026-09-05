@@ -117,28 +117,102 @@ function completeLogin(token, me, username, password) {
     }
 }
 
-function doLogin() {
-    var username = Lampa.Storage.field(KEYS.USERNAME) || ''
-    var password = Lampa.Storage.field(KEYS.PASSWORD) || ''
+// Lampa.Input.edit's own back() hardcodes returning focus to
+// 'settings_component' regardless of caller — every terminal branch here
+// explicitly overrides that with Controller.toggle(returnTo).
+function performServerLogin(username, password, returnTo) {
+    returnTo = returnTo || 'settings_component'
 
-    if (!serverUrl() || !username || !password) {
+    if (!serverUrl()) {
         Lampa.Noty.show(Lampa.Lang.translate('scrob_fill_fields'))
+        Lampa.Controller.toggle(returnTo)
         return
     }
 
     api.login(username, password, function (token) {
         if (token.requires_2fa) {
             Lampa.Noty.show(Lampa.Lang.translate('scrob_2fa_not_supported'))
+            Lampa.Controller.toggle(returnTo)
             return
         }
 
         api.me(token.access_token, function (me) {
             completeLogin(token.access_token, me, username, password)
+            Lampa.Controller.toggle(returnTo)
         }, function () {
             Lampa.Noty.show(Lampa.Lang.translate('scrob_me_error'))
+            Lampa.Controller.toggle(returnTo)
         })
     }, function () {
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_error'))
+        Lampa.Controller.toggle(returnTo)
+    })
+}
+
+// Two chained Input.edit dialogs (username, then password) — mirrors the
+// standalone Scrob Lampa plugin's openAuthDialog() (scrob.js).
+function openLoginInputFlow(returnTo) {
+    returnTo = returnTo || 'settings_component'
+
+    Lampa.Input.edit({
+        title: Lampa.Lang.translate('scrob_username'),
+        value: '',
+        free: true,
+        nosave: true
+    }, function (username) {
+        if (!username || !username.trim()) { Lampa.Controller.toggle(returnTo); return }
+
+        Lampa.Input.edit({
+            title: Lampa.Lang.translate('scrob_password'),
+            value: '',
+            free: true,
+            nosave: true
+        }, function (password) {
+            if (!password || !password.trim()) { Lampa.Controller.toggle(returnTo); return }
+
+            performServerLogin(username.trim(), password.trim(), returnTo)
+        })
+    })
+}
+
+// Manual API key — standalone auth method, no login required at all.
+function openApiKeyInput(returnTo) {
+    returnTo = returnTo || 'settings_component'
+
+    Lampa.Input.edit({
+        title: Lampa.Lang.translate('scrob_api_key'),
+        value: Lampa.Storage.get(KEYS.OWN_API_KEY, ''),
+        free: true,
+        nosave: true
+    }, function (value) {
+        Lampa.Storage.set(KEYS.OWN_API_KEY, (value || '').trim())
+        updateHeaderButton()
+        refreshSettings()
+        Lampa.Controller.toggle(returnTo)
+    })
+}
+
+// Entry point: one settings row → three standalone sign-in methods, matching
+// the standalone Scrob Lampa plugin's own choice menu (scrob.js
+// openAuthChoiceDialog()) instead of three permanently-visible input fields.
+function showAuthChoice(returnTo) {
+    returnTo = returnTo || 'settings_component'
+
+    Lampa.Select.show({
+        title: Lampa.Lang.translate('scrob_auth_choice_title'),
+        items: [
+            { title: Lampa.Lang.translate('scrob_api_key'), action: 'apikey' },
+            { title: Lampa.Lang.translate('scrob_login'), action: 'login' },
+            { title: Lampa.Lang.translate('scrob_qr_login'), action: 'qr' }
+        ],
+        onSelect: function (item) {
+            if (item.action === 'apikey') openApiKeyInput(returnTo)
+            else if (item.action === 'login') openLoginInputFlow(returnTo)
+            else if (item.action === 'qr') openQrAuthDialog(returnTo)
+        },
+        onBack: function () {
+            Lampa.Controller.toggle(returnTo)
+        }
     })
 }
 
@@ -981,51 +1055,18 @@ function initSettings() {
         field: { name: Lampa.Lang.translate('scrob_server_url') }
     })
 
-    // Username
+    // Sign-in trigger — one row opening a choice of three standalone methods
+    // (API key / login+password / QR code), matching the standalone Scrob
+    // Lampa plugin's own menu instead of always-visible input fields.
     Lampa.SettingsApi.addParam({
         component: 'scrob',
-        param: { name: KEYS.USERNAME, type: 'input', default: '', values: '', placeholder: '' },
-        field: { name: Lampa.Lang.translate('scrob_username') }
+        param: { name: 'scrob_auth_trigger_btn', type: 'button' },
+        field: { name: Lampa.Lang.translate('scrob_auth_trigger') },
+        onChange: function () { showAuthChoice('settings_component') }
     })
 
-    // Password
-    Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: { name: KEYS.PASSWORD, type: 'input', default: '', values: '', placeholder: '' },
-        field: { name: Lampa.Lang.translate('scrob_password') }
-    })
-
-    // Own API key — standalone auth method (no login required at all when filled in)
-    Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: { name: KEYS.OWN_API_KEY, type: 'input', default: '', values: '', placeholder: '' },
-        field: {
-            name: Lampa.Lang.translate('scrob_api_key'),
-            description: Lampa.Lang.translate('scrob_api_key_descr')
-        }
-    })
-
-    // Login button
-    Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: { name: 'scrob_login_btn', type: 'button' },
-        field: { name: Lampa.Lang.translate('scrob_login') },
-        onChange: doLogin
-    })
-
-    // QR-code sign-in button — third standalone method, alongside login and the
-    // manual API key field above. Uses a Bearer device token (see storage.js
-    // KEYS.DEVICE_ACCESS_TOKEN), never an api_key: the backend deliberately
-    // refuses /auth/me for device-scoped tokens, so admin profile-switching
-    // (which needs a real user session) stays login-only.
-    Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: { name: 'scrob_qr_login_btn', type: 'button' },
-        field: { name: Lampa.Lang.translate('scrob_qr_login') },
-        onChange: function () { openQrAuthDialog('settings_component') }
-    })
-
-    // Current user static line
+    // Current user static line — shown once any of the three methods is
+    // signed in (see scrob_auth_trigger_btn above, hidden by then).
     Lampa.SettingsApi.addParam({
         component: 'scrob',
         param: { name: 'scrob_user_info', type: 'static' },
@@ -1034,10 +1075,17 @@ function initSettings() {
             item.attr('data-name', 'scrob_user_info')
 
             var me = getMe()
+            var text = ''
 
             if (me.username) {
-                item.find('.settings-param__name').text(me.username + (me.email ? ' (' + me.email + ')' : ''))
+                text = me.username + (me.email ? ' (' + me.email + ')' : '')
+            } else if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) {
+                text = Lampa.Lang.translate('scrob_auth_status_qr')
+            } else if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) {
+                text = Lampa.Lang.translate('scrob_auth_status_apikey')
             }
+
+            item.find('.settings-param__name').text(text)
         }
     })
 
@@ -1210,10 +1258,7 @@ function initSettings() {
             var body = e.body.find('.scroll__body > div')
 
             if (hasSession()) {
-                body.find('[data-name="' + KEYS.USERNAME + '"]').remove()
-                body.find('[data-name="' + KEYS.PASSWORD + '"]').remove()
-                body.find('[data-name="scrob_login_btn"]').remove()
-                body.find('[data-name="scrob_qr_login_btn"]').remove()
+                body.find('[data-name="scrob_auth_trigger_btn"]').remove()
             } else {
                 body.find('[data-name="scrob_user_info"]').remove()
                 body.find('[data-name="scrob_logout_btn"]').remove()

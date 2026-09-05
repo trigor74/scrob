@@ -38,16 +38,40 @@ export default function addLang() {
             be: 'Самадастатковы спосаб аўтарызацыі: устаўце ўласны ключ і не запаўняйце лагін/пароль'
         },
         scrob_login: {
-            uk: 'Увійти логіном і паролем',
-            ru: 'Войти логином и паролем',
-            en: 'Sign in with username/password',
-            be: 'Увайсці лагінам і паролем'
+            uk: 'Логін і пароль',
+            ru: 'Логин и пароль',
+            en: 'Username & password',
+            be: 'Лагін і пароль'
         },
         scrob_qr_login: {
-            uk: 'Увійти через QR-код',
-            ru: 'Войти через QR-код',
-            en: 'Sign in via QR code',
-            be: 'Увайсці праз QR-код'
+            uk: 'Через QR-код',
+            ru: 'Через QR-код',
+            en: 'Via QR code',
+            be: 'Праз QR-код'
+        },
+        scrob_auth_trigger: {
+            uk: 'Авторизуватися на сервері',
+            ru: 'Авторизоваться на сервере',
+            en: 'Sign in to the server',
+            be: 'Аўтарызавацца на серверы'
+        },
+        scrob_auth_choice_title: {
+            uk: 'Авторизація Scrob',
+            ru: 'Авторизация Scrob',
+            en: 'Scrob Sign In',
+            be: 'Аўтарызацыя Scrob'
+        },
+        scrob_auth_status_qr: {
+            uk: 'Авторизовано через QR-код',
+            ru: 'Авторизован через QR-код',
+            en: 'Signed in via QR code',
+            be: 'Аўтарызаваны праз QR-код'
+        },
+        scrob_auth_status_apikey: {
+            uk: 'Авторизовано через API-ключ',
+            ru: 'Авторизован через API-ключ',
+            en: 'Signed in via API key',
+            be: 'Аўтарызаваны праз API-ключ'
         },
         scrob_qr_modal_title: {
             uk: 'Вхід через QR-код',
