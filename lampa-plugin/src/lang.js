@@ -26,16 +26,82 @@ export default function addLang() {
             be: 'Пароль'
         },
         scrob_api_key: {
-            uk: 'API-ключ (опційно)',
-            ru: 'API-ключ (опционально)',
-            en: 'API key (optional)',
-            be: 'API-ключ (опцыянальна)'
+            uk: 'API-ключ',
+            ru: 'API-ключ',
+            en: 'API key',
+            be: 'API-ключ'
+        },
+        scrob_api_key_descr: {
+            uk: 'Самодостатній спосіб авторизації: вставте власний ключ і не заповнюйте логін/пароль',
+            ru: 'Самодостаточный способ авторизации: вставьте свой ключ и не заполняйте логин/пароль',
+            en: 'Standalone sign-in method: paste your own key and skip username/password',
+            be: 'Самадастатковы спосаб аўтарызацыі: устаўце ўласны ключ і не запаўняйце лагін/пароль'
         },
         scrob_login: {
-            uk: 'Увійти',
-            ru: 'Войти',
-            en: 'Sign In',
-            be: 'Увайсці'
+            uk: 'Увійти логіном і паролем',
+            ru: 'Войти логином и паролем',
+            en: 'Sign in with username/password',
+            be: 'Увайсці лагінам і паролем'
+        },
+        scrob_qr_login: {
+            uk: 'Увійти через QR-код',
+            ru: 'Войти через QR-код',
+            en: 'Sign in via QR code',
+            be: 'Увайсці праз QR-код'
+        },
+        scrob_qr_modal_title: {
+            uk: 'Вхід через QR-код',
+            ru: 'Вход через QR-код',
+            en: 'Sign in via QR code',
+            be: 'Уваход праз QR-код'
+        },
+        scrob_qr_hint: {
+            uk: 'Відскануйте QR-код телефоном або відкрийте посилання на іншому пристрої й введіть код вручну',
+            ru: 'Отсканируйте QR-код телефоном или откройте ссылку на другом устройстве и введите код вручную',
+            en: 'Scan the QR code with your phone, or open the link on another device and enter the code manually',
+            be: 'Адскануйце QR-код тэлефонам або адкрыйце спасылку на іншай прыладзе і ўвядзіце код уручную'
+        },
+        scrob_qr_manual_prefix: {
+            uk: 'Або вручну на ',
+            ru: 'Или вручную на ',
+            en: 'Or manually at ',
+            be: 'Або ўручную на '
+        },
+        scrob_qr_manual_suffix: {
+            uk: '',
+            ru: '',
+            en: '',
+            be: ''
+        },
+        scrob_qr_draw_failed: {
+            uk: 'Не вдалося намалювати QR — введіть код вручну на іншому пристрої',
+            ru: 'Не удалось нарисовать QR — введите код вручную на другом устройстве',
+            en: "Couldn't render the QR code — enter the code manually on another device",
+            be: 'Не атрымалася намаляваць QR — увядзіце код уручную на іншай прыладзе'
+        },
+        scrob_noty_qr_gen_failed: {
+            uk: 'Не вдалося згенерувати QR-код',
+            ru: 'Не удалось сгенерировать QR-код',
+            en: 'Failed to generate QR code',
+            be: 'Не атрымалася згенераваць QR-код'
+        },
+        scrob_noty_qr_no_connection: {
+            uk: 'Немає зв\'язку із сервером',
+            ru: 'Нет связи с сервером',
+            en: 'No connection to the server',
+            be: 'Няма сувязі з сервером'
+        },
+        scrob_noty_qr_expired: {
+            uk: 'Час дії QR-коду вичерпано, спробуйте ще раз',
+            ru: 'Время действия QR-кода истекло, попробуйте снова',
+            en: 'The QR code has expired, please try again',
+            be: 'Час дзеяння QR-кода вычарпаны, паспрабуйце зноў'
+        },
+        scrob_noty_qr_denied: {
+            uk: 'Авторизацію через QR скасовано або відхилено',
+            ru: 'Авторизация через QR отменена или отклонена',
+            en: 'QR sign-in was cancelled or denied',
+            be: 'Аўтарызацыя праз QR скасавана або адхілена'
         },
         scrob_logout: {
             uk: 'Вийти',

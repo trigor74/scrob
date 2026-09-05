@@ -14,6 +14,15 @@ var ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 419 454"><d
 
 var settingsListener = null
 
+// stop() of the currently-active QR pairing poll, so a repeat call to
+// openQrAuthDialog() (without closing the previous modal) silences the old
+// loop instead of running two in parallel.
+var scrobQrStopActive = null
+
+// Refreshes early — refreshDeviceToken() rotates the refresh_token too, so a
+// buffer avoids clock-drift/sleep making a request land right past expiry.
+var DEVICE_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000
+
 // ─── Header profile button ────────────────────────────────
 
 function removeHeaderButton() {
@@ -141,6 +150,150 @@ function doLogout() {
     removeHeaderButton()
     refreshSettings()
     Lampa.Noty.show(Lampa.Lang.translate('scrob_logout_success'))
+}
+
+// ─── QR device pairing (third, standalone sign-in method) ──
+// Bearer device token, never an api_key — the backend deliberately refuses
+// /auth/me for device-scoped tokens (see KEYS.DEVICE_ACCESS_TOKEN in
+// storage.js), so admin profile-switching stays login-only; this path is for
+// plain scrobbling/sync without ever typing a password on the TV remote.
+
+function openQrAuthDialog(returnTo) {
+    returnTo = returnTo || 'settings_component'
+
+    api.deviceCode(function (data) {
+        showQrAuthModal(data, returnTo)
+    }, function () {
+        Lampa.Noty.show(Lampa.Lang.translate('scrob_noty_qr_gen_failed'))
+    })
+}
+
+function showQrAuthModal(data, returnTo) {
+    // A repeat call without closing the previous modal would otherwise stack
+    // parallel polling loops.
+    if (scrobQrStopActive) { scrobQrStopActive(); scrobQrStopActive = null }
+
+    var pollDelay = (data.interval || 5) * 1000
+    var expiresAt = Date.now() + (data.expires_in || 900) * 1000
+    var pollTimeout = null
+    var stopped = false
+
+    function stopPolling() {
+        stopped = true
+        if (pollTimeout) { clearTimeout(pollTimeout); pollTimeout = null }
+        if (scrobQrStopActive === stopPolling) scrobQrStopActive = null
+    }
+    scrobQrStopActive = stopPolling
+
+    var $html = $(
+        '<div class="scrob-qr-wrap">' +
+            '<div class="scrob-qr-code"></div>' +
+            '<div class="scrob-qr-user-code"></div>' +
+            '<div class="scrob-qr-hint">' + Lampa.Lang.translate('scrob_qr_hint') + '</div>' +
+            '<div class="scrob-qr-manual"></div>' +
+        '</div>'
+    )
+    $html.find('.scrob-qr-user-code').text(data.user_code) // .text() — без ризику інʼєкції в HTML
+    if (data.verification_uri) {
+        // verification_uri — те саме посилання, що зашите в QR (без коду), готове
+        // від сервера; не збираємо його самі з serverUrl(), щоб не розійтися з
+        // реальним server_url Scrob.
+        $html.find('.scrob-qr-manual').text(
+            Lampa.Lang.translate('scrob_qr_manual_prefix') + data.verification_uri + Lampa.Lang.translate('scrob_qr_manual_suffix')
+        )
+    }
+
+    Lampa.Utils.qrcode(data.verification_uri_complete, $html.find('.scrob-qr-code'), function () {
+        $html.find('.scrob-qr-code').text(Lampa.Lang.translate('scrob_qr_draw_failed'))
+    })
+
+    Lampa.Modal.open({
+        title: Lampa.Lang.translate('scrob_qr_modal_title'),
+        html: $html,
+        onBack: function () {
+            stopPolling()
+            Lampa.Modal.close()
+            Lampa.Controller.toggle(returnTo)
+        }
+    })
+
+    function poll() {
+        if (stopped) return
+        if (Date.now() > expiresAt) {
+            stopPolling()
+            Lampa.Modal.close()
+            Lampa.Noty.show(Lampa.Lang.translate('scrob_noty_qr_expired'))
+            return
+        }
+
+        api.deviceToken(data.device_code, function (res) {
+            if (stopped) return
+            if (res.ok && res.body.access_token) {
+                stopPolling()
+                Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, res.body.access_token)
+                Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, res.body.refresh_token)
+                Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000)
+                Lampa.Modal.close()
+                Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
+                renderHeaderButton()
+                refreshSettings()
+                Lampa.Controller.toggle(returnTo)
+                return
+            }
+
+            var err = res.body.error
+            if (err === 'slow_down') pollDelay += 5000 // сервер просить пул рідше
+            if (err === 'access_denied' || err === 'expired_token' || err === 'invalid_grant') {
+                stopPolling()
+                Lampa.Modal.close()
+                Lampa.Noty.show(Lampa.Lang.translate('scrob_noty_qr_denied'))
+                return
+            }
+            // 'authorization_pending' (чи щось незнайоме) — мовчки продовжуємо пул
+            pollTimeout = setTimeout(poll, pollDelay)
+        }, function () {
+            // тимчасова мережева помилка одного пулу — цикл не зупиняємо
+            if (!stopped) pollTimeout = setTimeout(poll, pollDelay)
+        })
+    }
+
+    pollTimeout = setTimeout(poll, pollDelay)
+}
+
+// Rotates refresh_token on every call (server design) — always store the new
+// one. Clears the pairing ONLY on an explicit server refusal (grant revoked
+// or a replayed/stale refresh_token), never on a plain network failure, so a
+// temporary connectivity blip can't sign the device out on its own.
+function refreshDeviceToken(callback) {
+    var refreshToken = Lampa.Storage.get(KEYS.DEVICE_REFRESH_TOKEN, '')
+    if (!refreshToken) { if (callback) callback(false); return }
+
+    api.deviceTokenRefresh(refreshToken, function (res) {
+        if (res.ok && res.body.access_token) {
+            Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, res.body.access_token)
+            Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, res.body.refresh_token)
+            Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000)
+            if (callback) callback(true)
+        } else {
+            Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, '')
+            Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, '')
+            Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, 0)
+            updateHeaderButton()
+            refreshSettings()
+            if (callback) callback(false)
+        }
+    }, function () {
+        if (callback) callback(false)
+    })
+}
+
+// Proactive check, called periodically — see the setInterval in startPlugin().
+function ensureDeviceTokenFresh() {
+    var token = Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')
+    if (!token) return
+    var expiresAt = Lampa.Storage.get(KEYS.DEVICE_EXPIRES_AT, 0)
+    if (Date.now() < expiresAt - DEVICE_TOKEN_REFRESH_BUFFER_MS) return
+    refreshDeviceToken()
 }
 
 // ─── Settings section ─────────────────────────────────────
@@ -842,11 +995,14 @@ function initSettings() {
         field: { name: Lampa.Lang.translate('scrob_password') }
     })
 
-    // Own API key (optional alternative to login for scrobbling)
+    // Own API key — standalone auth method (no login required at all when filled in)
     Lampa.SettingsApi.addParam({
         component: 'scrob',
         param: { name: KEYS.OWN_API_KEY, type: 'input', default: '', values: '', placeholder: '' },
-        field: { name: Lampa.Lang.translate('scrob_api_key') }
+        field: {
+            name: Lampa.Lang.translate('scrob_api_key'),
+            description: Lampa.Lang.translate('scrob_api_key_descr')
+        }
     })
 
     // Login button
@@ -855,6 +1011,18 @@ function initSettings() {
         param: { name: 'scrob_login_btn', type: 'button' },
         field: { name: Lampa.Lang.translate('scrob_login') },
         onChange: doLogin
+    })
+
+    // QR-code sign-in button — third standalone method, alongside login and the
+    // manual API key field above. Uses a Bearer device token (see storage.js
+    // KEYS.DEVICE_ACCESS_TOKEN), never an api_key: the backend deliberately
+    // refuses /auth/me for device-scoped tokens, so admin profile-switching
+    // (which needs a real user session) stays login-only.
+    Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: { name: 'scrob_qr_login_btn', type: 'button' },
+        field: { name: Lampa.Lang.translate('scrob_qr_login') },
+        onChange: function () { openQrAuthDialog('settings_component') }
     })
 
     // Current user static line
@@ -1045,6 +1213,7 @@ function initSettings() {
                 body.find('[data-name="' + KEYS.USERNAME + '"]').remove()
                 body.find('[data-name="' + KEYS.PASSWORD + '"]').remove()
                 body.find('[data-name="scrob_login_btn"]').remove()
+                body.find('[data-name="scrob_qr_login_btn"]').remove()
             } else {
                 body.find('[data-name="scrob_user_info"]').remove()
                 body.find('[data-name="scrob_logout_btn"]').remove()
@@ -1183,15 +1352,21 @@ function startPlugin() {
         restoreSession()
         refreshCustomMenu()
         initSocket()
+        ensureDeviceTokenFresh()
     } else {
         Lampa.Listener.follow('app', function (e) {
             if (e.type === 'ready') {
                 restoreSession()
                 refreshCustomMenu()
                 initSocket()
+                ensureDeviceTokenFresh()
             }
         })
     }
+
+    // Keep the QR-paired device token from expiring under a long-running app —
+    // checked well before actual expiry (see DEVICE_TOKEN_REFRESH_BUFFER_MS).
+    setInterval(ensureDeviceTokenFresh, 2 * 60 * 1000)
 
     // Clean up socket on app destroy
     Lampa.Listener.follow('app', function (e) {
