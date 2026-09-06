@@ -71,10 +71,10 @@ function ensureOwnProfileInfo() {
 
     var key = ownCredentialKey()
     if (!key) return
-    if (getOwnProfileInfo().forKey === key) return // already fetched for this credential
+    if (getOwnProfileInfo().forKey === key) return // fetched recently for this credential (see the TTL in storage.js)
 
     api.getProfile(function (profile) {
-        Lampa.Storage.set(KEYS.OWN_PROFILE_INFO, Object.assign({}, profile, { forKey: key }))
+        Lampa.Storage.set(KEYS.OWN_PROFILE_INFO, Object.assign({}, profile, { forKey: key, fetchedAt: Date.now() }))
         renderHeaderButton()
     }, function () {
         // Leave whatever was cached (possibly nothing) - the '?' fallback

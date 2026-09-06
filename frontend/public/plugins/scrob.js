@@ -498,12 +498,22 @@
       return Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || '';
     }
 
+    // 12-hour TTL, matching this project's standard caching pattern - without
+    // one, an edit to display_name/avatar on the server would never be picked
+    // up again for a given credential (confirmed live: cached the empty state
+    // from before a display_name was ever set, then never refetched since the
+    // API key itself never changed).
+    var OWN_PROFILE_INFO_TTL = 12 * 60 * 60 * 1000;
+
     // Cached GET /profile/me result for the CURRENT credential, or {} if none
-    // fetched yet (or the credential changed since the last fetch).
+    // fetched yet, the credential changed since the last fetch, or the cache
+    // has gone stale (see OWN_PROFILE_INFO_TTL).
     function getOwnProfileInfo() {
       var val = Lampa.Storage.get(KEYS.OWN_PROFILE_INFO, {});
       if (_typeof(val) !== 'object' || val === null) return {};
-      return val.forKey && val.forKey === ownCredentialKey() ? val : {};
+      if (!val.forKey || val.forKey !== ownCredentialKey()) return {};
+      if (!val.fetchedAt || Date.now() - val.fetchedAt >= OWN_PROFILE_INFO_TTL) return {};
+      return val;
     }
 
     // Active profile object from cached list, falls back to logged-in user, then
@@ -3029,11 +3039,12 @@
 
       var key = ownCredentialKey();
       if (!key) return;
-      if (getOwnProfileInfo().forKey === key) return; // already fetched for this credential
+      if (getOwnProfileInfo().forKey === key) return; // fetched recently for this credential (see the TTL in storage.js)
 
       getProfile(function (profile) {
         Lampa.Storage.set(KEYS.OWN_PROFILE_INFO, Object.assign({}, profile, {
-          forKey: key
+          forKey: key,
+          fetchedAt: Date.now()
         }));
         renderHeaderButton();
       }, function () {
