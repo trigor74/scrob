@@ -2803,6 +2803,24 @@
     // (private, unexported) internal state.
     var originalSelectShow = null;
 
+    // Same shape as the plugin's own settings-section icon (main.js's
+    // ICON_SVG), recolored per status instead of a plain dot - gradient stop
+    // colors swap to red when not authorized, so the mark stays recognizably
+    // "Scrob" while still carrying the red/normal signal. Gradient ids are
+    // counter-suffixed since every row in the picker embeds its own copy of
+    // this SVG - two elements sharing one id in the same document is invalid
+    // and could make every row resolve to whichever gradient the browser saw
+    // first.
+    var svgIconCounter = 0;
+    function statusIconSvg(ok) {
+      svgIconCounter += 1;
+      var ringId = 'scrobLevendeRing' + svgIconCounter;
+      var dotId = 'scrobLevendeDot' + svgIconCounter;
+      var ringStops = ok ? '<stop offset="0%" stop-color="#5B34D6"/><stop offset="50%" stop-color="#9E3BC1"/><stop offset="100%" stop-color="#C147D8"/>' : '<stop offset="0%" stop-color="#7A1F1F"/><stop offset="50%" stop-color="#B23A3A"/><stop offset="100%" stop-color="#E05252"/>';
+      var dotStops = ok ? '<stop offset="0%" stop-color="#5B34D6"/><stop offset="100%" stop-color="#C147D8"/>' : '<stop offset="0%" stop-color="#7A1F1F"/><stop offset="100%" stop-color="#E05252"/>';
+      return '<svg class="scrob-levende-status-icon" viewBox="0 0 419 454" xmlns="http://www.w3.org/2000/svg">' + '<defs>' + '<linearGradient id="' + ringId + '" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="454">' + ringStops + '</linearGradient>' + '<linearGradient id="' + dotId + '" gradientUnits="objectBoundingBox" x1="0" y1="1" x2="0" y2="0">' + dotStops + '</linearGradient>' + '</defs>' + '<path d="M 394.09 73.88 A 226.5 226.5 0 1 0 332.74 427.26 L 287.64 358.22 A 144.6 144.6 0 1 1 334.56 130.14 Z" fill="url(#' + ringId + ')"/>' + '<circle cx="368.97" cy="347.2" r="48.29" fill="url(#' + dotId + ')"/>' + '</svg>';
+    }
+
     // True only when accsdb gives BOTH the server and the key for a (B) profile
     // - one without the other is exactly the "misconfigured" case worth
     // flagging, same as a (C) profile that has never signed in successfully.
@@ -2833,9 +2851,8 @@
       if (!options.items[0].profile) return;
       options.items.forEach(function (item) {
         if (!item.profile) return;
-        var ok = isProfileAuthorized(item.profile);
-        var dot = '<span class="scrob-levende-status' + (ok ? '' : ' scrob-levende-status--bad') + '">●</span> ';
-        item.title = dot + (item.title || '');
+        var icon = statusIconSvg(isProfileAuthorized(item.profile));
+        item.title = icon + ' ' + (item.title || '');
       });
     }
 
@@ -4120,7 +4137,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Status dot prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - normal/inherited color when authorized, red when\n   not (misconfigured accsdb pair, or never signed in). Prepended rather\n   than appended: levende already marks the current profile at the END of\n   the row via a CSS-only "selected" class, no title text involved. */\n.scrob-levende-status {\n  color: inherit;\n}\n\n.scrob-levende-status--bad {\n  color: #e74c3c;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Scrob logo prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - gradient colors swap to red when the bridge\n   considers that profile not authorized (misconfigured accsdb pair, or\n   never signed in), the normal purple/pink gradient otherwise. Prepended\n   rather than appended: levende already marks the current profile at the\n   END of the row via a CSS-only "selected" class, no title text involved.\n   No intrinsic width/height on the SVG itself (only viewBox) - without\n   this it falls back to the browser\'s replaced-element default (300x150),\n   dwarfing the row text. */\n.scrob-levende-status-icon {\n  display: inline-block;\n  width: 1em;\n  height: 1.08em;\n  vertical-align: -0.15em;\n  margin-right: 0.35em;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page template for sync settings

@@ -29,15 +29,19 @@
     font-size: 1em;
 }
 
-/* Status dot prepended to a levende profile's name in ITS OWN picker
-   (levende-bridge.js) - normal/inherited color when authorized, red when
-   not (misconfigured accsdb pair, or never signed in). Prepended rather
-   than appended: levende already marks the current profile at the END of
-   the row via a CSS-only "selected" class, no title text involved. */
-.scrob-levende-status {
-    color: inherit;
-}
-
-.scrob-levende-status--bad {
-    color: #e74c3c;
+/* Scrob logo prepended to a levende profile's name in ITS OWN picker
+   (levende-bridge.js) - gradient colors swap to red when the bridge
+   considers that profile not authorized (misconfigured accsdb pair, or
+   never signed in), the normal purple/pink gradient otherwise. Prepended
+   rather than appended: levende already marks the current profile at the
+   END of the row via a CSS-only "selected" class, no title text involved.
+   No intrinsic width/height on the SVG itself (only viewBox) - without
+   this it falls back to the browser's replaced-element default (300x150),
+   dwarfing the row text. */
+.scrob-levende-status-icon {
+    display: inline-block;
+    width: 1em;
+    height: 1.08em;
+    vertical-align: -0.15em;
+    margin-right: 0.35em;
 }
