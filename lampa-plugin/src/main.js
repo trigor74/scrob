@@ -1147,7 +1147,11 @@ function initSocket() {
 // Re-render header button from saved session on startup
 function restoreSession() {
     if (hasSession()) {
-        renderHeaderButton()
+        // updateHeaderButton(), not renderHeaderButton() directly - must still
+        // respect isLevendeActive() here, or the icon reappears on every page
+        // load regardless of the persisted flag (this was the actual bug: the
+        // flag was read correctly, but this call site never consulted it).
+        updateHeaderButton()
 
         // Start sync if enabled (lifecycle wiring)
         if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
