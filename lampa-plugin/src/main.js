@@ -1178,6 +1178,12 @@ function initLevendeProfilesBridge() {
     // and no-ops on a repeat call.
     levende.patchProfileSelect()
 
+    // If levende was active last session but got removed/disabled since,
+    // nothing will ever fire again to correct the persisted flags below -
+    // this arms a one-time fallback that resets them if no real 'profile'
+    // event confirms them within a generous window.
+    levende.checkStaleLevendeState()
+
     Lampa.Listener.follow('profile', function (e) {
         levende.stageProfile(e)
     })

@@ -2673,6 +2673,39 @@
     var levendeActive = !!Lampa.Storage.get(ACTIVE_FLAG_KEY, false);
     !!Lampa.Storage.get(MANAGED_FLAG_KEY, false);
 
+    // True only once a REAL 'profile'/'changed' event has actually arrived THIS
+    // page load (set in stageProfile() below) - distinct from levendeActive
+    // itself, which may start out true purely from last session's persisted
+    // flag, with nothing yet having confirmed it's still accurate.
+    var confirmedThisSession = false;
+
+    // The persisted flags above exist so the icon/settings gating is already
+    // correct at the very first render of a fresh page load (see the comment
+    // above them) - but nothing besides a genuine levende 'profile' event ever
+    // updates them again. If levende itself gets removed/disabled entirely,
+    // that event will simply never fire again, and this plugin would be stuck
+    // forever believing levende is still active/managing credentials - hiding
+    // its own sign-in/server/logout UI with no way for the user to reach it,
+    // even though the credentials left behind (whatever levende last injected)
+    // are now just as "manual" as any other. Give levende's own init (a real
+    // network round-trip to Lampac's accsdb) a generous window to prove the
+    // flag is still accurate; if nothing confirms it by then, reset to "no
+    // levende" and let the plugin's normal UI/behavior take back over.
+    var STALE_CHECK_DELAY_MS = 8000;
+    function checkStaleLevendeState() {
+      if (!levendeActive) return;
+      setTimeout(function () {
+        if (confirmedThisSession) return;
+        resetLevendeState();
+      }, STALE_CHECK_DELAY_MS);
+    }
+    function resetLevendeState() {
+      levendeActive = false;
+      Lampa.Storage.set(ACTIVE_FLAG_KEY, false);
+      Lampa.Storage.set(MANAGED_FLAG_KEY, false);
+      if (onApplyCallback) onApplyCallback();
+    }
+
     // Notified after every real apply (credential swap actually happened) - set
     // once from main.js's initLevendeProfilesBridge(), used to refresh the
     // header icon/settings screen without this module needing to import them
@@ -2776,6 +2809,7 @@
     // Called from the 'profile' Listener in main.js.
     function stageProfile(e) {
       if (!e || e.type !== 'changed') return;
+      confirmedThisSession = true;
       levendeActive = true;
       Lampa.Storage.set(ACTIVE_FLAG_KEY, true);
       var params = e.params || {};
@@ -4139,6 +4173,12 @@
       // call unconditionally here since it only touches Lampa.Select.show once
       // and no-ops on a repeat call.
       patchProfileSelect();
+
+      // If levende was active last session but got removed/disabled since,
+      // nothing will ever fire again to correct the persisted flags below -
+      // this arms a one-time fallback that resets them if no real 'profile'
+      // event confirms them within a generous window.
+      checkStaleLevendeState();
       Lampa.Listener.follow('profile', function (e) {
         stageProfile(e);
       });
