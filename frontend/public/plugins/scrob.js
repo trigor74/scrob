@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-05
+ * Build: 2026-09-06
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -2780,7 +2780,15 @@
 
     function refreshSettings() {
       if (typeof Lampa.Settings !== 'undefined' && typeof Lampa.Settings.update === 'function') {
-        Lampa.Settings.update();
+        try {
+          // Lampa.Settings.update() re-renders whichever settings page was
+          // last opened THIS SESSION (a closure var, empty string until
+          // then) - if the user never opened settings at all yet, it
+          // throws trying to look up a template for an empty component
+          // name ("Template [settings_] not found", confirmed against the
+          // real core source). Nothing to refresh in that case - ignore.
+          Lampa.Settings.update();
+        } catch (e) {}
       }
     }
 
