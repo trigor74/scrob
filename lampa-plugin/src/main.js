@@ -1160,16 +1160,22 @@ function restoreSession() {
 // levende's own 'changed' notification (fired at its OWN app-ready handling)
 // must find this listener already attached.
 function initLevendeProfilesBridge() {
+    // Credentials may switch either from the real 'state:changed' signal below
+    // or from levende-bridge.js's own fallback timer (see its module comment -
+    // that signal can be delayed or skipped by levende entirely) - registering
+    // this callback covers both paths with a single UI refresh point.
+    levende.setOnApply(function () {
+        updateHeaderButton()
+        refreshSettings()
+    })
+
     Lampa.Listener.follow('profile', function (e) {
         levende.stageProfile(e)
     })
 
     Lampa.Listener.follow('state:changed', function (e) {
         if (!e || e.target !== 'favorite' || e.reason !== 'read') return
-        if (levende.applyPendingProfile()) {
-            updateHeaderButton()
-            refreshSettings()
-        }
+        levende.applyPendingProfile()
     })
 }
 

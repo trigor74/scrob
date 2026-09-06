@@ -24,22 +24,34 @@
 // ProfileManager's onSelect, notifySvc.notify(...) runs, THEN switchFn(...)
 // (which does the actual backupOfflineProfile/restoreOfflineProfile). Acting
 // immediately on 'profile'/'changed' would still see the outgoing profile's
-// local data. Lampa.Favorite.read() (without nolisten=true) itself sends
-// 'state:changed' {target:'favorite', reason:'read'} as its last step - both
-// restoreOfflineProfile() and the switchFn's own shared refresh() callback
-// (online and offline paths alike) call it - so that event is the correct,
-// verified-safe point to actually apply anything here.
+// local data. The normal signal to actually apply is the next
+// 'state:changed' {target:'favorite', reason:'read'} - which
+// Lampa.Favorite.read() itself sends when NOT called with nolisten=true, and
+// both restoreOfflineProfile() and the switchFn's own shared refresh()
+// callback (online and offline paths alike) call it that way as their last
+// step. BUT levende's own reset() - called synchronously on every switch,
+// before either path's real data swap - reads Lampa.Favorite.read(true)
+// WITH nolisten, so that call itself never fires the signal. The REAL
+// arrival can be delayed (online mode waits on an external sync script, up
+// to lampac_profile_refresh_timeout - 10s by default) or never come at all
+// this page load (levende's "full" refresh type reloads the page instead of
+// ever calling refresh()). stageProfile() below therefore also arms a
+// bounded fallback timer, so a slow or reload-skipped switch still applies
+// instead of leaving this plugin on the outgoing profile's credentials.
 import { KEYS } from './storage'
 import * as sync from './sync'
 
 var CURRENT_PROFILE_KEY = 'scrob_levende_current_profile_id'
 var BACKUP_STORE_KEY = 'scrob_levende_backup'
+var ACTIVE_FLAG_KEY = 'scrob_levende_active'
+var MANAGED_FLAG_KEY = 'scrob_levende_managed'
+var APPLY_FALLBACK_DELAY_MS = 2000
 
 // "Regular account" fields backed up/restored per levende profile in
 // situation (C). Deliberately excludes KEYS.PROFILES/SYNC_ENABLED/
 // SYNC_INTERVAL/USERNAME/PASSWORD - the admin profile list has no meaning
-// here (see levendeActive below), and sync on/off + poll interval read more
-// like a device-wide preference than a per-viewer one, matching this
+// here (see isLevendeActive() below), and sync on/off + poll interval read
+// more like a device-wide preference than a per-viewer one, matching this
 // plugin's own ISOLATED_KEYS precedent of excluding similar app-level
 // settings.
 var BACKUP_FIELDS = [
@@ -48,23 +60,30 @@ var BACKUP_FIELDS = [
     KEYS.DEVICE_ACCESS_TOKEN, KEYS.DEVICE_REFRESH_TOKEN, KEYS.DEVICE_EXPIRES_AT
 ]
 
-// Staged by stageProfile() on 'profile'/'changed', consumed by
-// applyPendingProfile() on the next safe 'state:changed' signal.
+// Staged by stageProfile() on 'profile'/'changed', consumed by whichever
+// fires first: the real 'state:changed' signal (applyPendingProfile(), called
+// from main.js) or the fallback timer armed alongside it.
 var pending = null
 
-// true once ANY levende 'profile' event has been seen this session - gates
-// this plugin's own admin-profile-switching everywhere (header icon,
-// completeLogin()'s api.adminUsers() branch, restoreIsolatedData()): under
-// levende, per-viewer identity switching is the bridge's job, not this
-// plugin's /admin/users switcher, regardless of whether the CURRENT profile
-// specifically carries Scrob params.
-var levendeActive = false
+// Persisted (not just in-memory) because both flags must already read
+// correctly at the very first updateHeaderButton()/settingsListener check of
+// a fresh page load - restoreSession() runs synchronously before levende's
+// own 'profile' event has any chance to arrive (its init does a real network
+// round-trip to Lampac first). An in-memory-only flag would default to false
+// on every reload and let the icon/"Sign in" row flash briefly (or, on a
+// slow connection, stay wrong) until that event finally showed up.
+var levendeActive = !!Lampa.Storage.get(ACTIVE_FLAG_KEY, false)
+var levendeManaged = !!Lampa.Storage.get(MANAGED_FLAG_KEY, false)
 
-// true only while the CURRENTLY ACTIVE levende profile itself carries
-// scrob_server_url/scrob_api_key (situation B). Also hides the "Sign in to
-// the server" row even before hasSession() flips true - manually signing in
-// here would just get overwritten by the next 'profile' event anyway.
-var levendeManaged = false
+// Notified after every real apply (credential swap actually happened) - set
+// once from main.js's initLevendeProfilesBridge(), used to refresh the
+// header icon/settings screen without this module needing to import them
+// back (main.js already owns those functions).
+var onApplyCallback = null
+
+export function setOnApply(callback) {
+    onApplyCallback = callback
+}
 
 export function isLevendeActive() {
     return levendeActive
@@ -105,33 +124,10 @@ function restoreProfile(profileId) {
     })
 }
 
-// Called from the 'profile' Listener in main.js.
-export function stageProfile(e) {
-    if (!e || e.type !== 'changed') return
-
-    levendeActive = true
-
-    var params = e.params || {}
-    var hasScrobParams = !!(params.scrob_server_url || params.scrob_api_key)
-    levendeManaged = hasScrobParams
-
-    pending = {
-        profileId: e.profileId,
-        hasScrobParams: hasScrobParams,
-        server: params.scrob_server_url || '',
-        apiKey: params.scrob_api_key || ''
-    }
-}
-
-// Called from the 'state:changed' Listener in main.js (already pre-filtered
-// to target:'favorite', reason:'read'). Returns true if something was
-// actually applied (caller should refresh the header icon/settings then).
-export function applyPendingProfile() {
-    if (!pending) return false
-
-    var profile = pending
-    pending = null
-
+// Actually switches credentials for `profile` (an object shaped like what
+// stageProfile() builds below). Called once, by whichever of
+// applyPendingProfile() / the fallback timer gets there first.
+function doApply(profile) {
     var previousId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null)
 
     if (previousId === profile.profileId) {
@@ -140,7 +136,7 @@ export function applyPendingProfile() {
         // so touch nothing. Blindly backing up+restoring here would roll a
         // live-refreshed value (e.g. a rotated device refresh_token) back to
         // whatever the last real switch away had snapshotted.
-        return false
+        return
     }
 
     sync.stop()
@@ -168,5 +164,47 @@ export function applyPendingProfile() {
 
     if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
 
-    return true
+    if (onApplyCallback) onApplyCallback()
+}
+
+// Called from the 'profile' Listener in main.js.
+export function stageProfile(e) {
+    if (!e || e.type !== 'changed') return
+
+    levendeActive = true
+    Lampa.Storage.set(ACTIVE_FLAG_KEY, true)
+
+    var params = e.params || {}
+    var server = params.scrob_server_url || ''
+    var apiKey = params.scrob_api_key || ''
+    var hasScrobParams = !!(server || apiKey)
+    levendeManaged = hasScrobParams
+    Lampa.Storage.set(MANAGED_FLAG_KEY, hasScrobParams)
+
+    var profile = {
+        profileId: e.profileId,
+        hasScrobParams: hasScrobParams,
+        server: server,
+        apiKey: apiKey
+    }
+    pending = profile
+
+    // Fallback: see the module comment above for why the real signal can be
+    // delayed or skipped entirely.
+    setTimeout(function () {
+        if (pending === profile) {
+            pending = null
+            doApply(profile)
+        }
+    }, APPLY_FALLBACK_DELAY_MS)
+}
+
+// Called from the 'state:changed' Listener in main.js (already pre-filtered
+// to target:'favorite', reason:'read').
+export function applyPendingProfile() {
+    if (!pending) return
+
+    var profile = pending
+    pending = null
+    doApply(profile)
 }
