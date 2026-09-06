@@ -18,7 +18,13 @@ export var KEYS = {
     // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
     DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
     DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
-    DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
+    DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
+    // Cached GET /profile/me result for a session with no real login (bare
+    // API key or QR/device token, see hasSession()) - the only identity info
+    // (display_name/avatar_url) this plugin can resolve for such a session,
+    // since /auth/me (username/email) is Bearer-only. See ensureOwnProfileInfo()
+    // in main.js.
+    OWN_PROFILE_INFO: 'scrob_own_profile_info'
 }
 
 // Keys isolated per profile: backed up on switch, restored for the target.
@@ -70,7 +76,26 @@ export function getProfiles() {
     return Array.isArray(val) ? val : []
 }
 
-// Active profile object from cached list, falls back to logged-in user.
+// Identity this session's credential currently is (api key takes priority,
+// matching authHeaders()' own precedence in api.js) - the cache key
+// ensureOwnProfileInfo() fetches/stores OWN_PROFILE_INFO under, so a
+// different key/token (a new manual entry, a fresh QR pairing) doesn't
+// keep showing the previous credential's name/avatar.
+export function ownCredentialKey() {
+    return Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || ''
+}
+
+// Cached GET /profile/me result for the CURRENT credential, or {} if none
+// fetched yet (or the credential changed since the last fetch).
+export function getOwnProfileInfo() {
+    var val = Lampa.Storage.get(KEYS.OWN_PROFILE_INFO, {})
+    if (typeof val !== 'object' || val === null) return {}
+    return val.forKey && val.forKey === ownCredentialKey() ? val : {}
+}
+
+// Active profile object from cached list, falls back to logged-in user, then
+// to whatever public-profile info (display_name/avatar_url) could be
+// resolved for a session with no real login behind it (see getOwnProfileInfo()).
 export function activeProfile() {
     var id = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
     var list = getProfiles()
@@ -79,7 +104,10 @@ export function activeProfile() {
         if (list[i].id == id) return list[i]
     }
 
-    return getMe()
+    var me = getMe()
+    if (me.id) return me
+
+    return getOwnProfileInfo()
 }
 
 // Three independent, standalone ways to be "signed in" — any one is enough:

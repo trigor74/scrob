@@ -4,7 +4,7 @@ import addLang from './lang'
 import * as api from './utils/api'
 import { scrobSocketInit, scrobSocketDisconnect, getScrobSocket } from './utils/socket'
 import * as sync from './utils/sync'
-import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl } from './utils/storage'
+import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo } from './utils/storage'
 import { avatarHtml, switchProfile } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import CategoryComponent from './component/category'
@@ -41,17 +41,73 @@ function renderHeaderButton() {
     $('.head .head__actions .open--settings').after(btn)
 }
 
+// Shared with scrob_user_info's onRender below - the "how am I signed in"
+// fallback text when there's no real username (bare API key or QR/device
+// token, i.e. no real login behind this session).
+function authStatusText() {
+    if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) return Lampa.Lang.translate('scrob_auth_status_qr')
+    if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) return Lampa.Lang.translate('scrob_auth_status_apikey')
+    return ''
+}
+
 function updateHeaderButton() {
-    if (hasSession()) renderHeaderButton()
-    else removeHeaderButton()
+    if (hasSession()) {
+        renderHeaderButton()
+        ensureOwnProfileInfo()
+    } else {
+        removeHeaderButton()
+    }
+}
+
+// A bare API key or QR/device token (no real username/password login) never
+// gets a real identity from this plugin's own login flow - /auth/me
+// (username/email) is Bearer-only, so getMe() stays empty for these. GET
+// /profile/me is the one endpoint that accepts either credential and
+// returns SOMETHING name-like (display_name) and an avatar_url - fetch and
+// cache it once per credential, then let activeProfile()/avatarHtml() pick
+// it up like any other profile.
+function ensureOwnProfileInfo() {
+    if (getMe().id) return // real login already has a real identity
+
+    var key = ownCredentialKey()
+    if (!key) return
+    if (getOwnProfileInfo().forKey === key) return // already fetched for this credential
+
+    api.getProfile(function (profile) {
+        Lampa.Storage.set(KEYS.OWN_PROFILE_INFO, Object.assign({}, profile, { forKey: key }))
+        renderHeaderButton()
+    }, function () {
+        // Leave whatever was cached (possibly nothing) - the '?' fallback
+        // avatar still works fine without this.
+    })
 }
 
 // Profile picker (pattern: siaivo/src/core/account/profile.js select())
 function showProfileSelect() {
     var profiles = getProfiles()
+    var returnController = Lampa.Controller.enabled().name
 
     if (!profiles.length) {
-        Lampa.Noty.show(Lampa.Lang.translate('scrob_profiles_empty'))
+        // No /admin/users list to show for a session with no real login
+        // behind it (bare API key, QR/device token) - trying anyway would
+        // just fail with a permissions error for a non-admin account, since
+        // there's nothing to switch between in the first place. Show the
+        // current (only) account on its own instead.
+        Lampa.Select.show({
+            title: Lampa.Lang.translate('scrob_profiles'),
+            items: [{
+                title: activeProfile().display_name || authStatusText(),
+                template: 'selectbox_icon',
+                icon: avatarHtml(activeProfile()),
+                selected: true
+            }],
+            onSelect: function () {
+                Lampa.Controller.toggle(returnController)
+            },
+            onBack: function () {
+                Lampa.Controller.toggle(returnController)
+            }
+        })
         return
     }
 
@@ -73,6 +129,10 @@ function showProfileSelect() {
         items: items,
         onSelect: function (a) {
             if (switchProfile(a.id)) renderHeaderButton()
+            Lampa.Controller.toggle(returnController)
+        },
+        onBack: function () {
+            Lampa.Controller.toggle(returnController)
         }
     })
 }
@@ -1079,10 +1139,9 @@ function initSettings() {
 
             if (me.username) {
                 text = me.username + (me.email ? ' (' + me.email + ')' : '')
-            } else if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) {
-                text = Lampa.Lang.translate('scrob_auth_status_qr')
-            } else if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) {
-                text = Lampa.Lang.translate('scrob_auth_status_apikey')
+            } else {
+                var info = getOwnProfileInfo()
+                text = info.display_name || authStatusText()
             }
 
             item.find('.settings-param__name').text(text)

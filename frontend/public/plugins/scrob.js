@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-05
+ * Build: 2026-09-06
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -441,7 +441,13 @@
       // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
       DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
       DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
-      DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
+      DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
+      // Cached GET /profile/me result for a session with no real login (bare
+      // API key or QR/device token, see hasSession()) - the only identity info
+      // (display_name/avatar_url) this plugin can resolve for such a session,
+      // since /auth/me (username/email) is Bearer-only. See ensureOwnProfileInfo()
+      // in main.js.
+      OWN_PROFILE_INFO: 'scrob_own_profile_info'
     };
 
     // Keys isolated per profile: backed up on switch, restored for the target.
@@ -483,14 +489,35 @@
       return Array.isArray(val) ? val : [];
     }
 
-    // Active profile object from cached list, falls back to logged-in user.
+    // Identity this session's credential currently is (api key takes priority,
+    // matching authHeaders()' own precedence in api.js) - the cache key
+    // ensureOwnProfileInfo() fetches/stores OWN_PROFILE_INFO under, so a
+    // different key/token (a new manual entry, a fresh QR pairing) doesn't
+    // keep showing the previous credential's name/avatar.
+    function ownCredentialKey() {
+      return Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || '';
+    }
+
+    // Cached GET /profile/me result for the CURRENT credential, or {} if none
+    // fetched yet (or the credential changed since the last fetch).
+    function getOwnProfileInfo() {
+      var val = Lampa.Storage.get(KEYS.OWN_PROFILE_INFO, {});
+      if (_typeof(val) !== 'object' || val === null) return {};
+      return val.forKey && val.forKey === ownCredentialKey() ? val : {};
+    }
+
+    // Active profile object from cached list, falls back to logged-in user, then
+    // to whatever public-profile info (display_name/avatar_url) could be
+    // resolved for a session with no real login behind it (see getOwnProfileInfo()).
     function activeProfile() {
       var id = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
       var list = getProfiles();
       for (var i = 0; i < list.length; i++) {
         if (list[i].id == id) return list[i];
       }
-      return getMe();
+      var me = getMe();
+      if (me.id) return me;
+      return getOwnProfileInfo();
     }
 
     // Three independent, standalone ways to be "signed in" — any one is enough:
@@ -557,6 +584,26 @@
       } catch (e) {
         return null;
       }
+    }
+
+    // GET /profile/me — the "public profile" fields (display_name, avatar_url,
+    // bio, ...), NOT the core username/email (those stay Bearer-only, /auth/me).
+    // Unlike /auth/me, this accepts an API key OR a device-scoped Bearer token
+    // (get_current_user_or_api_key on the backend) - the only identity this
+    // plugin can ever resolve for a session with no real login behind it.
+    function getProfile(onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(10000);
+      network.native(base() + '/profile/me', function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json) onDone(json);
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: authHeaders()
+      });
     }
 
     // POST /auth/login — form-urlencoded username+password → Token
@@ -2779,7 +2826,11 @@
         var sep = user.avatar_url.indexOf('?') >= 0 ? '&' : '?';
         return '<img class="scrob-avatar" src="' + server + '/api/proxy' + user.avatar_url + sep + 'api_key=' + encodeURIComponent(ownKey) + '">';
       }
-      var name = user && user.username || '?';
+
+      // display_name: the only name-like field this plugin can ever resolve
+      // for a session with no real login behind it (see storage.js's
+      // getOwnProfileInfo()) - /auth/me (username) is Bearer-only.
+      var name = user && (user.username || user.display_name) || '?';
       var letter = name.charAt(0).toUpperCase();
       return '<div class="scrob-avatar scrob-avatar--letter" style="background:' + avatarColor(name) + '">' + letter + '</div>';
     }
@@ -2948,15 +2999,74 @@
       btn.on('hover:enter', showProfileSelect);
       $('.head .head__actions .open--settings').after(btn);
     }
+
+    // Shared with scrob_user_info's onRender below - the "how am I signed in"
+    // fallback text when there's no real username (bare API key or QR/device
+    // token, i.e. no real login behind this session).
+    function authStatusText() {
+      if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) return Lampa.Lang.translate('scrob_auth_status_qr');
+      if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) return Lampa.Lang.translate('scrob_auth_status_apikey');
+      return '';
+    }
     function updateHeaderButton() {
-      if (hasSession()) renderHeaderButton();else removeHeaderButton();
+      if (hasSession()) {
+        renderHeaderButton();
+        ensureOwnProfileInfo();
+      } else {
+        removeHeaderButton();
+      }
+    }
+
+    // A bare API key or QR/device token (no real username/password login) never
+    // gets a real identity from this plugin's own login flow - /auth/me
+    // (username/email) is Bearer-only, so getMe() stays empty for these. GET
+    // /profile/me is the one endpoint that accepts either credential and
+    // returns SOMETHING name-like (display_name) and an avatar_url - fetch and
+    // cache it once per credential, then let activeProfile()/avatarHtml() pick
+    // it up like any other profile.
+    function ensureOwnProfileInfo() {
+      if (getMe().id) return; // real login already has a real identity
+
+      var key = ownCredentialKey();
+      if (!key) return;
+      if (getOwnProfileInfo().forKey === key) return; // already fetched for this credential
+
+      getProfile(function (profile) {
+        Lampa.Storage.set(KEYS.OWN_PROFILE_INFO, Object.assign({}, profile, {
+          forKey: key
+        }));
+        renderHeaderButton();
+      }, function () {
+        // Leave whatever was cached (possibly nothing) - the '?' fallback
+        // avatar still works fine without this.
+      });
     }
 
     // Profile picker (pattern: siaivo/src/core/account/profile.js select())
     function showProfileSelect() {
       var profiles = getProfiles();
+      var returnController = Lampa.Controller.enabled().name;
       if (!profiles.length) {
-        Lampa.Noty.show(Lampa.Lang.translate('scrob_profiles_empty'));
+        // No /admin/users list to show for a session with no real login
+        // behind it (bare API key, QR/device token) - trying anyway would
+        // just fail with a permissions error for a non-admin account, since
+        // there's nothing to switch between in the first place. Show the
+        // current (only) account on its own instead.
+        Lampa.Select.show({
+          title: Lampa.Lang.translate('scrob_profiles'),
+          items: [{
+            title: activeProfile().display_name || authStatusText(),
+            template: 'selectbox_icon',
+            icon: avatarHtml(activeProfile()),
+            selected: true
+          }],
+          onSelect: function onSelect() {
+            Lampa.Controller.toggle(returnController);
+          },
+          onBack: function onBack() {
+            Lampa.Controller.toggle(returnController);
+          }
+        });
         return;
       }
       var activeId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
@@ -2975,6 +3085,10 @@
         items: items,
         onSelect: function onSelect(a) {
           if (switchProfile(a.id)) renderHeaderButton();
+          Lampa.Controller.toggle(returnController);
+        },
+        onBack: function onBack() {
+          Lampa.Controller.toggle(returnController);
         }
       });
     }
@@ -3927,10 +4041,9 @@
           var text = '';
           if (me.username) {
             text = me.username + (me.email ? ' (' + me.email + ')' : '');
-          } else if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) {
-            text = Lampa.Lang.translate('scrob_auth_status_qr');
-          } else if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) {
-            text = Lampa.Lang.translate('scrob_auth_status_apikey');
+          } else {
+            var info = getOwnProfileInfo();
+            text = info.display_name || authStatusText();
           }
           item.find('.settings-param__name').text(text);
         }
