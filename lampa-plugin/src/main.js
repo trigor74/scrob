@@ -4,7 +4,7 @@ import addLang from './lang'
 import * as api from './utils/api'
 import { scrobSocketInit, scrobSocketDisconnect, getScrobSocket } from './utils/socket'
 import * as sync from './utils/sync'
-import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo } from './utils/storage'
+import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo, setOwnProfileInfo } from './utils/storage'
 import { avatarHtml, switchProfile } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import CategoryComponent from './component/category'
@@ -71,10 +71,10 @@ function ensureOwnProfileInfo() {
 
     var key = ownCredentialKey()
     if (!key) return
-    if (getOwnProfileInfo().forKey === key) return // fetched recently for this credential (see the TTL in storage.js)
+    if (getOwnProfileInfo().forKey === key) return // already fetched this page load for this credential
 
     api.getProfile(function (profile) {
-        Lampa.Storage.set(KEYS.OWN_PROFILE_INFO, Object.assign({}, profile, { forKey: key, fetchedAt: Date.now() }))
+        setOwnProfileInfo(profile, key)
         renderHeaderButton()
     }, function () {
         // Leave whatever was cached (possibly nothing) - the '?' fallback

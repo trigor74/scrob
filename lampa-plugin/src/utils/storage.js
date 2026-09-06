@@ -18,13 +18,7 @@ export var KEYS = {
     // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
     DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
     DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
-    DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
-    // Cached GET /profile/me result for a session with no real login (bare
-    // API key or QR/device token, see hasSession()) - the only identity info
-    // (display_name/avatar_url) this plugin can resolve for such a session,
-    // since /auth/me (username/email) is Bearer-only. See ensureOwnProfileInfo()
-    // in main.js.
-    OWN_PROFILE_INFO: 'scrob_own_profile_info'
+    DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
 }
 
 // Keys isolated per profile: backed up on switch, restored for the target.
@@ -77,30 +71,32 @@ export function getProfiles() {
 }
 
 // Identity this session's credential currently is (api key takes priority,
-// matching authHeaders()' own precedence in api.js) - the cache key
-// ensureOwnProfileInfo() fetches/stores OWN_PROFILE_INFO under, so a
-// different key/token (a new manual entry, a fresh QR pairing) doesn't
-// keep showing the previous credential's name/avatar.
+// matching authHeaders()' own precedence in api.js) - the key
+// setOwnProfileInfo()/getOwnProfileInfo() cache GET /profile/me's result
+// under, so a different key/token (a new manual entry, a fresh QR pairing)
+// doesn't keep showing the previous credential's name/avatar.
 export function ownCredentialKey() {
     return Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || ''
 }
 
-// 12-hour TTL, matching this project's standard caching pattern - without
-// one, an edit to display_name/avatar on the server would never be picked
-// up again for a given credential (confirmed live: cached the empty state
-// from before a display_name was ever set, then never refetched since the
-// API key itself never changed).
-var OWN_PROFILE_INFO_TTL = 12 * 60 * 60 * 1000
+// In-memory only, deliberately not persisted to Lampa.Storage - this plugin
+// re-evaluates from scratch on every page load, so an in-memory cache
+// already means "fetch at most once per page load, always fresh again on
+// reload" for free, with none of a persisted TTL's staleness window (an
+// edit to display_name/avatar made on the server, then a reload here,
+// wants to show up right away - not "eventually, once some interval
+// elapses").
+var ownProfileInfo = null
 
-// Cached GET /profile/me result for the CURRENT credential, or {} if none
-// fetched yet, the credential changed since the last fetch, or the cache
-// has gone stale (see OWN_PROFILE_INFO_TTL).
+export function setOwnProfileInfo(profile, forKey) {
+    ownProfileInfo = Object.assign({}, profile, { forKey: forKey })
+}
+
+// Cached GET /profile/me result for the CURRENT credential this page load,
+// or {} if not fetched yet (or the credential changed since the fetch).
 export function getOwnProfileInfo() {
-    var val = Lampa.Storage.get(KEYS.OWN_PROFILE_INFO, {})
-    if (typeof val !== 'object' || val === null) return {}
-    if (!val.forKey || val.forKey !== ownCredentialKey()) return {}
-    if (!val.fetchedAt || (Date.now() - val.fetchedAt) >= OWN_PROFILE_INFO_TTL) return {}
-    return val
+    if (!ownProfileInfo || ownProfileInfo.forKey !== ownCredentialKey()) return {}
+    return ownProfileInfo
 }
 
 // Active profile object from cached list, falls back to logged-in user, then
