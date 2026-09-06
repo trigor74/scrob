@@ -7,6 +7,7 @@ import * as sync from './utils/sync'
 import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl } from './utils/storage'
 import { avatarHtml, switchProfile } from './utils/profiles'
 import * as custom from './utils/sync/custom'
+import * as levende from './utils/levende-bridge'
 import CategoryComponent from './component/category'
 
 // Settings section icon (gradient ids prefixed scrob- to avoid conflicts)
@@ -33,7 +34,11 @@ function renderHeaderButton() {
 }
 
 function updateHeaderButton() {
-    if (hasSession()) renderHeaderButton()
+    // Under levende, per-viewer identity switching is the bridge's job (its
+    // own head icon already exists for that) - this plugin's own switcher
+    // exists solely to pick between /admin/users profiles, which never
+    // applies while levende is active (see completeLogin() below).
+    if (hasSession() && !levende.isLevendeActive()) renderHeaderButton()
     else removeHeaderButton()
 }
 
@@ -89,7 +94,7 @@ function completeLogin(token, me, username, password) {
 
     var finish = function (profiles) {
         Lampa.Storage.set(KEYS.PROFILES, profiles)
-        renderHeaderButton()
+        updateHeaderButton()
         refreshCustomMenu()
         refreshSettings()
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
@@ -98,7 +103,11 @@ function completeLogin(token, me, username, password) {
         if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
     }
 
-    if (me.is_admin) {
+    // Under levende, this account behaves like a plain single-profile sign-in
+    // regardless of is_admin - per-viewer switching is the levende bridge's
+    // job now, not this plugin's own /admin/users list (avoids a confusing
+    // nested "profile of a profile" switcher on top of levende's own).
+    if (me.is_admin && !levende.isLevendeActive()) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
         api.adminUsers(token, finish, function () {
             finish([me])
@@ -1145,6 +1154,25 @@ function restoreSession() {
     }
 }
 
+// Wires the levende/lampa-plugins "profiles.js" bridge (utils/levende-bridge.js)
+// to Lampa's own event bus. Registered unconditionally and early - both events
+// are plain Lampa.Listener subscriptions, safe before window.appready, and
+// levende's own 'changed' notification (fired at its OWN app-ready handling)
+// must find this listener already attached.
+function initLevendeProfilesBridge() {
+    Lampa.Listener.follow('profile', function (e) {
+        levende.stageProfile(e)
+    })
+
+    Lampa.Listener.follow('state:changed', function (e) {
+        if (!e || e.target !== 'favorite' || e.reason !== 'read') return
+        if (levende.applyPendingProfile()) {
+            updateHeaderButton()
+            refreshSettings()
+        }
+    })
+}
+
 function startPlugin() {
     console.log('Scrob', 'startPlugin called')
     window.scrob_plugin = true
@@ -1169,6 +1197,7 @@ function startPlugin() {
     Lampa.Component.add('scrob_category', CategoryComponent)
 
     initSettings()
+    initLevendeProfilesBridge()
 
     // Register bookmarks rows once — displays custom categories on bookmarks screen
     registerBookmarksRows()

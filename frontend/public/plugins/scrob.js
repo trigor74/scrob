@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-05
+ * Build: 2026-09-06
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -2643,6 +2643,117 @@
       return true;
     }
 
+    var CURRENT_PROFILE_KEY = 'scrob_levende_current_profile_id';
+    var BACKUP_STORE_KEY = 'scrob_levende_backup';
+
+    // "Regular account" fields backed up/restored per levende profile in
+    // situation (C). Deliberately excludes KEYS.PROFILES/SYNC_ENABLED/
+    // SYNC_INTERVAL/USERNAME/PASSWORD - the admin profile list has no meaning
+    // here (see levendeActive below), and sync on/off + poll interval read more
+    // like a device-wide preference than a per-viewer one, matching this
+    // plugin's own ISOLATED_KEYS precedent of excluding similar app-level
+    // settings.
+    var BACKUP_FIELDS = [KEYS.OWN_API_KEY, KEYS.SERVER_URL, KEYS.ACCESS_TOKEN, KEYS.ME, KEYS.ACTIVE_API_KEY, KEYS.ACTIVE_PROFILE_ID, KEYS.DEVICE_ACCESS_TOKEN, KEYS.DEVICE_REFRESH_TOKEN, KEYS.DEVICE_EXPIRES_AT];
+
+    // Staged by stageProfile() on 'profile'/'changed', consumed by
+    // applyPendingProfile() on the next safe 'state:changed' signal.
+    var pending = null;
+
+    // true once ANY levende 'profile' event has been seen this session - gates
+    // this plugin's own admin-profile-switching everywhere (header icon,
+    // completeLogin()'s api.adminUsers() branch, restoreIsolatedData()): under
+    // levende, per-viewer identity switching is the bridge's job, not this
+    // plugin's /admin/users switcher, regardless of whether the CURRENT profile
+    // specifically carries Scrob params.
+    var levendeActive = false;
+    function isLevendeActive() {
+      return levendeActive;
+    }
+    function getBackupStore() {
+      var raw = Lampa.Storage.get(BACKUP_STORE_KEY, {});
+      return raw && _typeof(raw) === 'object' && !Array.isArray(raw) ? raw : {};
+    }
+
+    // Snapshots the CURRENT live values of BACKUP_FIELDS under profileId. Safe to
+    // call even for a situation-(B) profile (accsdb-managed) - the snapshot just
+    // mirrors whatever accsdb already defines and stays unused, since re-entering
+    // a (B) profile always re-applies fresh from its own params, never from this
+    // backup.
+    function backupProfile(profileId) {
+      var store = getBackupStore();
+      var snapshot = {};
+      BACKUP_FIELDS.forEach(function (field) {
+        snapshot[field] = Lampa.Storage.get(field, '');
+      });
+      store[profileId] = snapshot;
+      Lampa.Storage.set(BACKUP_STORE_KEY, store);
+    }
+
+    // Restores profileId's own backed-up snapshot, or resets every field to
+    // empty if this levende profile has never signed in to Scrob before (first
+    // visit) - the same "restore-or-clean-default" shape as this plugin's own
+    // restoreIsolatedData().
+    function restoreProfile(profileId) {
+      var snapshot = getBackupStore()[profileId] || {};
+      BACKUP_FIELDS.forEach(function (field) {
+        Lampa.Storage.set(field, snapshot[field] || '');
+      });
+    }
+
+    // Called from the 'profile' Listener in main.js.
+    function stageProfile(e) {
+      if (!e || e.type !== 'changed') return;
+      levendeActive = true;
+      var params = e.params || {};
+      var hasScrobParams = !!(params.scrob_server_url || params.scrob_api_key);
+      pending = {
+        profileId: e.profileId,
+        hasScrobParams: hasScrobParams,
+        server: params.scrob_server_url || '',
+        apiKey: params.scrob_api_key || ''
+      };
+    }
+
+    // Called from the 'state:changed' Listener in main.js (already pre-filtered
+    // to target:'favorite', reason:'read'). Returns true if something was
+    // actually applied (caller should refresh the header icon/settings then).
+    function applyPendingProfile() {
+      if (!pending) return false;
+      var profile = pending;
+      pending = null;
+      var previousId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
+      if (previousId === profile.profileId) {
+        // Same profile re-confirmed (levende sends 'changed' on every app
+        // start too, not just on a real switch) - nothing actually changed,
+        // so touch nothing. Blindly backing up+restoring here would roll a
+        // live-refreshed value (e.g. a rotated device refresh_token) back to
+        // whatever the last real switch away had snapshotted.
+        return false;
+      }
+      stop();
+
+      // Back up whatever is CURRENTLY live under the outgoing profile, whether
+      // it came from situation B or C (harmless no-op to preserve for a B
+      // profile, since it's never read back - see backupProfile() above).
+      if (previousId !== null) backupProfile(previousId);
+      if (profile.hasScrobParams) {
+        if (profile.server) Lampa.Storage.set(KEYS.SERVER_URL, profile.server);
+        Lampa.Storage.set(KEYS.OWN_API_KEY, profile.apiKey || '');
+        Lampa.Storage.set(KEYS.ACTIVE_API_KEY, profile.apiKey || '');
+        // No real Scrob user id available here (accsdb-provided key, never
+        // round-tripped through /auth/me) - a stable synthetic id, unique
+        // per levende profile, is enough to correctly scope this plugin's
+        // own mirror/map storage (utils/sync/mirror.js, mapstore.js both key
+        // off ACTIVE_PROFILE_ID already).
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId);
+      } else {
+        restoreProfile(profile.profileId);
+      }
+      Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId);
+      if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start();
+      return true;
+    }
+
     /**
      * Scrob custom category viewer component.
      * Pattern: kinobaza/myperson/component.js — Lampa.Maker.make('Category')
@@ -2748,6 +2859,13 @@
       btn.on('hover:enter', showProfileSelect);
       $('.head .head__actions .open--settings').after(btn);
     }
+    function updateHeaderButton() {
+      // Under levende, per-viewer identity switching is the bridge's job (its
+      // own head icon already exists for that) - this plugin's own switcher
+      // exists solely to pick between /admin/users profiles, which never
+      // applies while levende is active (see completeLogin() below).
+      if (hasSession() && !isLevendeActive()) renderHeaderButton();else removeHeaderButton();
+    }
 
     // Profile picker (pattern: siaivo/src/core/account/profile.js select())
     function showProfileSelect() {
@@ -2796,7 +2914,7 @@
       if (password) Lampa.Storage.set(KEYS.PASSWORD, password);
       var finish = function finish(profiles) {
         Lampa.Storage.set(KEYS.PROFILES, profiles);
-        renderHeaderButton();
+        updateHeaderButton();
         refreshCustomMenu();
         refreshSettings();
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
@@ -2804,7 +2922,12 @@
         // Start sync if enabled (lifecycle wiring)
         if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start();
       };
-      if (me.is_admin) {
+
+      // Under levende, this account behaves like a plain single-profile sign-in
+      // regardless of is_admin - per-viewer switching is the levende bridge's
+      // job now, not this plugin's own /admin/users list (avoids a confusing
+      // nested "profile of a profile" switcher on top of levende's own).
+      if (me.is_admin && !isLevendeActive()) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
         adminUsers(token, finish, function () {
           finish([me]);
@@ -3856,6 +3979,24 @@
         if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start();
       }
     }
+
+    // Wires the levende/lampa-plugins "profiles.js" bridge (utils/levende-bridge.js)
+    // to Lampa's own event bus. Registered unconditionally and early - both events
+    // are plain Lampa.Listener subscriptions, safe before window.appready, and
+    // levende's own 'changed' notification (fired at its OWN app-ready handling)
+    // must find this listener already attached.
+    function initLevendeProfilesBridge() {
+      Lampa.Listener.follow('profile', function (e) {
+        stageProfile(e);
+      });
+      Lampa.Listener.follow('state:changed', function (e) {
+        if (!e || e.target !== 'favorite' || e.reason !== 'read') return;
+        if (applyPendingProfile()) {
+          updateHeaderButton();
+          refreshSettings();
+        }
+      });
+    }
     function startPlugin() {
       console.log('Scrob', 'startPlugin called');
       window.scrob_plugin = true;
@@ -3876,6 +4017,7 @@
       // Register custom category viewer component
       Lampa.Component.add('scrob_category', component);
       initSettings();
+      initLevendeProfilesBridge();
 
       // Register bookmarks rows once — displays custom categories on bookmarks screen
       registerBookmarksRows();
