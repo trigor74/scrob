@@ -127,7 +127,29 @@ function restoreProfile(profileId) {
 // Actually switches credentials for `profile` (an object shaped like what
 // stageProfile() builds below). Called once, by whichever of
 // applyPendingProfile() / the fallback timer gets there first.
+//
+// applyPendingProfile() runs synchronously INSIDE Lampa's own 'state:changed'
+// dispatch (Subscribe.send()) - confirmed against the real core source that
+// its entire listener loop is wrapped in ONE try/catch around the WHOLE
+// array, so a throw from any single listener (this one included) silently
+// aborts EVERY remaining listener for that dispatch, not just this one.
+// Live-testing traced a controller-focus regression (see
+// fix/lampa-plugin-levende-picker-controller-focus) to exactly this: with
+// this bridge active, some listener downstream of ours (very possibly
+// Lampa's or levende's own, responsible for the natural post-switch content
+// refresh) never got a chance to run at all. This wrapper is a hard
+// boundary against that failure mode regardless of what specifically throws
+// inside - this bridge must never be the thing that silently breaks
+// everyone else sharing this event.
 function doApply(profile) {
+    try {
+        doApplyUnsafe(profile)
+    } catch (err) {
+        console.error('ScrobLevendeBridge', 'doApply failed:', err)
+    }
+}
+
+function doApplyUnsafe(profile) {
     var previousId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null)
 
     if (previousId === profile.profileId) {
