@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem in Scrob
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Fill in what you can — logs and exact steps help the most.
+        Assisted by [ai-ready](https://github.com/johnpapa/ai-ready).
+  - type: input
+    id: version
+    attributes:
+      label: Scrob version / image tag
+      description: e.g. v2.9.0-fork.1, lampame/scrob:latest-omnibus
+      placeholder: v2.9.0-fork.1
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Standard (two containers)
+        - Omnibus (single container)
+        - Bare metal / dev stack (develop-eggs/dev.sh)
+        - Other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw vs what you expected
+      placeholder: /auth/me returns 500 under load; frontend logged me out…
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps from a clean state
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Backend (FastAPI)
+        - Frontend (Astro)
+        - Sync provider (Jellyfin/Plex/Emby/Nuvio/ARVIO/Stremio/Trakt/Simkl/MDBList)
+        - Webhooks / scrobbling
+        - WebSocket API
+        - Auth (JWT/OIDC/2FA)
+        - Database / migrations
+        - Docker / deployment
+        - Lampa plugin
+        - Docs
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste backend/frontend/container logs (redact SECRET_KEY, tokens, passwords)
+      render: shell
+      placeholder: docker compose logs scrob | tail -n 100
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / client (if UI issue)
+      placeholder: Chrome 126, PWA on iOS…
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I redacted secrets/tokens from logs
+          required: true
+        - label: I checked open issues for duplicates
+          required: false

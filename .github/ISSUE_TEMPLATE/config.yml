@@ -1,0 +1,9 @@
+# This repo uses YAML issue forms. Click "New issue" to pick bug report or feature request.
+blank_issues_enabled: false
+contact_links:
+  - name: Socket API docs
+    url: https://github.com/lampame/scrob/blob/main/docs/socket-api.md
+    about: Protocol reference and example clients for the WebSocket API
+  - name: Discussions / questions
+    url: https://github.com/lampame/scrob/discussions
+    about: Questions, ideas, and provider-specific help

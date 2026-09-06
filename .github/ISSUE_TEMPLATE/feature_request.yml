@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest an idea for Scrob
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Small, scoped proposals ship fastest. One idea per issue, please.
+        Assisted by [ai-ready](https://github.com/johnpapa/ai-ready).
+  - type: input
+    id: title
+    attributes:
+      label: Summary
+      placeholder: Add sleep timer to manual scrobble
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What practical need does this solve?
+      placeholder: As a … I want … so that …
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it work? Include provider directions (pull/push), UI sketch, or API shape if relevant
+      placeholder: Sync now / Push / schedule (15m…48h); Connections UI toggle; /api/proxy/ only…
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Backend (FastAPI)
+        - Frontend (Astro)
+        - Sync provider (Jellyfin/Plex/Emby/Nuvio/ARVIO/Stremio/Trakt/Simkl/MDBList)
+        - Webhooks / scrobbling
+        - WebSocket API
+        - Auth (JWT/OIDC/2FA)
+        - Database / migrations
+        - Docker / deployment
+        - Lampa plugin
+        - Docs
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: Any workaround or other approach?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: This respects the single-port, single-image model and the /api/proxy/ rule (or explains why not)
+          required: false
+        - label: I checked open issues for duplicates
+          required: false
