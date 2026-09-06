@@ -2789,6 +2789,69 @@
       doApply(profile);
     }
 
+    // ─── Status dot in levende's own profile picker ────────────
+    //
+    // levende's ProfileManager builds its picker as a plain Lampa.Select.show()
+    // call (Lampa core's own generic selectbox, not a custom-rendered element of
+    // levende's own) - Lampa.Select.show({title: Lampa.Lang.translate(
+    // 'account_profiles'), items: state.profiles.map(profile => ({title,
+    // template:'selectbox_icon', icon, selected, profile}))}) - verified in the
+    // real v3/profiles.js source. Each item's own `profile` field is the FULL
+    // parsed accsdb profile object (id + params), for every profile, not just
+    // the active one - so wrapping this one Lampa.Select.show call gives us
+    // everything needed to badge every row, without ever touching levende's own
+    // (private, unexported) internal state.
+    var originalSelectShow = null;
+
+    // True only when accsdb gives BOTH the server and the key for a (B) profile
+    // - one without the other is exactly the "misconfigured" case worth
+    // flagging, same as a (C) profile that has never signed in successfully.
+    function isProfileAuthorized(profile) {
+      var params = profile && profile.params || {};
+      var server = params.scrob_server_url || '';
+      var apiKey = params.scrob_api_key || '';
+      if (server || apiKey) return !!(server && apiKey);
+
+      // Situation (C): the CURRENTLY active profile's live storage is the
+      // source of truth (may have just signed in this very session, before
+      // any backup snapshot exists for it yet); any other profile falls back
+      // to whatever was captured the last time we switched away from it.
+      var currentId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
+      if (profile && profile.id === currentId) {
+        return !!Lampa.Storage.get(KEYS.OWN_API_KEY, '');
+      }
+      var snapshot = getBackupStore()[profile && profile.id];
+      return !!(snapshot && snapshot[KEYS.OWN_API_KEY]);
+    }
+
+    // Prepended, not appended - levende already marks the current profile with
+    // its own end-of-row indicator (a CSS-only "selected" class, no title text
+    // involved), so a trailing dot here would sit right next to it.
+    function decorateProfilePickerItems(options) {
+      if (!options || options.title !== Lampa.Lang.translate('account_profiles')) return;
+      if (!Array.isArray(options.items) || !options.items.length) return;
+      if (!options.items[0].profile) return;
+      options.items.forEach(function (item) {
+        if (!item.profile) return;
+        var ok = isProfileAuthorized(item.profile);
+        var dot = '<span class="scrob-levende-status' + (ok ? '' : ' scrob-levende-status--bad') + '">●</span> ';
+        item.title = dot + (item.title || '');
+      });
+    }
+
+    // Called once from main.js's initLevendeProfilesBridge(). Idempotent - a
+    // second call is a no-op, so it's safe to call unconditionally even if
+    // levende ends up getting initialized more than once per page load.
+    function patchProfileSelect() {
+      if (originalSelectShow) return;
+      if (typeof Lampa.Select === 'undefined' || typeof Lampa.Select.show !== 'function') return;
+      originalSelectShow = Lampa.Select.show;
+      Lampa.Select.show = function (options) {
+        decorateProfilePickerItems(options);
+        return originalSelectShow.call(Lampa.Select, options);
+      };
+    }
+
     /**
      * Scrob custom category viewer component.
      * Pattern: kinobaza/myperson/component.js — Lampa.Maker.make('Category')
@@ -4033,6 +4096,11 @@
         updateHeaderButton();
         refreshSettings();
       });
+
+      // Badges levende's OWN profile picker rows with a status dot - safe to
+      // call unconditionally here since it only touches Lampa.Select.show once
+      // and no-ops on a repeat call.
+      patchProfileSelect();
       Lampa.Listener.follow('profile', function (e) {
         stageProfile(e);
       });
@@ -4052,7 +4120,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Status dot prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - normal/inherited color when authorized, red when\n   not (misconfigured accsdb pair, or never signed in). Prepended rather\n   than appended: levende already marks the current profile at the END of\n   the row via a CSS-only "selected" class, no title text involved. */\n.scrob-levende-status {\n  color: inherit;\n}\n\n.scrob-levende-status--bad {\n  color: #e74c3c;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page template for sync settings

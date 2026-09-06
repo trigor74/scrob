@@ -1173,6 +1173,11 @@ function initLevendeProfilesBridge() {
         refreshSettings()
     })
 
+    // Badges levende's OWN profile picker rows with a status dot - safe to
+    // call unconditionally here since it only touches Lampa.Select.show once
+    // and no-ops on a repeat call.
+    levende.patchProfileSelect()
+
     Lampa.Listener.follow('profile', function (e) {
         levende.stageProfile(e)
     })

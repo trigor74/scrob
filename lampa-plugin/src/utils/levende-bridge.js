@@ -208,3 +208,71 @@ export function applyPendingProfile() {
     pending = null
     doApply(profile)
 }
+
+// ─── Status dot in levende's own profile picker ────────────
+//
+// levende's ProfileManager builds its picker as a plain Lampa.Select.show()
+// call (Lampa core's own generic selectbox, not a custom-rendered element of
+// levende's own) - Lampa.Select.show({title: Lampa.Lang.translate(
+// 'account_profiles'), items: state.profiles.map(profile => ({title,
+// template:'selectbox_icon', icon, selected, profile}))}) - verified in the
+// real v3/profiles.js source. Each item's own `profile` field is the FULL
+// parsed accsdb profile object (id + params), for every profile, not just
+// the active one - so wrapping this one Lampa.Select.show call gives us
+// everything needed to badge every row, without ever touching levende's own
+// (private, unexported) internal state.
+var originalSelectShow = null
+
+// True only when accsdb gives BOTH the server and the key for a (B) profile
+// - one without the other is exactly the "misconfigured" case worth
+// flagging, same as a (C) profile that has never signed in successfully.
+function isProfileAuthorized(profile) {
+    var params = (profile && profile.params) || {}
+    var server = params.scrob_server_url || ''
+    var apiKey = params.scrob_api_key || ''
+
+    if (server || apiKey) return !!(server && apiKey)
+
+    // Situation (C): the CURRENTLY active profile's live storage is the
+    // source of truth (may have just signed in this very session, before
+    // any backup snapshot exists for it yet); any other profile falls back
+    // to whatever was captured the last time we switched away from it.
+    var currentId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null)
+    if (profile && profile.id === currentId) {
+        return !!Lampa.Storage.get(KEYS.OWN_API_KEY, '')
+    }
+
+    var snapshot = getBackupStore()[profile && profile.id]
+    return !!(snapshot && snapshot[KEYS.OWN_API_KEY])
+}
+
+// Prepended, not appended - levende already marks the current profile with
+// its own end-of-row indicator (a CSS-only "selected" class, no title text
+// involved), so a trailing dot here would sit right next to it.
+function decorateProfilePickerItems(options) {
+    if (!options || options.title !== Lampa.Lang.translate('account_profiles')) return
+    if (!Array.isArray(options.items) || !options.items.length) return
+    if (!options.items[0].profile) return
+
+    options.items.forEach(function (item) {
+        if (!item.profile) return
+        var ok = isProfileAuthorized(item.profile)
+        var dot = '<span class="scrob-levende-status' + (ok ? '' : ' scrob-levende-status--bad') + '">●</span> '
+        item.title = dot + (item.title || '')
+    })
+}
+
+// Called once from main.js's initLevendeProfilesBridge(). Idempotent - a
+// second call is a no-op, so it's safe to call unconditionally even if
+// levende ends up getting initialized more than once per page load.
+export function patchProfileSelect() {
+    if (originalSelectShow) return
+    if (typeof Lampa.Select === 'undefined' || typeof Lampa.Select.show !== 'function') return
+
+    originalSelectShow = Lampa.Select.show
+
+    Lampa.Select.show = function (options) {
+        decorateProfilePickerItems(options)
+        return originalSelectShow.call(Lampa.Select, options)
+    }
+}

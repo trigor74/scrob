@@ -28,3 +28,16 @@
     height: 2.6em;
     font-size: 1em;
 }
+
+/* Status dot prepended to a levende profile's name in ITS OWN picker
+   (levende-bridge.js) - normal/inherited color when authorized, red when
+   not (misconfigured accsdb pair, or never signed in). Prepended rather
+   than appended: levende already marks the current profile at the END of
+   the row via a CSS-only "selected" class, no title text involved. */
+.scrob-levende-status {
+    color: inherit;
+}
+
+.scrob-levende-status--bad {
+    color: #e74c3c;
+}
