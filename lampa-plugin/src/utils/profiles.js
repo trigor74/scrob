@@ -38,7 +38,10 @@ export function avatarHtml(user) {
         return '<img class="scrob-avatar" src="' + server + '/api/proxy' + user.avatar_url + sep + 'api_key=' + encodeURIComponent(ownKey) + '">'
     }
 
-    var name = (user && user.username) || '?'
+    // display_name: the only name-like field this plugin can ever resolve
+    // for a session with no real login behind it (see storage.js's
+    // getOwnProfileInfo()) - /auth/me (username) is Bearer-only.
+    var name = (user && (user.username || user.display_name)) || '?'
     var letter = name.charAt(0).toUpperCase()
 
     return '<div class="scrob-avatar scrob-avatar--letter" style="background:' + avatarColor(name) + '">' + letter + '</div>'

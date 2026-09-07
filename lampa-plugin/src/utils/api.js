@@ -57,6 +57,34 @@ function parse(data) {
     }
 }
 
+// GET /profile/me — the "public profile" fields (display_name, avatar_url,
+// bio, ...), NOT the core username/email (those stay Bearer-only, /auth/me).
+// Unlike /auth/me, this accepts an API key OR a device-scoped Bearer token
+// (get_current_user_or_api_key on the backend) - the only identity this
+// plugin can ever resolve for a session with no real login behind it.
+export function getProfile(onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(10000)
+
+    network.native(
+        base() + '/profile/me',
+        function (data) {
+            network.clear()
+
+            var json = parse(data)
+
+            if (json) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
+}
+
 // POST /auth/login — form-urlencoded username+password → Token
 // NOTE: login is an unauthenticated endpoint — do NOT send Bearer
 // NOTE: Astro middleware requires X-Api-Key for /api/proxy/* routes
