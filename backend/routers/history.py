@@ -3109,6 +3109,11 @@ async def update_manual_session(
     media_q = await db.execute(select(Media).where(Media.id == session.media_id))
     media = media_q.scalar_one_or_none()
 
+    # The client only learns the real runtime once its player has actually loaded the
+    # stream - refresh it here rather than trusting whatever was guessed at session start.
+    if media and body.runtime:
+        media.runtime = body.runtime
+
     runtime_seconds = (media.runtime * 60) if (media and media.runtime) else 0
     progress_pct = (body.progress_seconds / runtime_seconds) if runtime_seconds > 0 else 0.0
     progress_pct = min(1.0, max(0.0, progress_pct))
