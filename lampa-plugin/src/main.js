@@ -1472,7 +1472,17 @@ function initSocket() {
 // Re-render header button from saved session on startup
 function restoreSession() {
     if (hasSession()) {
-        renderHeaderButton()
+        // updateHeaderButton() (not renderHeaderButton() directly) - a plain
+        // render never kicks off ensureOwnProfileInfo(), so an API-key-only
+        // or QR-paired session established in an EARLIER page load never got
+        // its GET /profile/me fetched on a plain app restart: ownProfileInfo
+        // is in-memory-only (storage.js) and starts null every page load,
+        // so the header avatar and scrob_user_info in Settings stayed stuck
+        // on the generic "?"/authStatusText() fallback no matter how many
+        // times Settings was reopened, even though the credential itself was
+        // perfectly valid and /profile/me would have returned a real
+        // display_name if only anyone had asked it to.
+        updateHeaderButton()
 
         // Start sync if enabled (lifecycle wiring)
         if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
