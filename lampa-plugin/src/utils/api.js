@@ -6,16 +6,37 @@ function base() {
     return serverUrl() + '/api/proxy'
 }
 
-// X-Api-Key header from the user's settings key; empty object when not set
+// X-Api-Key header from the user's settings key. ALWAYS present, even empty —
+// the Astro session-cookie gate (middleware.ts) only checks that this header
+// exists at all (its value is validated separately, by the backend) before
+// letting a /api/proxy/* request through without redirecting to /login. A
+// non-browser client like this plugin never has that cookie, so omitting the
+// header entirely (as before) silently blocked every request made with no
+// api_key configured yet — including the login/QR-pairing requests themselves.
 function apiKeyHeaders() {
     var key = Lampa.Storage.get(KEYS.OWN_API_KEY) || ''
-    return key ? { 'X-Api-Key': key } : {}
+    return { 'X-Api-Key': key }
 }
 
 // Bearer token header from the user's session; empty object when not set
 function bearerHeaders() {
     var token = Lampa.Storage.get(KEYS.ACCESS_TOKEN) || ''
     return token ? { Authorization: 'Bearer ' + token } : {}
+}
+
+// Headers for regular (non-bootstrap) requests: the manually-entered API key
+// when present, otherwise the QR-paired device token as Bearer. Either alone
+// satisfies the backend's own per-endpoint auth dependency; X-Api-Key is
+// always sent (see apiKeyHeaders() above) so the Astro gate lets the request
+// through either way.
+function authHeaders() {
+    var headers = apiKeyHeaders()
+    var apiKey = Lampa.Storage.get(KEYS.OWN_API_KEY) || ''
+    if (!apiKey) {
+        var deviceToken = Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || ''
+        if (deviceToken) headers['Authorization'] = 'Bearer ' + deviceToken
+    }
+    return headers
 }
 
 function parse(data) {
@@ -26,6 +47,34 @@ function parse(data) {
     } catch (e) {
         return null
     }
+}
+
+// GET /profile/me — the "public profile" fields (display_name, avatar_url,
+// bio, ...), NOT the core username/email (those stay Bearer-only, /auth/me).
+// Unlike /auth/me, this accepts an API key OR a device-scoped Bearer token
+// (get_current_user_or_api_key on the backend) - the only identity this
+// plugin can ever resolve for a session with no real login behind it.
+export function getProfile(onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(10000)
+
+    network.native(
+        base() + '/profile/me',
+        function (data) {
+            network.clear()
+
+            var json = parse(data)
+
+            if (json) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
 }
 
 // POST /auth/login — form-urlencoded username+password → Token
@@ -129,7 +178,7 @@ export function getLists(onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders() }
+        { headers: authHeaders() }
     )
 }
 
@@ -153,7 +202,7 @@ export function createList(name, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         JSON.stringify({ name: name, privacy_level: 'private' }),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -178,7 +227,7 @@ export function getListItems(listId, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders() }
+        { headers: authHeaders() }
     )
 }
 
@@ -204,7 +253,7 @@ export function addListItem(listId, tmdbId, mediaType, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType }),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -224,7 +273,7 @@ export function deleteListItem(listId, itemId, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders(), type: 'DELETE' }
+        { headers: authHeaders(), type: 'DELETE' }
     )
 }
 
@@ -251,7 +300,7 @@ export function socketIngest(type, payload, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         JSON.stringify({ type: type, payload: payload || {} }),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -303,7 +352,7 @@ export function addHistoryEvent(tmdbId, mediaType, completed, onDone, onFail) {
             media_type: mediaType,
             completed: completed
         }),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -323,7 +372,7 @@ export function removeHistoryEvent(eventId, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders(), type: 'DELETE' }
+        { headers: authHeaders(), type: 'DELETE' }
     )
 }
 
@@ -352,6 +401,55 @@ export function getHistory(page, pageSize, mediaType, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders() }
+        { headers: authHeaders() }
     )
+}
+
+// ─── QR device pairing (OAuth 2.0 Device Authorization Grant, /auth/device/*) ───
+// These three requests are genuinely anonymous by design (RFC 8628) — the Astro
+// gate explicitly exempts them (middleware.ts PUBLIC_PREFIXES), no X-Api-Key/
+// Bearer needed at all. Uses raw fetch() instead of Lampa.Reguest(): the poll's
+// "still pending" response is itself a non-2xx status carrying a JSON body
+// ({error: "authorization_pending" | "slow_down" | ...}) the caller needs to
+// read, which Reguest's onFail callback isn't set up to expose here.
+
+// POST /auth/device/code — start pairing; returns device_code/user_code/verification_uri(_complete)
+export function deviceCode(onDone, onFail) {
+    fetch(base() + '/auth/device/code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_name: 'Lampa', scope: 'write' })
+    })
+        .then(function (r) { return r.ok ? r.json() : null })
+        .then(function (data) {
+            if (data && data.device_code && data.user_code) onDone(data)
+            else onFail()
+        })
+        .catch(function () { onFail() })
+}
+
+// POST /auth/device/token (grant_type=device_code) — one poll of the pairing loop.
+// onDone always receives { ok, body }: the caller reads body.error to tell
+// authorization_pending/slow_down (keep polling) apart from a real outcome.
+export function deviceToken(deviceCodeValue, onDone, onFail) {
+    fetch(base() + '/auth/device/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=' + encodeURIComponent(deviceCodeValue)
+    })
+        .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body || {} } }) })
+        .then(onDone)
+        .catch(function () { onFail() })
+}
+
+// POST /auth/device/token (grant_type=refresh_token) — rotates refresh_token on every call.
+export function deviceTokenRefresh(refreshToken, onDone, onFail) {
+    fetch(base() + '/auth/device/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(refreshToken)
+    })
+        .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body || {} } }) })
+        .then(onDone)
+        .catch(function () { onFail() })
 }

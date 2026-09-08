@@ -34,16 +34,106 @@
           be: 'Пароль'
         },
         scrob_api_key: {
-          uk: 'API-ключ (опційно)',
-          ru: 'API-ключ (опционально)',
-          en: 'API key (optional)',
-          be: 'API-ключ (опцыянальна)'
+          uk: 'API-ключ',
+          ru: 'API-ключ',
+          en: 'API key',
+          be: 'API-ключ'
+        },
+        scrob_api_key_descr: {
+          uk: 'Самодостатній спосіб авторизації: вставте власний ключ і не заповнюйте логін/пароль',
+          ru: 'Самодостаточный способ авторизации: вставьте свой ключ и не заполняйте логин/пароль',
+          en: 'Standalone sign-in method: paste your own key and skip username/password',
+          be: 'Самадастатковы спосаб аўтарызацыі: устаўце ўласны ключ і не запаўняйце лагін/пароль'
         },
         scrob_login: {
-          uk: 'Увійти',
-          ru: 'Войти',
-          en: 'Sign In',
-          be: 'Увайсці'
+          uk: 'Логін і пароль',
+          ru: 'Логин и пароль',
+          en: 'Username & password',
+          be: 'Лагін і пароль'
+        },
+        scrob_qr_login: {
+          uk: 'Через QR-код',
+          ru: 'Через QR-код',
+          en: 'Via QR code',
+          be: 'Праз QR-код'
+        },
+        scrob_auth_trigger: {
+          uk: 'Авторизуватися на сервері',
+          ru: 'Авторизоваться на сервере',
+          en: 'Sign in to the server',
+          be: 'Аўтарызавацца на серверы'
+        },
+        scrob_auth_choice_title: {
+          uk: 'Авторизація Scrob',
+          ru: 'Авторизация Scrob',
+          en: 'Scrob Sign In',
+          be: 'Аўтарызацыя Scrob'
+        },
+        scrob_auth_status_qr: {
+          uk: 'Авторизовано через QR-код',
+          ru: 'Авторизован через QR-код',
+          en: 'Signed in via QR code',
+          be: 'Аўтарызаваны праз QR-код'
+        },
+        scrob_auth_status_apikey: {
+          uk: 'Авторизовано через API-ключ',
+          ru: 'Авторизован через API-ключ',
+          en: 'Signed in via API key',
+          be: 'Аўтарызаваны праз API-ключ'
+        },
+        scrob_qr_modal_title: {
+          uk: 'Вхід через QR-код',
+          ru: 'Вход через QR-код',
+          en: 'Sign in via QR code',
+          be: 'Уваход праз QR-код'
+        },
+        scrob_qr_hint: {
+          uk: 'Відскануйте QR-код телефоном або відкрийте посилання на іншому пристрої й введіть код вручну',
+          ru: 'Отсканируйте QR-код телефоном или откройте ссылку на другом устройстве и введите код вручную',
+          en: 'Scan the QR code with your phone, or open the link on another device and enter the code manually',
+          be: 'Адскануйце QR-код тэлефонам або адкрыйце спасылку на іншай прыладзе і ўвядзіце код уручную'
+        },
+        scrob_qr_manual_prefix: {
+          uk: 'Або вручну на ',
+          ru: 'Или вручную на ',
+          en: 'Or manually at ',
+          be: 'Або ўручную на '
+        },
+        scrob_qr_manual_suffix: {
+          uk: '',
+          ru: '',
+          en: '',
+          be: ''
+        },
+        scrob_qr_draw_failed: {
+          uk: 'Не вдалося намалювати QR — введіть код вручну на іншому пристрої',
+          ru: 'Не удалось нарисовать QR — введите код вручную на другом устройстве',
+          en: "Couldn't render the QR code — enter the code manually on another device",
+          be: 'Не атрымалася намаляваць QR — увядзіце код уручную на іншай прыладзе'
+        },
+        scrob_noty_qr_gen_failed: {
+          uk: 'Не вдалося згенерувати QR-код',
+          ru: 'Не удалось сгенерировать QR-код',
+          en: 'Failed to generate QR code',
+          be: 'Не атрымалася згенераваць QR-код'
+        },
+        scrob_noty_qr_no_connection: {
+          uk: 'Немає зв\'язку із сервером',
+          ru: 'Нет связи с сервером',
+          en: 'No connection to the server',
+          be: 'Няма сувязі з сервером'
+        },
+        scrob_noty_qr_expired: {
+          uk: 'Час дії QR-коду вичерпано, спробуйте ще раз',
+          ru: 'Время действия QR-кода истекло, попробуйте снова',
+          en: 'The QR code has expired, please try again',
+          be: 'Час дзеяння QR-кода вычарпаны, паспрабуйце зноў'
+        },
+        scrob_noty_qr_denied: {
+          uk: 'Авторизацію через QR скасовано або відхилено',
+          ru: 'Авторизация через QR отменена или отклонена',
+          en: 'QR sign-in was cancelled or denied',
+          be: 'Аўтарызацыя праз QR скасавана або адхілена'
         },
         scrob_logout: {
           uk: 'Вийти',
@@ -345,7 +435,13 @@
       ACTIVE_PROFILE_ID: 'scrob_active_profile_id',
       ACTIVE_API_KEY: 'scrob_active_api_key',
       SYNC_ENABLED: 'scrob_sync_enabled',
-      SYNC_INTERVAL: 'scrob_sync_interval'
+      SYNC_INTERVAL: 'scrob_sync_interval',
+      // QR-пейринг (OAuth 2.0 Device Authorization Grant, /auth/device/*) — Bearer,
+      // не api_key: за дизайном сервера device-скоупований токен не має доступу
+      // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
+      DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
+      DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
+      DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
     };
 
     // Keys isolated per profile: backed up on switch, restored for the target.
@@ -387,22 +483,61 @@
       return Array.isArray(val) ? val : [];
     }
 
-    // Active profile object from cached list, falls back to logged-in user.
+    // Identity this session's credential currently is (api key takes priority,
+    // matching authHeaders()' own precedence in api.js) - the key
+    // setOwnProfileInfo()/getOwnProfileInfo() cache GET /profile/me's result
+    // under, so a different key/token (a new manual entry, a fresh QR pairing)
+    // doesn't keep showing the previous credential's name/avatar.
+    function ownCredentialKey() {
+      return Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || '';
+    }
+
+    // In-memory only, deliberately not persisted to Lampa.Storage - this plugin
+    // re-evaluates from scratch on every page load, so an in-memory cache
+    // already means "fetch at most once per page load, always fresh again on
+    // reload" for free, with none of a persisted TTL's staleness window (an
+    // edit to display_name/avatar made on the server, then a reload here,
+    // wants to show up right away - not "eventually, once some interval
+    // elapses").
+    var ownProfileInfo = null;
+    function setOwnProfileInfo(profile, forKey) {
+      ownProfileInfo = Object.assign({}, profile, {
+        forKey: forKey
+      });
+    }
+
+    // Cached GET /profile/me result for the CURRENT credential this page load,
+    // or {} if not fetched yet (or the credential changed since the fetch).
+    function getOwnProfileInfo() {
+      if (!ownProfileInfo || ownProfileInfo.forKey !== ownCredentialKey()) return {};
+      return ownProfileInfo;
+    }
+
+    // Active profile object from cached list, falls back to logged-in user, then
+    // to whatever public-profile info (display_name/avatar_url) could be
+    // resolved for a session with no real login behind it (see getOwnProfileInfo()).
     function activeProfile() {
       var id = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
       var list = getProfiles();
       for (var i = 0; i < list.length; i++) {
         if (list[i].id == id) return list[i];
       }
-      return getMe();
+      var me = getMe();
+      if (me.id) return me;
+      return getOwnProfileInfo();
     }
+
+    // Three independent, standalone ways to be "signed in" — any one is enough:
+    // a manually-entered API key, a QR-paired device token, or a real username/
+    // password login (the only one that also unlocks admin profile-switching,
+    // since it's the only path that ever calls /auth/me).
     function hasSession() {
-      return !!(Lampa.Storage.get(KEYS.ACCESS_TOKEN) && getMe().id);
+      return !!(Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || Lampa.Storage.get(KEYS.ACCESS_TOKEN) && getMe().id);
     }
 
     // Clear session keys on logout. Credentials (server/username/password) are kept for re-login.
     function clearSession() {
-      [KEYS.OWN_API_KEY, KEYS.ACCESS_TOKEN, KEYS.ME, KEYS.PROFILES, KEYS.ACTIVE_PROFILE_ID, KEYS.ACTIVE_API_KEY].forEach(function (key) {
+      [KEYS.OWN_API_KEY, KEYS.ACCESS_TOKEN, KEYS.ME, KEYS.PROFILES, KEYS.ACTIVE_PROFILE_ID, KEYS.ACTIVE_API_KEY, KEYS.DEVICE_ACCESS_TOKEN, KEYS.DEVICE_REFRESH_TOKEN, KEYS.DEVICE_EXPIRES_AT].forEach(function (key) {
         Lampa.Storage.set(key, '');
       });
     }
@@ -413,12 +548,18 @@
       return serverUrl() + '/api/proxy';
     }
 
-    // X-Api-Key header from the user's settings key; empty object when not set
+    // X-Api-Key header from the user's settings key. ALWAYS present, even empty —
+    // the Astro session-cookie gate (middleware.ts) only checks that this header
+    // exists at all (its value is validated separately, by the backend) before
+    // letting a /api/proxy/* request through without redirecting to /login. A
+    // non-browser client like this plugin never has that cookie, so omitting the
+    // header entirely (as before) silently blocked every request made with no
+    // api_key configured yet — including the login/QR-pairing requests themselves.
     function apiKeyHeaders() {
       var key = Lampa.Storage.get(KEYS.OWN_API_KEY) || '';
-      return key ? {
+      return {
         'X-Api-Key': key
-      } : {};
+      };
     }
 
     // Bearer token header from the user's session; empty object when not set
@@ -428,6 +569,21 @@
         Authorization: 'Bearer ' + token
       } : {};
     }
+
+    // Headers for regular (non-bootstrap) requests: the manually-entered API key
+    // when present, otherwise the QR-paired device token as Bearer. Either alone
+    // satisfies the backend's own per-endpoint auth dependency; X-Api-Key is
+    // always sent (see apiKeyHeaders() above) so the Astro gate lets the request
+    // through either way.
+    function authHeaders() {
+      var headers = apiKeyHeaders();
+      var apiKey = Lampa.Storage.get(KEYS.OWN_API_KEY) || '';
+      if (!apiKey) {
+        var deviceToken = Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || '';
+        if (deviceToken) headers['Authorization'] = 'Bearer ' + deviceToken;
+      }
+      return headers;
+    }
     function parse$1(data) {
       if (typeof data !== 'string') return data;
       try {
@@ -435,6 +591,26 @@
       } catch (e) {
         return null;
       }
+    }
+
+    // GET /profile/me — the "public profile" fields (display_name, avatar_url,
+    // bio, ...), NOT the core username/email (those stay Bearer-only, /auth/me).
+    // Unlike /auth/me, this accepts an API key OR a device-scoped Bearer token
+    // (get_current_user_or_api_key on the backend) - the only identity this
+    // plugin can ever resolve for a session with no real login behind it.
+    function getProfile(onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(10000);
+      network.native(base() + '/profile/me', function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json) onDone(json);
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: authHeaders()
+      });
     }
 
     // POST /auth/login — form-urlencoded username+password → Token
@@ -511,7 +687,7 @@
         network.clear();
         onFail(network.errorDecode(a, c));
       }, false, {
-        headers: apiKeyHeaders()
+        headers: authHeaders()
       });
     }
 
@@ -532,7 +708,7 @@
       }), {
         headers: Object.assign({
           'Content-Type': 'application/json'
-        }, apiKeyHeaders())
+        }, authHeaders())
       });
     }
 
@@ -550,7 +726,7 @@
         network.clear();
         onFail(network.errorDecode(a, c));
       }, false, {
-        headers: apiKeyHeaders()
+        headers: authHeaders()
       });
     }
 
@@ -573,7 +749,7 @@
       }), {
         headers: Object.assign({
           'Content-Type': 'application/json'
-        }, apiKeyHeaders())
+        }, authHeaders())
       });
     }
 
@@ -588,7 +764,7 @@
         network.clear();
         onFail(network.errorDecode(a, c));
       }, false, {
-        headers: apiKeyHeaders(),
+        headers: authHeaders(),
         type: 'DELETE'
       });
     }
@@ -610,6 +786,75 @@
         onFail(network.errorDecode(a, c));
       }, false, {
         headers: Object.assign({}, apiKeyHeaders(), bearerHeaders())
+      });
+    }
+
+    // ─── QR device pairing (OAuth 2.0 Device Authorization Grant, /auth/device/*) ───
+    // These three requests are genuinely anonymous by design (RFC 8628) — the Astro
+    // gate explicitly exempts them (middleware.ts PUBLIC_PREFIXES), no X-Api-Key/
+    // Bearer needed at all. Uses raw fetch() instead of Lampa.Reguest(): the poll's
+    // "still pending" response is itself a non-2xx status carrying a JSON body
+    // ({error: "authorization_pending" | "slow_down" | ...}) the caller needs to
+    // read, which Reguest's onFail callback isn't set up to expose here.
+
+    // POST /auth/device/code — start pairing; returns device_code/user_code/verification_uri(_complete)
+    function deviceCode(onDone, onFail) {
+      fetch(base() + '/auth/device/code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          client_name: 'Lampa',
+          scope: 'write'
+        })
+      }).then(function (r) {
+        return r.ok ? r.json() : null;
+      }).then(function (data) {
+        if (data && data.device_code && data.user_code) onDone(data);else onFail();
+      }).catch(function () {
+        onFail();
+      });
+    }
+
+    // POST /auth/device/token (grant_type=device_code) — one poll of the pairing loop.
+    // onDone always receives { ok, body }: the caller reads body.error to tell
+    // authorization_pending/slow_down (keep polling) apart from a real outcome.
+    function deviceToken(deviceCodeValue, onDone, onFail) {
+      fetch(base() + '/auth/device/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=' + encodeURIComponent(deviceCodeValue)
+      }).then(function (r) {
+        return r.json().then(function (body) {
+          return {
+            ok: r.ok,
+            body: body || {}
+          };
+        });
+      }).then(onDone).catch(function () {
+        onFail();
+      });
+    }
+
+    // POST /auth/device/token (grant_type=refresh_token) — rotates refresh_token on every call.
+    function deviceTokenRefresh(refreshToken, onDone, onFail) {
+      fetch(base() + '/auth/device/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(refreshToken)
+      }).then(function (r) {
+        return r.json().then(function (body) {
+          return {
+            ok: r.ok,
+            body: body || {}
+          };
+        });
+      }).then(onDone).catch(function () {
       });
     }
 
@@ -2588,7 +2833,11 @@
         var sep = user.avatar_url.indexOf('?') >= 0 ? '&' : '?';
         return '<img class="scrob-avatar" src="' + server + '/api/proxy' + user.avatar_url + sep + 'api_key=' + encodeURIComponent(ownKey) + '">';
       }
-      var name = user && user.username || '?';
+
+      // display_name: the only name-like field this plugin can ever resolve
+      // for a session with no real login behind it (see storage.js's
+      // getOwnProfileInfo()) - /auth/me (username) is Bearer-only.
+      var name = user && (user.username || user.display_name) || '?';
       var letter = name.charAt(0).toUpperCase();
       return '<div class="scrob-avatar scrob-avatar--letter" style="background:' + avatarColor(name) + '">' + letter + '</div>';
     }
@@ -3036,6 +3285,15 @@
     var ICON_SVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 419 454\"><defs><linearGradient id=\"scrobRingGrad\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"454\"><stop offset=\"0%\" stop-color=\"#5B34D6\"/><stop offset=\"50%\" stop-color=\"#9E3BC1\"/><stop offset=\"100%\" stop-color=\"#C147D8\"/></linearGradient><linearGradient id=\"scrobDotGrad\" gradientUnits=\"objectBoundingBox\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\"><stop offset=\"0%\" stop-color=\"#5B34D6\"/><stop offset=\"100%\" stop-color=\"#C147D8\"/></linearGradient></defs><path d=\"M 394.09 73.88 A 226.5 226.5 0 1 0 332.74 427.26 L 287.64 358.22 A 144.6 144.6 0 1 1 334.56 130.14 Z\" fill=\"url(#scrobRingGrad)\"/><circle cx=\"368.97\" cy=\"347.2\" r=\"48.29\" fill=\"url(#scrobDotGrad)\"/></svg>";
     var settingsListener = null;
 
+    // stop() of the currently-active QR pairing poll, so a repeat call to
+    // openQrAuthDialog() (without closing the previous modal) silences the old
+    // loop instead of running two in parallel.
+    var scrobQrStopActive = null;
+
+    // Refreshes early — refreshDeviceToken() rotates the refresh_token too, so a
+    // buffer avoids clock-drift/sleep making a request land right past expiry.
+    var DEVICE_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
     // ─── Header profile button ────────────────────────────────
 
     function removeHeaderButton() {
@@ -3050,19 +3308,87 @@
       btn.on('hover:enter', showProfileSelect);
       $('.head .head__actions .open--settings').after(btn);
     }
+
+    // Shared with scrob_user_info's onRender below - the "how am I signed in"
+    // fallback text when there's no real username (bare API key or QR/device
+    // token, i.e. no real login behind this session).
+    function authStatusText() {
+      if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) return Lampa.Lang.translate('scrob_auth_status_qr');
+      if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) return Lampa.Lang.translate('scrob_auth_status_apikey');
+      return '';
+    }
     function updateHeaderButton() {
+      if (!hasSession()) {
+        removeHeaderButton();
+        return;
+      }
+
+      // Fetch/refresh display_name+avatar regardless of levende - scrob_user_info
+      // in settings reads it for both levende scenarios (B and C) too, not just
+      // when this plugin's own header icon is the one showing it.
+      ensureOwnProfileInfo();
+
       // Under levende, per-viewer identity switching is the bridge's job (its
       // own head icon already exists for that) - this plugin's own switcher
       // exists solely to pick between /admin/users profiles, which never
       // applies while levende is active (see completeLogin() below).
-      if (hasSession() && !isLevendeActive()) renderHeaderButton();else removeHeaderButton();
+      if (!isLevendeActive()) renderHeaderButton();else removeHeaderButton();
+    }
+
+    // A bare API key or QR/device token (no real username/password login) never
+    // gets a real identity from this plugin's own login flow - /auth/me
+    // (username/email) is Bearer-only, so getMe() stays empty for these. GET
+    // /profile/me is the one endpoint that accepts either credential and
+    // returns SOMETHING name-like (display_name) and an avatar_url - fetch and
+    // cache it once per credential, then let activeProfile()/avatarHtml() pick
+    // it up like any other profile.
+    function ensureOwnProfileInfo() {
+      if (getMe().id) return; // real login already has a real identity
+
+      var key = ownCredentialKey();
+      if (!key) return;
+      if (getOwnProfileInfo().forKey === key) return; // already fetched this page load for this credential
+
+      getProfile(function (profile) {
+        setOwnProfileInfo(profile, key);
+        // updateHeaderButton(), not renderHeaderButton() directly - this now
+        // also runs while levende is active (for scrob_user_info's sake), and
+        // the header icon must stay hidden in that case regardless of a
+        // successful fetch. The re-entrant ensureOwnProfileInfo() call inside
+        // is a harmless no-op - the cache is already populated by now.
+        updateHeaderButton();
+        refreshSettings();
+      }, function () {
+        // Leave whatever was cached (possibly nothing) - the '?' fallback
+        // avatar still works fine without this.
+      });
     }
 
     // Profile picker (pattern: siaivo/src/core/account/profile.js select())
     function showProfileSelect() {
       var profiles = getProfiles();
+      var returnController = Lampa.Controller.enabled().name;
       if (!profiles.length) {
-        Lampa.Noty.show(Lampa.Lang.translate('scrob_profiles_empty'));
+        // No /admin/users list to show for a session with no real login
+        // behind it (bare API key, QR/device token) - trying anyway would
+        // just fail with a permissions error for a non-admin account, since
+        // there's nothing to switch between in the first place. Show the
+        // current (only) account on its own instead.
+        Lampa.Select.show({
+          title: Lampa.Lang.translate('scrob_profiles'),
+          items: [{
+            title: activeProfile().display_name || authStatusText(),
+            template: 'selectbox_icon',
+            icon: avatarHtml(activeProfile()),
+            selected: true
+          }],
+          onSelect: function onSelect() {
+            Lampa.Controller.toggle(returnController);
+          },
+          onBack: function onBack() {
+            Lampa.Controller.toggle(returnController);
+          }
+        });
         return;
       }
       var activeId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
@@ -3081,6 +3407,10 @@
         items: items,
         onSelect: function onSelect(a) {
           if (switchProfile(a.id)) renderHeaderButton();
+          Lampa.Controller.toggle(returnController);
+        },
+        onBack: function onBack() {
+          Lampa.Controller.toggle(returnController);
         }
       });
     }
@@ -3127,25 +3457,104 @@
         finish([me]);
       }
     }
-    function doLogin() {
-      var username = Lampa.Storage.field(KEYS.USERNAME) || '';
-      var password = Lampa.Storage.field(KEYS.PASSWORD) || '';
-      if (!serverUrl() || !username || !password) {
+
+    // Lampa.Input.edit's own back() hardcodes returning focus to
+    // 'settings_component' regardless of caller — every terminal branch here
+    // explicitly overrides that with Controller.toggle(returnTo).
+    function performServerLogin(username, password, returnTo) {
+      returnTo = returnTo || 'settings_component';
+      if (!serverUrl()) {
         Lampa.Noty.show(Lampa.Lang.translate('scrob_fill_fields'));
+        Lampa.Controller.toggle(returnTo);
         return;
       }
       login(username, password, function (token) {
         if (token.requires_2fa) {
           Lampa.Noty.show(Lampa.Lang.translate('scrob_2fa_not_supported'));
+          Lampa.Controller.toggle(returnTo);
           return;
         }
         me(token.access_token, function (me) {
           completeLogin(token.access_token, me, username, password);
+          Lampa.Controller.toggle(returnTo);
         }, function () {
           Lampa.Noty.show(Lampa.Lang.translate('scrob_me_error'));
+          Lampa.Controller.toggle(returnTo);
         });
       }, function () {
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_error'));
+        Lampa.Controller.toggle(returnTo);
+      });
+    }
+
+    // Two chained Input.edit dialogs (username, then password) — mirrors the
+    // standalone Scrob Lampa plugin's openAuthDialog() (scrob.js).
+    function openLoginInputFlow(returnTo) {
+      returnTo = returnTo || 'settings_component';
+      Lampa.Input.edit({
+        title: Lampa.Lang.translate('scrob_username'),
+        value: '',
+        free: true,
+        nosave: true
+      }, function (username) {
+        if (!username || !username.trim()) {
+          Lampa.Controller.toggle(returnTo);
+          return;
+        }
+        Lampa.Input.edit({
+          title: Lampa.Lang.translate('scrob_password'),
+          value: '',
+          free: true,
+          nosave: true
+        }, function (password) {
+          if (!password || !password.trim()) {
+            Lampa.Controller.toggle(returnTo);
+            return;
+          }
+          performServerLogin(username.trim(), password.trim(), returnTo);
+        });
+      });
+    }
+
+    // Manual API key — standalone auth method, no login required at all.
+    function openApiKeyInput(returnTo) {
+      returnTo = returnTo || 'settings_component';
+      Lampa.Input.edit({
+        title: Lampa.Lang.translate('scrob_api_key'),
+        value: Lampa.Storage.get(KEYS.OWN_API_KEY, ''),
+        free: true,
+        nosave: true
+      }, function (value) {
+        Lampa.Storage.set(KEYS.OWN_API_KEY, (value || '').trim());
+        updateHeaderButton();
+        refreshSettings();
+        Lampa.Controller.toggle(returnTo);
+      });
+    }
+
+    // Entry point: one settings row → three standalone sign-in methods, matching
+    // the standalone Scrob Lampa plugin's own choice menu (scrob.js
+    // openAuthChoiceDialog()) instead of three permanently-visible input fields.
+    function showAuthChoice(returnTo) {
+      returnTo = returnTo || 'settings_component';
+      Lampa.Select.show({
+        title: Lampa.Lang.translate('scrob_auth_choice_title'),
+        items: [{
+          title: Lampa.Lang.translate('scrob_api_key'),
+          action: 'apikey'
+        }, {
+          title: Lampa.Lang.translate('scrob_login'),
+          action: 'login'
+        }, {
+          title: Lampa.Lang.translate('scrob_qr_login'),
+          action: 'qr'
+        }],
+        onSelect: function onSelect(item) {
+          if (item.action === 'apikey') openApiKeyInput(returnTo);else if (item.action === 'login') openLoginInputFlow(returnTo);else if (item.action === 'qr') openQrAuthDialog(returnTo);
+        },
+        onBack: function onBack() {
+          Lampa.Controller.toggle(returnTo);
+        }
       });
     }
     function doLogout() {
@@ -3155,6 +3564,133 @@
       removeHeaderButton();
       refreshSettings();
       Lampa.Noty.show(Lampa.Lang.translate('scrob_logout_success'));
+    }
+
+    // ─── QR device pairing (third, standalone sign-in method) ──
+    // Bearer device token, never an api_key — the backend deliberately refuses
+    // /auth/me for device-scoped tokens (see KEYS.DEVICE_ACCESS_TOKEN in
+    // storage.js), so admin profile-switching stays login-only; this path is for
+    // plain scrobbling/sync without ever typing a password on the TV remote.
+
+    function openQrAuthDialog(returnTo) {
+      returnTo = returnTo || 'settings_component';
+      deviceCode(function (data) {
+        showQrAuthModal(data, returnTo);
+      }, function () {
+        Lampa.Noty.show(Lampa.Lang.translate('scrob_noty_qr_gen_failed'));
+      });
+    }
+    function showQrAuthModal(data, returnTo) {
+      // A repeat call without closing the previous modal would otherwise stack
+      // parallel polling loops.
+      if (scrobQrStopActive) {
+        scrobQrStopActive();
+        scrobQrStopActive = null;
+      }
+      var pollDelay = (data.interval || 5) * 1000;
+      var expiresAt = Date.now() + (data.expires_in || 900) * 1000;
+      var pollTimeout = null;
+      var stopped = false;
+      function stopPolling() {
+        stopped = true;
+        if (pollTimeout) {
+          clearTimeout(pollTimeout);
+          pollTimeout = null;
+        }
+        if (scrobQrStopActive === stopPolling) scrobQrStopActive = null;
+      }
+      scrobQrStopActive = stopPolling;
+      var $html = $('<div class="scrob-qr-wrap">' + '<div class="scrob-qr-code"></div>' + '<div class="scrob-qr-user-code"></div>' + '<div class="scrob-qr-hint">' + Lampa.Lang.translate('scrob_qr_hint') + '</div>' + '<div class="scrob-qr-manual"></div>' + '</div>');
+      $html.find('.scrob-qr-user-code').text(data.user_code); // .text() — без ризику інʼєкції в HTML
+      if (data.verification_uri) {
+        // verification_uri — те саме посилання, що зашите в QR (без коду), готове
+        // від сервера; не збираємо його самі з serverUrl(), щоб не розійтися з
+        // реальним server_url Scrob.
+        $html.find('.scrob-qr-manual').text(Lampa.Lang.translate('scrob_qr_manual_prefix') + data.verification_uri + Lampa.Lang.translate('scrob_qr_manual_suffix'));
+      }
+      Lampa.Utils.qrcode(data.verification_uri_complete, $html.find('.scrob-qr-code'), function () {
+        $html.find('.scrob-qr-code').text(Lampa.Lang.translate('scrob_qr_draw_failed'));
+      });
+      Lampa.Modal.open({
+        title: Lampa.Lang.translate('scrob_qr_modal_title'),
+        html: $html,
+        onBack: function onBack() {
+          stopPolling();
+          Lampa.Modal.close();
+          Lampa.Controller.toggle(returnTo);
+        }
+      });
+      function poll() {
+        if (stopped) return;
+        if (Date.now() > expiresAt) {
+          stopPolling();
+          Lampa.Modal.close();
+          Lampa.Noty.show(Lampa.Lang.translate('scrob_noty_qr_expired'));
+          return;
+        }
+        deviceToken(data.device_code, function (res) {
+          if (stopped) return;
+          if (res.ok && res.body.access_token) {
+            stopPolling();
+            Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, res.body.access_token);
+            Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, res.body.refresh_token);
+            Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000);
+            Lampa.Modal.close();
+            Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
+            renderHeaderButton();
+            refreshSettings();
+            Lampa.Controller.toggle(returnTo);
+            return;
+          }
+          var err = res.body.error;
+          if (err === 'slow_down') pollDelay += 5000; // сервер просить пул рідше
+          if (err === 'access_denied' || err === 'expired_token' || err === 'invalid_grant') {
+            stopPolling();
+            Lampa.Modal.close();
+            Lampa.Noty.show(Lampa.Lang.translate('scrob_noty_qr_denied'));
+            return;
+          }
+          // 'authorization_pending' (чи щось незнайоме) — мовчки продовжуємо пул
+          pollTimeout = setTimeout(poll, pollDelay);
+        }, function () {
+          // тимчасова мережева помилка одного пулу — цикл не зупиняємо
+          if (!stopped) pollTimeout = setTimeout(poll, pollDelay);
+        });
+      }
+      pollTimeout = setTimeout(poll, pollDelay);
+    }
+
+    // Rotates refresh_token on every call (server design) — always store the new
+    // one. Clears the pairing ONLY on an explicit server refusal (grant revoked
+    // or a replayed/stale refresh_token), never on a plain network failure, so a
+    // temporary connectivity blip can't sign the device out on its own.
+    function refreshDeviceToken(callback) {
+      var refreshToken = Lampa.Storage.get(KEYS.DEVICE_REFRESH_TOKEN, '');
+      if (!refreshToken) {
+        return;
+      }
+      deviceTokenRefresh(refreshToken, function (res) {
+        if (res.ok && res.body.access_token) {
+          Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, res.body.access_token);
+          Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, res.body.refresh_token);
+          Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000);
+        } else {
+          Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, '');
+          Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, '');
+          Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, 0);
+          updateHeaderButton();
+          refreshSettings();
+        }
+      });
+    }
+
+    // Proactive check, called periodically — see the setInterval in startPlugin().
+    function ensureDeviceTokenFresh() {
+      var token = Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '');
+      if (!token) return;
+      var expiresAt = Lampa.Storage.get(KEYS.DEVICE_EXPIRES_AT, 0);
+      if (Date.now() < expiresAt - DEVICE_TOKEN_REFRESH_BUFFER_MS) return;
+      refreshDeviceToken();
     }
 
     // ─── Settings section ─────────────────────────────────────
@@ -3798,65 +4334,25 @@
         }
       });
 
-      // Username
+      // Sign-in trigger — one row opening a choice of three standalone methods
+      // (API key / login+password / QR code), matching the standalone Scrob
+      // Lampa plugin's own menu instead of always-visible input fields.
       Lampa.SettingsApi.addParam({
         component: 'scrob',
         param: {
-          name: KEYS.USERNAME,
-          type: 'input',
-          default: '',
-          values: '',
-          placeholder: ''
-        },
-        field: {
-          name: Lampa.Lang.translate('scrob_username')
-        }
-      });
-
-      // Password
-      Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: {
-          name: KEYS.PASSWORD,
-          type: 'input',
-          default: '',
-          values: '',
-          placeholder: ''
-        },
-        field: {
-          name: Lampa.Lang.translate('scrob_password')
-        }
-      });
-
-      // Own API key (optional alternative to login for scrobbling)
-      Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: {
-          name: KEYS.OWN_API_KEY,
-          type: 'input',
-          default: '',
-          values: '',
-          placeholder: ''
-        },
-        field: {
-          name: Lampa.Lang.translate('scrob_api_key')
-        }
-      });
-
-      // Login button
-      Lampa.SettingsApi.addParam({
-        component: 'scrob',
-        param: {
-          name: 'scrob_login_btn',
+          name: 'scrob_auth_trigger_btn',
           type: 'button'
         },
         field: {
-          name: Lampa.Lang.translate('scrob_login')
+          name: Lampa.Lang.translate('scrob_auth_trigger')
         },
-        onChange: doLogin
+        onChange: function onChange() {
+          showAuthChoice('settings_component');
+        }
       });
 
-      // Current user static line
+      // Current user static line — shown once any of the three methods is
+      // signed in (see scrob_auth_trigger_btn above, hidden by then).
       Lampa.SettingsApi.addParam({
         component: 'scrob',
         param: {
@@ -3869,9 +4365,14 @@
         onRender: function onRender(item) {
           item.attr('data-name', 'scrob_user_info');
           var me = getMe();
+          var text = '';
           if (me.username) {
-            item.find('.settings-param__name').text(me.username + (me.email ? ' (' + me.email + ')' : ''));
+            text = me.username + (me.email ? ' (' + me.email + ')' : '');
+          } else {
+            var info = getOwnProfileInfo();
+            text = info.display_name || authStatusText();
           }
+          item.find('.settings-param__name').text(text);
         }
       });
 
@@ -4072,9 +4573,7 @@
         if (e.name === 'scrob') {
           var body = e.body.find('.scroll__body > div');
           if (hasSession()) {
-            body.find('[data-name="' + KEYS.USERNAME + '"]').remove();
-            body.find('[data-name="' + KEYS.PASSWORD + '"]').remove();
-            body.find('[data-name="scrob_login_btn"]').remove();
+            body.find('[data-name="scrob_auth_trigger_btn"]').remove();
             if (isLevendeManaged()) {
               // accsdb already supplies server/key directly for this
               // profile - the address is config, not user-editable,
@@ -4227,7 +4726,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Scrob logo prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - gradient colors swap to red when the bridge\n   considers that profile not authorized (misconfigured accsdb pair, or\n   never signed in), the normal purple/pink gradient otherwise. Prepended\n   rather than appended: levende already marks the current profile at the\n   END of the row via a CSS-only "selected" class, no title text involved.\n   No intrinsic width/height on the SVG itself (only viewBox) - without\n   this it falls back to the browser\'s replaced-element default (300x150),\n   dwarfing the row text. */\n.scrob-levende-status-icon {\n  display: inline-block;\n  width: 1em;\n  height: 1.08em;\n  vertical-align: -0.15em;\n  margin-right: 0.35em;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Scrob logo prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - gradient colors swap to red when the bridge\n   considers that profile not authorized (misconfigured accsdb pair, or\n   never signed in), the normal purple/pink gradient otherwise. Prepended\n   rather than appended: levende already marks the current profile at the\n   END of the row via a CSS-only "selected" class, no title text involved.\n   No intrinsic width/height on the SVG itself (only viewBox) - without\n   this it falls back to the browser\'s replaced-element default (300x150),\n   dwarfing the row text. */\n.scrob-levende-status-icon {\n  display: inline-block;\n  width: 1em;\n  height: 1.08em;\n  vertical-align: -0.15em;\n  margin-right: 0.35em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page template for sync settings
@@ -4250,15 +4749,21 @@
         restoreSession();
         refreshCustomMenu();
         initSocket();
+        ensureDeviceTokenFresh();
       } else {
         Lampa.Listener.follow('app', function (e) {
           if (e.type === 'ready') {
             restoreSession();
             refreshCustomMenu();
             initSocket();
+            ensureDeviceTokenFresh();
           }
         });
       }
+
+      // Keep the QR-paired device token from expiring under a long-running app —
+      // checked well before actual expiry (see DEVICE_TOKEN_REFRESH_BUFFER_MS).
+      setInterval(ensureDeviceTokenFresh, 2 * 60 * 1000);
 
       // Clean up socket on app destroy
       Lampa.Listener.follow('app', function (e) {

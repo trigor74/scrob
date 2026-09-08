@@ -12,7 +12,13 @@ export var KEYS = {
     ACTIVE_PROFILE_ID: 'scrob_active_profile_id',
     ACTIVE_API_KEY: 'scrob_active_api_key',
     SYNC_ENABLED: 'scrob_sync_enabled',
-    SYNC_INTERVAL: 'scrob_sync_interval'
+    SYNC_INTERVAL: 'scrob_sync_interval',
+    // QR-пейринг (OAuth 2.0 Device Authorization Grant, /auth/device/*) — Bearer,
+    // не api_key: за дизайном сервера device-скоупований токен не має доступу
+    // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
+    DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
+    DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
+    DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
 }
 
 // Keys isolated per profile: backed up on switch, restored for the target.
@@ -64,7 +70,38 @@ export function getProfiles() {
     return Array.isArray(val) ? val : []
 }
 
-// Active profile object from cached list, falls back to logged-in user.
+// Identity this session's credential currently is (api key takes priority,
+// matching authHeaders()' own precedence in api.js) - the key
+// setOwnProfileInfo()/getOwnProfileInfo() cache GET /profile/me's result
+// under, so a different key/token (a new manual entry, a fresh QR pairing)
+// doesn't keep showing the previous credential's name/avatar.
+export function ownCredentialKey() {
+    return Lampa.Storage.get(KEYS.OWN_API_KEY) || Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) || ''
+}
+
+// In-memory only, deliberately not persisted to Lampa.Storage - this plugin
+// re-evaluates from scratch on every page load, so an in-memory cache
+// already means "fetch at most once per page load, always fresh again on
+// reload" for free, with none of a persisted TTL's staleness window (an
+// edit to display_name/avatar made on the server, then a reload here,
+// wants to show up right away - not "eventually, once some interval
+// elapses").
+var ownProfileInfo = null
+
+export function setOwnProfileInfo(profile, forKey) {
+    ownProfileInfo = Object.assign({}, profile, { forKey: forKey })
+}
+
+// Cached GET /profile/me result for the CURRENT credential this page load,
+// or {} if not fetched yet (or the credential changed since the fetch).
+export function getOwnProfileInfo() {
+    if (!ownProfileInfo || ownProfileInfo.forKey !== ownCredentialKey()) return {}
+    return ownProfileInfo
+}
+
+// Active profile object from cached list, falls back to logged-in user, then
+// to whatever public-profile info (display_name/avatar_url) could be
+// resolved for a session with no real login behind it (see getOwnProfileInfo()).
 export function activeProfile() {
     var id = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
     var list = getProfiles()
@@ -73,11 +110,22 @@ export function activeProfile() {
         if (list[i].id == id) return list[i]
     }
 
-    return getMe()
+    var me = getMe()
+    if (me.id) return me
+
+    return getOwnProfileInfo()
 }
 
+// Three independent, standalone ways to be "signed in" — any one is enough:
+// a manually-entered API key, a QR-paired device token, or a real username/
+// password login (the only one that also unlocks admin profile-switching,
+// since it's the only path that ever calls /auth/me).
 export function hasSession() {
-    return !!(Lampa.Storage.get(KEYS.ACCESS_TOKEN) && getMe().id)
+    return !!(
+        Lampa.Storage.get(KEYS.OWN_API_KEY) ||
+        Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN) ||
+        (Lampa.Storage.get(KEYS.ACCESS_TOKEN) && getMe().id)
+    )
 }
 
 // Clear session keys on logout. Credentials (server/username/password) are kept for re-login.
@@ -88,7 +136,10 @@ export function clearSession() {
         KEYS.ME,
         KEYS.PROFILES,
         KEYS.ACTIVE_PROFILE_ID,
-        KEYS.ACTIVE_API_KEY
+        KEYS.ACTIVE_API_KEY,
+        KEYS.DEVICE_ACCESS_TOKEN,
+        KEYS.DEVICE_REFRESH_TOKEN,
+        KEYS.DEVICE_EXPIRES_AT
     ].forEach(function (key) {
         Lampa.Storage.set(key, '')
     })
