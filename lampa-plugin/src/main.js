@@ -1407,6 +1407,7 @@ function initSettings() {
             } else {
                 body.find('[data-name="scrob_user_info"]').remove()
                 body.find('[data-name="scrob_logout_btn"]').remove()
+                body.find('[data-name="' + KEYS.SYNC_ENABLED + '"]').remove()
                 body.find('[data-name="scrob_open_sync"]').remove()
             }
         }
