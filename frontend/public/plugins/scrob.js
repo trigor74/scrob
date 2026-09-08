@@ -3209,7 +3209,10 @@
     function onPlayerStart(data) {
       if (!running) return;
       var card = data && data.card || Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie);
-      if (!card) return;
+      if (!card) {
+        console.warn('ScrobTimeline', 'player start: no card found, skipping', data);
+        return;
+      }
       var se = extractSeasonEpisode(data);
       var timeline = data && data.timeline;
       var hash = timeline && timeline.hash;
@@ -3230,6 +3233,15 @@
       session.lastPercent = timeline && timeline.percent || 0;
       session.expectedStartPercent = timeline && timeline.percent || 0;
       session.lastUpdateTime = Date.now();
+      console.log('ScrobTimeline', 'player start', {
+        id: card.id,
+        isSeries: isSeries,
+        season: session.season,
+        episode: session.episode,
+        title: card.title || card.name,
+        hash: session.expectedHash,
+        gen: session.gen
+      });
       startScrobSession();
     }
     function onTimelineUpdate(e) {
@@ -3280,11 +3292,15 @@
         resetSessionState();
         return;
       }
+      console.log('ScrobTimeline', 'player destroy, final percent: ' + session.lastPercent + '%');
       if (session.lastPercent >= WATCHED_THRESHOLD_PERCENT) {
         completeScrobSession();
         resetSessionState();
       } else if (session.lastPercent < 1.5) {
-        deleteSession(session.key, function () {}, function () {});
+        console.log('ScrobTimeline', 'exited early (<1.5%), deleting session', session.key);
+        deleteSession(session.key, function () {}, function (err) {
+          console.warn('ScrobTimeline', 'failed to delete session', err);
+        });
         resetSessionState();
       } else {
         sendSessionHeartbeat(session.lastTimeSeconds, 'paused', function () {
@@ -3379,22 +3395,30 @@
         payload.season_number = session.season;
         payload.episode_number = session.episode;
       }
+      console.log('ScrobTimeline', 'sending session start', payload);
       startSession(payload, function (res) {
         if (session.gen !== startGen) {
           // A newer video already started while this was in flight — this
           // response belongs to nobody now, just clean up its orphan.
+          console.log('ScrobTimeline', 'stale session/start response (gen mismatch), discarding', res);
           if (res && res.session_key) deleteSession(res.session_key, function () {}, function () {});
           return;
         }
-        if (!res || !res.session_key) return;
+        if (!res || !res.session_key) {
+          console.warn('ScrobTimeline', 'session/start response had no session_key', res);
+          return;
+        }
         if (session.destroyedBeforeStart) {
+          console.log('ScrobTimeline', 'player destroyed before session_key arrived, discarding', res.session_key);
           deleteSession(res.session_key, function () {}, function () {});
           resetSessionState();
           return;
         }
         session.key = res.session_key;
         session.started = true;
-      }, function () {
+        console.log('ScrobTimeline', 'session started, key: ' + session.key);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'session/start request failed', err);
         if (session.gen === startGen) resetSessionState();
       });
     }
@@ -3411,12 +3435,17 @@
       fireCompleteRequest(key);
     }
     function fireCompleteRequest(key) {
+      console.log('ScrobTimeline', 'completing session', key);
       completeSession(key, function () {
-        // ok
+        console.log('ScrobTimeline', 'session completed successfully', key);
       }, function (err, status) {
         // The server's own background auto-completer (90%+, independent of
         // this client) may have already completed & removed the session.
-        if (status === 404) return;
+        if (status === 404) {
+          console.log('ScrobTimeline', 'session already completed server-side (404)', key);
+          return;
+        }
+        console.warn('ScrobTimeline', 'failed to complete session, queued for retry', err);
         enqueueRetry({
           type: 'custom',
           run: function run(done, fail) {
@@ -3479,7 +3508,9 @@
           sendSessionHeartbeat(pending.timeSeconds, pending.state, pending.callback);
         }
       }
+      console.log('ScrobTimeline', 'sending heartbeat', key, payload);
       updateSession(key, payload, function () {
+        console.log('ScrobTimeline', 'heartbeat sent successfully');
         if (callback) callback();
         afterSettled();
       }, function (err, status) {
@@ -3487,11 +3518,13 @@
           // Already gone server-side (likely the same background auto-
           // completer) — mark completed locally so further pause/playing/
           // seeked don't keep hitting the same 404 through end credits.
+          console.log('ScrobTimeline', 'session already gone server-side (404), marking completed locally');
           if (session.key === key) session.completed = true;
           if (callback) callback();
           afterSettled();
           return;
         }
+        console.warn('ScrobTimeline', 'failed to send heartbeat, queued for retry', err);
         enqueueRetry({
           type: 'custom',
           run: function run(done, fail) {
@@ -3513,8 +3546,14 @@
 
     function start() {
       if (running) return;
-      if (!hasSession()) return;
-      if (!Lampa.Storage.get(KEYS.SYNC_ENABLED)) return;
+      if (!hasSession()) {
+        console.warn('ScrobTimeline', 'start skipped: no session');
+        return;
+      }
+      if (!Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+        console.warn('ScrobTimeline', 'start skipped: sync disabled');
+        return;
+      }
       running = true;
       if (!listenersBound) {
         Lampa.Player.listener.follow('start', onPlayerStart);
@@ -3527,9 +3566,11 @@
         document.addEventListener('durationchange', onNativeVideoDurationChange, true);
         listenersBound = true;
       }
+      console.log('ScrobTimeline', 'started');
     }
     function stop() {
       running = false;
+      console.log('ScrobTimeline', 'stopped');
       // Listeners stay bound intentionally: Lampa.Player/Timeline's global
       // listener buses have no targeted unfollow-by-reference API worth
       // relying on here, and every handler above already checks `running`
