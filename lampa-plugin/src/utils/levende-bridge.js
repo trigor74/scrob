@@ -206,6 +206,23 @@ function doApplyUnsafe(profile) {
     if (previousId !== null) backupProfile(previousId)
 
     if (profile.hasScrobParams) {
+        // accsdb-managed profile - never a real login (the api key is never
+        // round-tripped through /auth/me, and there's no OAuth device
+        // pairing either), so any leftover "real identity" fields from
+        // whatever this device was doing BEFORE this switch - a real
+        // username/password login on a previous scenario-C profile, a QR/
+        // device pairing, or even an admin login predating levende
+        // altogether - must be cleared here. Otherwise getMe()/
+        // activeProfile() keep showing that stale identity's name/avatar
+        // (scrob_user_info in settings, in particular) even though every
+        // actual request already correctly uses THIS profile's own api key
+        // - confirmed live: api key correct, displayed identity wrong.
+        Lampa.Storage.set(KEYS.ME, '')
+        Lampa.Storage.set(KEYS.ACCESS_TOKEN, '')
+        Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, '')
+        Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, '')
+        Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, '')
+
         if (profile.server) Lampa.Storage.set(KEYS.SERVER_URL, profile.server)
         Lampa.Storage.set(KEYS.OWN_API_KEY, profile.apiKey || '')
         Lampa.Storage.set(KEYS.ACTIVE_API_KEY, profile.apiKey || '')
