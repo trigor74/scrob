@@ -390,7 +390,7 @@ function showQrAuthModal(data, returnTo) {
                 Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000)
                 Lampa.Modal.close()
                 Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
-                renderHeaderButton()
+                updateHeaderButton()
                 refreshSettings()
                 Lampa.Controller.toggle(returnTo)
                 return
