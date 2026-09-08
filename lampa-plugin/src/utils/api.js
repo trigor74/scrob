@@ -327,6 +327,95 @@ export function removeHistoryEvent(eventId, onDone, onFail) {
     )
 }
 
+// ─── Manual scrobble session API (playback progress tracking) ────
+// Session key is derived server-side from title identity (tmdb_id for a
+// movie, show_tmdb_id+season+episode for an episode) — repeated starts for
+// the same title upsert the same session instead of resetting progress.
+
+// POST /history/session/start — start (or resume) a playback session
+export function startSession(payload, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/session/start',
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && json.session_key) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        JSON.stringify(payload),
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+    )
+}
+
+// PATCH /history/session/{sessionKey} — heartbeat: progress/state, optional runtime correction
+export function updateSession(sessionKey, payload, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/session/' + sessionKey,
+        function (data) {
+            network.clear()
+            onDone(parse(data))
+        },
+        function (a, c) {
+            network.clear()
+            var status = a && a.status
+            onFail(network.errorDecode(a, c), status)
+        },
+        JSON.stringify(payload),
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()), type: 'PATCH' }
+    )
+}
+
+// POST /history/session/{sessionKey}/complete — mark the session watched
+export function completeSession(sessionKey, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/session/' + sessionKey + '/complete',
+        function (data) {
+            network.clear()
+            onDone(parse(data))
+        },
+        function (a, c) {
+            network.clear()
+            var status = a && a.status
+            onFail(network.errorDecode(a, c), status)
+        },
+        '{}',
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+    )
+}
+
+// DELETE /history/session/{sessionKey} — discard a session (exited before any real progress)
+export function deleteSession(sessionKey, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/session/' + sessionKey,
+        function () {
+            network.clear()
+            onDone()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: apiKeyHeaders(), type: 'DELETE' }
+    )
+}
+
 // GET /history — fetch watch history with optional pagination and type filter
 export function getHistory(page, pageSize, mediaType, onDone, onFail) {
     var network = new Lampa.Reguest()
