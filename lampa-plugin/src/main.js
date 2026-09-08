@@ -1231,27 +1231,20 @@ function initSettings() {
         onChange: doLogout
     })
 
-    // ── Sync nested page button (after logout block) ─────
+    // General sync master switch — controls EVERY kind of sync with the Scrob
+    // server (lists, watch progress, and whatever gets added later), not just
+    // the list-sync nested page below. Deliberately on the top-level 'scrob'
+    // page, before the "List synchronization" button — placing it inside
+    // that nested page (as before) misleadingly implied it only gated list
+    // sync, when list-sync engine.js and the timeline progress-push module
+    // both already gate their own start()/stop() on this exact same flag.
     Lampa.SettingsApi.addParam({
         component: 'scrob',
-        param: { name: 'scrob_open_sync', type: 'button' },
-        field: { name: Lampa.Lang.translate('scrob_sync_title') },
-        onChange: function () {
-            Lampa.Settings.create('scrob_sync_page', {
-                onBack: function () { Lampa.Settings.create('scrob') }
-            })
-        }
-    })
-
-    // ══════════════════════════════════════════════════════
-    //  NESTED PAGE: Sync settings
-    // ══════════════════════════════════════════════════════
-
-    // Toggle sync on/off
-    Lampa.SettingsApi.addParam({
-        component: 'scrob_sync_page',
         param: { name: KEYS.SYNC_ENABLED, type: 'trigger', default: false },
-        field: { name: Lampa.Lang.translate('scrob_sync_enabled') },
+        field: {
+            name: Lampa.Lang.translate('scrob_sync_enabled'),
+            description: Lampa.Lang.translate('scrob_sync_enabled_descr')
+        },
         onChange: function (value) {
             Lampa.Storage.set(KEYS.SYNC_ENABLED, value)
 
@@ -1280,6 +1273,22 @@ function initSettings() {
             }
         }
     })
+
+    // ── Sync nested page button (after logout block) ─────
+    Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: { name: 'scrob_open_sync', type: 'button' },
+        field: { name: Lampa.Lang.translate('scrob_sync_title') },
+        onChange: function () {
+            Lampa.Settings.create('scrob_sync_page', {
+                onBack: function () { Lampa.Settings.create('scrob') }
+            })
+        }
+    })
+
+    // ══════════════════════════════════════════════════════
+    //  NESTED PAGE: List sync settings
+    // ══════════════════════════════════════════════════════
 
     // Poll interval select
     Lampa.SettingsApi.addParam({
