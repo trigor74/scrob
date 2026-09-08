@@ -2896,6 +2896,10 @@
     var BACKUP_STORE_KEY = 'scrob_levende_backup';
     var ACTIVE_FLAG_KEY = 'scrob_levende_active';
     var MANAGED_FLAG_KEY = 'scrob_levende_managed';
+    // Separate from CURRENT_PROFILE_KEY itself - see doApplyUnsafe()'s
+    // everApplied check below for why comparing raw profileId values alone
+    // isn't safe here.
+    var HAS_APPLIED_KEY = 'scrob_levende_has_applied';
     var APPLY_FALLBACK_DELAY_MS = 2000;
 
     // "Regular account" fields backed up/restored per levende profile in
@@ -3026,13 +3030,30 @@
       }
     }
     function doApplyUnsafe(profile) {
+      // !! (not a raw truthy/null check) because Lampa.Storage.get() does NOT
+      // reliably return the literal `null` passed as its own default when a
+      // key was never set - confirmed live, it comes back as '' instead - so
+      // a boolean flag stored separately from CURRENT_PROFILE_KEY is the only
+      // safe way to know whether ANY profile has ever been applied yet.
+      var everApplied = !!Lampa.Storage.get(HAS_APPLIED_KEY, false);
       var previousId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
-      if (previousId === profile.profileId) {
+      if (everApplied && previousId === profile.profileId) {
         // Same profile re-confirmed (levende sends 'changed' on every app
         // start too, not just on a real switch) - nothing actually changed,
         // so touch nothing. Blindly backing up+restoring here would roll a
         // live-refreshed value (e.g. a rotated device refresh_token) back to
         // whatever the last real switch away had snapshotted.
+        //
+        // everApplied guards this comparison because levende's own
+        // default/root profile commonly has a genuinely EMPTY STRING id
+        // (unlike explicitly-added sub-profiles, which get real ids like
+        // "1", "2", ...) - without this guard, that real '' would collide
+        // with the SAME '' the "never set" default above resolves to,
+        // making the very FIRST apply for that profile silently skip
+        // itself as "already applied, nothing to do": the api key was
+        // staged but never actually written to storage. Confirmed live
+        // via console tracing on a cleared localStorage: both previousId
+        // and profile.profileId logged as ''.
         return;
       }
       stop();
@@ -3040,7 +3061,7 @@
       // Back up whatever is CURRENTLY live under the outgoing profile, whether
       // it came from situation B or C (harmless no-op to preserve for a B
       // profile, since it's never read back - see backupProfile() above).
-      if (previousId !== null) backupProfile(previousId);
+      if (everApplied) backupProfile(previousId);
       if (profile.hasScrobParams) {
         // accsdb-managed profile - never a real login (the api key is never
         // round-tripped through /auth/me, and there's no OAuth device
@@ -3071,6 +3092,7 @@
         restoreProfile(profile.profileId);
       }
       Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId);
+      Lampa.Storage.set(HAS_APPLIED_KEY, true);
       if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start();
       if (onApplyCallback) onApplyCallback();
     }
