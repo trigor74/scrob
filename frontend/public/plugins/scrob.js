@@ -112,12 +112,6 @@
           en: 'Enable synchronization',
           be: 'Уключыць сінхранізацыю'
         },
-        scrob_sync_enabled_descr: {
-          uk: 'Керує усіма видами синхронізації з сервером Scrob — списками, прогресом перегляду та іншим',
-          ru: 'Управляет всеми видами синхронизации с сервером Scrob — списками, прогрессом просмотра и прочим',
-          en: 'Controls every kind of sync with the Scrob server — lists, watch progress, and more',
-          be: 'Кіруе ўсімі відамі сінхранізацыі з серверам Scrob — спісамі, прагрэсам прагляду і іншым'
-        },
         scrob_sync_interval: {
           uk: 'Інтервал опитування',
           ru: 'Интервал опроса',
@@ -4205,8 +4199,7 @@
           default: false
         },
         field: {
-          name: Lampa.Lang.translate('scrob_sync_enabled'),
-          description: Lampa.Lang.translate('scrob_sync_enabled_descr')
+          name: Lampa.Lang.translate('scrob_sync_enabled')
         },
         onChange: function onChange(value) {
           Lampa.Storage.set(KEYS.SYNC_ENABLED, value);
