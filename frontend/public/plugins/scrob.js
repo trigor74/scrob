@@ -3037,12 +3037,24 @@
       // safe way to know whether ANY profile has ever been applied yet.
       var everApplied = !!Lampa.Storage.get(HAS_APPLIED_KEY, false);
       var previousId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
-      if (everApplied && previousId === profile.profileId) {
-        // Same profile re-confirmed (levende sends 'changed' on every app
-        // start too, not just on a real switch) - nothing actually changed,
-        // so touch nothing. Blindly backing up+restoring here would roll a
-        // live-refreshed value (e.g. a rotated device refresh_token) back to
-        // whatever the last real switch away had snapshotted.
+
+      // Only situation (C) short-circuits on "same profile, nothing to do" -
+      // its restoreProfile() would otherwise roll a live-refreshed value
+      // (e.g. a rotated device refresh_token) back to whatever the last real
+      // switch away had snapshotted, for no reason if nothing actually
+      // changed. Situation (B) has no such risk - it always writes directly
+      // from THIS event's own params, never from a backup - and accsdb can
+      // be edited live (server/key added, rotated, or removed) without the
+      // levende profile's own id ever changing, so it must always re-apply
+      // fresh on every 'changed' event regardless of previousId, exactly as
+      // the module comment at the top already documents. Skipping it here
+      // too used to mean an accsdb edit for the CURRENTLY active profile
+      // never took effect until some unrelated profile switch happened to
+      // touch it again.
+      if (!profile.hasScrobParams && everApplied && previousId === profile.profileId) {
+        // Same (C) profile re-confirmed (levende sends 'changed' on every
+        // app start too, not just on a real switch) - nothing actually
+        // changed, so touch nothing.
         //
         // everApplied guards this comparison because levende's own
         // default/root profile commonly has a genuinely EMPTY STRING id
