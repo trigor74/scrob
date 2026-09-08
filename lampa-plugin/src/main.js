@@ -1241,10 +1241,7 @@ function initSettings() {
     Lampa.SettingsApi.addParam({
         component: 'scrob',
         param: { name: KEYS.SYNC_ENABLED, type: 'trigger', default: false },
-        field: {
-            name: Lampa.Lang.translate('scrob_sync_enabled'),
-            description: Lampa.Lang.translate('scrob_sync_enabled_descr')
-        },
+        field: { name: Lampa.Lang.translate('scrob_sync_enabled') },
         onChange: function (value) {
             Lampa.Storage.set(KEYS.SYNC_ENABLED, value)
 
