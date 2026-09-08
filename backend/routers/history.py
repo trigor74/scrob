@@ -2869,25 +2869,79 @@ async def unwatch_show(
 @router.post("/rewatch")
 async def start_rewatch(
     series_tmdb_id: int = Query(...),
+    season_number: int | None = Query(None),
+    episode_number: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
-    """Start (or restart) a rewatch cycle for a show. Watch history is never
-    touched - this just makes the show/season/episode pages and Next Up
-    read watched status from a fresh, empty progress cycle instead of full
-    history until it's completed or cancelled. Calling this again while a
-    cycle is already active resets it, discarding that cycle's progress."""
+    """Start (or restart/update) a rewatch cycle for a show, season, or episode.
+    Watch history is never touched - this makes show/season/episode pages
+    read watched status from a fresh cycle.
+    If season_number or episode_number is provided, only that scope is marked
+    as unwatched in the rewatch cycle; other already-watched episodes are
+    automatically carried over into the cycle."""
     show_q = await db.execute(select(Show).where(Show.tmdb_id == series_tmdb_id))
     show = show_q.scalar_one_or_none()
     if not show:
         raise HTTPException(status_code=404, detail="Show not found")
 
     existing = await get_active_rewatch(db, current_user.id, show.id)
+
+    # Якщо цикл вже активний і ми додаємо ще одну серію або сезон на перегляд:
+    if existing and (season_number is not None or episode_number is not None):
+        rewatch = existing
+        target_q = select(Media.id).where(Media.show_id == show.id)
+        if season_number is not None:
+            target_q = target_q.where(Media.season_number == season_number)
+        if episode_number is not None:
+            target_q = target_q.where(Media.episode_number == episode_number)
+        target_ids = (await db.execute(target_q)).scalars().all()
+        if target_ids:
+            await db.execute(
+                delete(RewatchProgress).where(
+                    RewatchProgress.rewatch_id == rewatch.id,
+                    RewatchProgress.media_id.in_(target_ids),
+                )
+            )
+        await db.commit()
+        return {"status": "ok", "started_at": rewatch.started_at.isoformat(), "updated": True}
+
     if existing:
         await db.execute(delete(ShowRewatch).where(ShowRewatch.id == existing.id))
 
     rewatch = ShowRewatch(user_id=current_user.id, show_id=show.id)
     db.add(rewatch)
+    await db.flush()
+
+    # Якщо зазначено конкретний сезон або епізод — переносимо всі інші переглянуті серії в новий цикл
+    if season_number is not None or episode_number is not None:
+        watched_q = await db.execute(
+            select(WatchEvent.media_id, WatchEvent.id)
+            .join(Media, Media.id == WatchEvent.media_id)
+            .where(
+                WatchEvent.user_id == current_user.id,
+                Media.show_id == show.id,
+            )
+            .order_by(WatchEvent.watched_at.desc())
+        )
+        seen_media: set[int] = set()
+        to_carry: list[tuple[int, int]] = []
+        for m_id, ev_id in watched_q.all():
+            if m_id not in seen_media:
+                seen_media.add(m_id)
+                to_carry.append((m_id, ev_id))
+
+        exclude_q = select(Media.id).where(Media.show_id == show.id)
+        if season_number is not None:
+            exclude_q = exclude_q.where(Media.season_number == season_number)
+        if episode_number is not None:
+            exclude_q = exclude_q.where(Media.episode_number == episode_number)
+        exclude_ids = set((await db.execute(exclude_q)).scalars().all())
+
+        for m_id, ev_id in to_carry:
+            if m_id not in exclude_ids:
+                db.add(RewatchProgress(rewatch_id=rewatch.id, media_id=m_id, watch_event_id=ev_id))
+
     await db.commit()
     await db.refresh(rewatch)
     return {"status": "ok", "started_at": rewatch.started_at.isoformat()}
