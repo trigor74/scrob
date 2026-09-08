@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-05
+ * Build: 2026-09-08
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -358,8 +358,20 @@
       online_watched_last: '{}',
       online_last_balanser: '{}',
       file_view: '{}',
-      torrents_view: '{}',
-      torrents_filter_data: '[]'
+      // torrents_view/torrents_filter_data had their array/object shapes swapped -
+      // confirmed against Lampa core (_refs/lampa/app.min.js), both by direct usage
+      // and by its own account-sync type registry (sync(field, 'array_string'|'object_object')):
+      //   - torrents_view is a flat array of viewed-torrent hashes: Storage.cache('torrents_view',
+      //     5000, []), later viewed.indexOf(hash). A restored '{}' default (a profile with no
+      //     backup yet) makes the very next call throw "viewed.indexOf is not a function" -
+      //     same failure mode as the online_view fix above.
+      //   - torrents_filter_data is an object keyed by cardID: Storage.cache('torrents_filter_data',
+      //     500, {}), then all[cid] = filter. A restored '[]' default doesn't throw (arrays are
+      //     objects too), but JSON.stringify() of an array only serializes numeric-index elements,
+      //     so the non-index cid property is silently dropped - the per-card filter looks saved,
+      //     then vanishes on the next reload.
+      torrents_view: '[]',
+      torrents_filter_data: '{}'
     };
 
     // Backup storage key for one isolated key of one profile.
