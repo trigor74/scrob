@@ -1054,6 +1054,15 @@ function initSettings() {
                 body.find('[data-name="' + KEYS.USERNAME + '"]').remove()
                 body.find('[data-name="' + KEYS.PASSWORD + '"]').remove()
                 body.find('[data-name="scrob_login_btn"]').remove()
+
+                if (levende.isLevendeManaged()) {
+                    // accsdb already supplies server/key directly for this
+                    // profile - the address is config, not user-editable,
+                    // and there's no separate log-out action (the bridge
+                    // owns the switch, not this plugin's own login flow).
+                    body.find('[data-name="' + KEYS.SERVER_URL + '"]').remove()
+                    body.find('[data-name="scrob_logout_btn"]').remove()
+                }
             } else {
                 body.find('[data-name="scrob_user_info"]').remove()
                 body.find('[data-name="scrob_logout_btn"]').remove()

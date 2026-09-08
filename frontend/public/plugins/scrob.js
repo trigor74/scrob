@@ -2671,7 +2671,7 @@
     // on every reload and let the icon/"Sign in" row flash briefly (or, on a
     // slow connection, stay wrong) until that event finally showed up.
     var levendeActive = !!Lampa.Storage.get(ACTIVE_FLAG_KEY, false);
-    !!Lampa.Storage.get(MANAGED_FLAG_KEY, false);
+    var levendeManaged = !!Lampa.Storage.get(MANAGED_FLAG_KEY, false);
 
     // True only once a REAL 'profile'/'changed' event has actually arrived THIS
     // page load (set in stageProfile() below) - distinct from levendeActive
@@ -2701,6 +2701,7 @@
     }
     function resetLevendeState() {
       levendeActive = false;
+      levendeManaged = false;
       Lampa.Storage.set(ACTIVE_FLAG_KEY, false);
       Lampa.Storage.set(MANAGED_FLAG_KEY, false);
       if (onApplyCallback) onApplyCallback();
@@ -2716,6 +2717,9 @@
     }
     function isLevendeActive() {
       return levendeActive;
+    }
+    function isLevendeManaged() {
+      return levendeManaged;
     }
     function getBackupStore() {
       var raw = Lampa.Storage.get(BACKUP_STORE_KEY, {});
@@ -2832,6 +2836,7 @@
       var server = params.scrob_server_url || '';
       var apiKey = params.scrob_api_key || '';
       var hasScrobParams = !!(server || apiKey);
+      levendeManaged = hasScrobParams;
       Lampa.Storage.set(MANAGED_FLAG_KEY, hasScrobParams);
       var profile = {
         profileId: e.profileId,
@@ -4070,6 +4075,14 @@
             body.find('[data-name="' + KEYS.USERNAME + '"]').remove();
             body.find('[data-name="' + KEYS.PASSWORD + '"]').remove();
             body.find('[data-name="scrob_login_btn"]').remove();
+            if (isLevendeManaged()) {
+              // accsdb already supplies server/key directly for this
+              // profile - the address is config, not user-editable,
+              // and there's no separate log-out action (the bridge
+              // owns the switch, not this plugin's own login flow).
+              body.find('[data-name="' + KEYS.SERVER_URL + '"]').remove();
+              body.find('[data-name="scrob_logout_btn"]').remove();
+            }
           } else {
             body.find('[data-name="scrob_user_info"]').remove();
             body.find('[data-name="scrob_logout_btn"]').remove();
