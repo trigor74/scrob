@@ -70,18 +70,28 @@ export function softRefresh() {
 export function restoreIsolatedData(targetId) {
     var currentId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
 
+    // Backup: one combined object under backupKey(currentId), not one flat
+    // key per ISOLATED_KEY.
     if (currentId && currentId != targetId) {
+        var outgoing = {}
+
         ISOLATED_KEYS.forEach(function (key) {
             var value = Lampa.Storage.get(key, 'none')
 
-            if (value != 'none') Lampa.Storage.set(backupKey(currentId, key), value)
+            if (value != 'none') outgoing[key] = value
         })
+
+        Lampa.Storage.set(backupKey(currentId), outgoing)
     }
 
-    ISOLATED_KEYS.forEach(function (key) {
-        var saved = Lampa.Storage.get(backupKey(targetId, key), 'none')
+    // Restore: a malformed/corrupted backup for this one profile falls
+    // through to defaults for every key instead of taking anything else
+    // down with it.
+    var saved = Lampa.Storage.get(backupKey(targetId), 'none')
+    if (saved === 'none' || typeof saved !== 'object' || saved === null) saved = {}
 
-        Lampa.Storage.set(key, saved != 'none' ? saved : defaultValue(key))
+    ISOLATED_KEYS.forEach(function (key) {
+        Lampa.Storage.set(key, key in saved ? saved[key] : defaultValue(key))
     })
 }
 

@@ -476,9 +476,36 @@
       torrents_filter_data: '{}'
     };
 
-    // Backup storage key for one isolated key of one profile.
-    function backupKey(userId, key) {
-      return 'scrob_backup_' + userId + '_' + key;
+    // Backup storage key for ONE profile - a single JSON object holding all of
+    // that profile's ISOLATED_KEYS at once, not one flat localStorage key per
+    // (userId, key) pair. Two reasons: a corrupted/malformed backup then only
+    // ever affects that one profile (restoreIsolatedData() in profiles.js falls
+    // back to defaults for it, not for everyone), and removing a stale profile's whole
+    // backup (pruneStaleBackups() below) becomes a single key deletion instead
+    // of one per ISOLATED_KEY.
+    function backupKey(userId) {
+      return 'scrob_backup_' + userId;
+    }
+
+    // Drop scrob_backup_<userId> entries for any userId no longer present in a
+    // freshly-fetched, AUTHORITATIVE full user list. Caller's responsibility:
+    // only call this with a real /admin/users result (main.js's completeLogin,
+    // the api.adminUsers() success branch) - NEVER with the single-item
+    // fallback list used both for a non-admin login and for an adminUsers()
+    // failure, which would wrongly wipe out every OTHER profile's backup on a
+    // shared device just because this session can't see the real list.
+    function pruneStaleBackups(profiles) {
+      var keep = {};
+      profiles.forEach(function (p) {
+        keep[p.id] = true;
+      });
+      var prefix = 'scrob_backup_';
+      for (var i = window.localStorage.length - 1; i >= 0; i--) {
+        var key = window.localStorage.key(i);
+        if (key && key.indexOf(prefix) === 0 && !keep[key.slice(prefix.length)]) {
+          window.localStorage.removeItem(key);
+        }
+      }
     }
 
     // Default value for an isolated key.
@@ -2835,8 +2862,6 @@
       return null;
     }
 
-    // Profile management: letter avatars and profile switching with per-profile data isolation.
-
     // Fixed palette for deterministic letter avatar colors.
     var COLORS = ['#e91e63', '#9c27b0', '#673ab7', '#3f51b5', '#2196f3', '#009688', '#4caf50', '#ff9800'];
 
@@ -2890,15 +2915,25 @@
     // ended up with near-identical synced list contents after separate logins.
     function restoreIsolatedData(targetId) {
       var currentId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
+
+      // Backup: one combined object under backupKey(currentId), not one flat
+      // key per ISOLATED_KEY.
       if (currentId && currentId != targetId) {
+        var outgoing = {};
         ISOLATED_KEYS.forEach(function (key) {
           var value = Lampa.Storage.get(key, 'none');
-          if (value != 'none') Lampa.Storage.set(backupKey(currentId, key), value);
+          if (value != 'none') outgoing[key] = value;
         });
+        Lampa.Storage.set(backupKey(currentId), outgoing);
       }
+
+      // Restore: a malformed/corrupted backup for this one profile falls
+      // through to defaults for every key instead of taking anything else
+      // down with it.
+      var saved = Lampa.Storage.get(backupKey(targetId), 'none');
+      if (saved === 'none' || _typeof(saved) !== 'object' || saved === null) saved = {};
       ISOLATED_KEYS.forEach(function (key) {
-        var saved = Lampa.Storage.get(backupKey(targetId, key), 'none');
-        Lampa.Storage.set(key, saved != 'none' ? saved : defaultValue(key));
+        Lampa.Storage.set(key, key in saved ? saved[key] : defaultValue(key));
       });
     }
 
@@ -3199,7 +3234,16 @@
       };
       if (me.is_admin) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
-        adminUsers(token, finish, function () {
+        adminUsers(token, function (profiles) {
+          finish(profiles);
+
+          // This is the one place a real, authoritative full user list ever
+          // arrives - safe to prune backups for any userId no longer present.
+          // NOT done in the fallback/non-admin branches below: finish([me])
+          // there is never a full list, so pruning against it would wrongly
+          // wipe out every OTHER profile's backup on a shared device.
+          pruneStaleBackups(profiles);
+        }, function () {
           finish([me]);
         });
       } else {
