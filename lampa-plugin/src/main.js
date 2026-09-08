@@ -4,7 +4,7 @@ import addLang from './lang'
 import * as api from './utils/api'
 import { scrobSocketInit, scrobSocketDisconnect, getScrobSocket } from './utils/socket'
 import * as sync from './utils/sync'
-import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo, setOwnProfileInfo } from './utils/storage'
+import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo, setOwnProfileInfo, pruneStaleBackups } from './utils/storage'
 import { avatarHtml, switchProfile } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import * as levende from './utils/levende-bridge'
@@ -190,7 +190,16 @@ function completeLogin(token, me, username, password) {
     // nested "profile of a profile" switcher on top of levende's own).
     if (me.is_admin && !levende.isLevendeActive()) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
-        api.adminUsers(token, finish, function () {
+        api.adminUsers(token, function (profiles) {
+            finish(profiles)
+
+            // This is the one place a real, authoritative full user list ever
+            // arrives - safe to prune backups for any userId no longer present.
+            // NOT done in the fallback/non-admin branches below: finish([me])
+            // there is never a full list, so pruning against it would wrongly
+            // wipe out every OTHER profile's backup on a shared device.
+            pruneStaleBackups(profiles)
+        }, function () {
             finish([me])
         })
     } else {
