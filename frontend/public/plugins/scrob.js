@@ -842,6 +842,82 @@
       });
     }
 
+    // ─── Manual scrobble session API (playback progress tracking) ────
+    // Session key is derived server-side from title identity (tmdb_id for a
+    // movie, show_tmdb_id+season+episode for an episode) — repeated starts for
+    // the same title upsert the same session instead of resetting progress.
+
+    // POST /history/session/start — start (or resume) a playback session
+    function startSession(payload, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/session/start', function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json && json.session_key) onDone(json);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, JSON.stringify(payload), {
+        headers: Object.assign({
+          'Content-Type': 'application/json'
+        }, apiKeyHeaders())
+      });
+    }
+
+    // PATCH /history/session/{sessionKey} — heartbeat: progress/state, optional runtime correction
+    function updateSession(sessionKey, payload, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/session/' + sessionKey, function (data) {
+        network.clear();
+        onDone(parse$1(data));
+      }, function (a, c) {
+        network.clear();
+        var status = a && a.status;
+        onFail(network.errorDecode(a, c), status);
+      }, JSON.stringify(payload), {
+        headers: Object.assign({
+          'Content-Type': 'application/json'
+        }, apiKeyHeaders()),
+        type: 'PATCH'
+      });
+    }
+
+    // POST /history/session/{sessionKey}/complete — mark the session watched
+    function completeSession(sessionKey, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/session/' + sessionKey + '/complete', function (data) {
+        network.clear();
+        onDone(parse$1(data));
+      }, function (a, c) {
+        network.clear();
+        var status = a && a.status;
+        onFail(network.errorDecode(a, c), status);
+      }, '{}', {
+        headers: Object.assign({
+          'Content-Type': 'application/json'
+        }, apiKeyHeaders())
+      });
+    }
+
+    // DELETE /history/session/{sessionKey} — discard a session (exited before any real progress)
+    function deleteSession(sessionKey, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/session/' + sessionKey, function () {
+        network.clear();
+        onDone();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: apiKeyHeaders(),
+        type: 'DELETE'
+      });
+    }
+
     // ─── QR device pairing (OAuth 2.0 Device Authorization Grant, /auth/device/*) ───
     // These three requests are genuinely anonymous by design (RFC 8628) — the Astro
     // gate explicitly exempts them (middleware.ts PUBLIC_PREFIXES), no X-Api-Key/
@@ -1706,7 +1782,7 @@
     var pollTimer = null; // Polling interval timer
     var retryQueue = []; // Failed REST operations for retry
     var retryTimer = null; // Retry interval timer
-    var running = false; // Engine active flag
+    var running$1 = false; // Engine active flag
     var profileListener = null; // Profile change listener reference
     var brokenMappings = []; // Keys whose mapped list was deleted on server
     var healing = false; // Self-heal guard: prevent re-entrant missing-key resolution
@@ -1751,7 +1827,7 @@
       // Rebinding: drop handlers from the previous socket before switching.
       if (activeSocket && activeSocket !== socketInstance) unbindSocketHandlers();
       activeSocket = socketInstance;
-      if (running) {
+      if (running$1) {
         bindSocketHandlers();
         if (isSocketActive()) stopPolling();else startPolling();
       }
@@ -1789,12 +1865,12 @@
     // Core pattern: Favorite.listener.follow('add,added'/'remove') in bookmarks.js init().
 
     function onFavoriteAdd(e) {
-      if (!running || received) return;
+      if (!running$1 || received) return;
       if (!e || !e.where || !e.card || !e.card.id) return;
       push('add', e.where, e.card);
     }
     function onFavoriteRemove(e) {
-      if (!running || received) return;
+      if (!running$1 || received) return;
       if (!e || !e.where || !e.card) return;
       if (e.method && e.method !== 'id') return;
       if (!e.card.id) return;
@@ -1805,7 +1881,7 @@
     // only emit state:changed with type=custom key — bridge them into the same queue.
     // Dedupe: core keys already arrived via Favorite.listener; skip if identical op queued.
     function onStateChanged(e) {
-      if (!running || received) return;
+      if (!running$1 || received) return;
       if (!e || e.target !== 'favorite' || e.reason !== 'update') return;
       if (!e.type || !e.card || !e.card.id) return;
       if (e.method !== 'add' && e.method !== 'added' && e.method !== 'remove') return;
@@ -2101,7 +2177,7 @@
     // single favorite write, bump the Tracker stamp.
 
     function update(reason) {
-      if (!running || !hasSession()) return;
+      if (!running$1 || !hasSession()) return;
       if (updateRunning) {
         // Coalesce concurrent invalidations into one trailing run.
         if (updateTimer) clearTimeout(updateTimer);
@@ -2124,7 +2200,7 @@
 
     // Debounced invalidate entry used by the socket hub and the poll timer.
     function invalidate(reason) {
-      if (!running || !hasSession()) return;
+      if (!running$1 || !hasSession()) return;
       if (updateRunning) return;
       if (updateTimer) clearTimeout(updateTimer);
       updateTimer = setTimeout(function () {
@@ -2409,6 +2485,12 @@
     }
 
     // ─── Retry queue ──────────────────────────────────────────
+    // Shared by list push/pull (below) and any other module needing bounded
+    // retry-with-backoff for a failed REST call (e.g. utils/sync/timeline.js's
+    // session heartbeats) — enqueueRetry() is exported for that reuse. A
+    // `type: 'custom'` op carries its own `run(done, fail)` closure instead of
+    // engine-specific fields, so callers outside this file never need to know
+    // about listId/listName/mirror.
 
     function enqueueRetry(op) {
       op.retries = (op.retries || 0) + 1;
@@ -2419,7 +2501,18 @@
       }
     }
     function processRetryOp(op) {
-      if (op.type === 'add') {
+      if (op.type === 'custom') {
+        if (typeof op.run !== 'function') return;
+        op.run(function done() {
+          // Success — nothing more to do, already removed from the queue.
+        }, function fail() {
+          // Same pattern as 'add'/'remove' below: a retry-of-a-retry that
+          // fails again is dropped silently past RETRY_MAX, not renotified —
+          // enqueueRetry() itself already shows the Noty on the FIRST failure.
+          op.retries = (op.retries || 0) + 1;
+          if (op.retries <= RETRY_MAX) retryQueue.push(op);
+        });
+      } else if (op.type === 'add') {
         var parts = parseElementKey(op.key);
         var tmdbId = op.tmdbId || parseInt(parts.tmdbId, 10);
         var mediaType = op.mediaType || parts.mediaType;
@@ -2464,7 +2557,7 @@
     function startRetryLoop() {
       if (retryTimer) return;
       retryTimer = setInterval(function () {
-        if (!running || retryQueue.length === 0) return;
+        if (!running$1 || retryQueue.length === 0) return;
         var batch = retryQueue.splice(0, retryQueue.length);
         for (var i = 0; i < batch.length; i++) {
           processRetryOp(batch[i]);
@@ -2488,7 +2581,7 @@
     function startPolling() {
       if (pollTimer) return;
       pollTimer = setInterval(function () {
-        if (!running || !hasSession()) return;
+        if (!running$1 || !hasSession()) return;
         // Socket-active mode invalidates via WS; polling is the fallback path.
         // Both funnel into the same update() — never two parallel writers.
         invalidate('poll');
@@ -2509,7 +2602,7 @@
       return str.indexOf('401') !== -1 || str.indexOf('403') !== -1;
     }
     function pauseSync(reason) {
-      running = false;
+      running$1 = false;
       stopPolling();
       stopRetryLoop();
       console.warn('ScrobSync', 'paused:', reason);
@@ -2527,10 +2620,10 @@
             lastProfileId = newId;
             // Stop, reset mirror + tracker stamp, re-sync for new profile.
             // Mirrors core: profile_select resets tracker time/version to force a dump.
-            stop();
+            stop$1();
             reset();
             clearInitialDone();
-            start();
+            start$1();
           }
         }
       };
@@ -2541,14 +2634,14 @@
 
     // Socket open converges on a stale tracker snapshot (core socket open → update).
     function onSocketOpen() {
-      if (!running) return;
+      if (!running$1) return;
       stopPolling();
       if (isStale(getPollInterval())) update('socket-open');
     }
 
     // Socket close resumes polling fallback.
     function onSocketClose() {
-      if (!running) return;
+      if (!running$1) return;
       startPolling();
     }
 
@@ -2702,8 +2795,8 @@
     // ─── Public API ───────────────────────────────────────────
 
     // Start the sync engine
-    function start() {
-      if (running) return;
+    function start$1() {
+      if (running$1) return;
       if (!hasSession()) {
         console.warn('ScrobSync', 'start skipped: no session');
         return;
@@ -2722,7 +2815,7 @@
           return;
         }
       }
-      running = true;
+      running$1 = true;
 
       // Outbound: Favorite add/remove + state:changed bridge (custom keys), guarded.
       if (Lampa.Favorite && Lampa.Favorite.listener) {
@@ -2757,8 +2850,8 @@
     }
 
     // Stop the sync engine
-    function stop() {
-      running = false;
+    function stop$1() {
+      running$1 = false;
       console.log('ScrobSync', 'stopped');
       unbindSocketHandlers();
       activeSocket = null;
@@ -2792,7 +2885,7 @@
 
     // Force a manual sync (for settings UI "Sync Now" button)
     function forceSync() {
-      if (!running) return;
+      if (!running$1) return;
       clearInitialDone();
       initialSync();
     }
@@ -2807,7 +2900,7 @@
         itemCount += Object.keys(m.lists[names[i]].items).length;
       }
       return {
-        running: running,
+        running: running$1,
         listCount: listCount,
         itemCount: itemCount,
         lastSync: m.updated_at,
@@ -2970,6 +3063,478 @@
       // 4. Soft refresh of the active page
       softRefresh();
       return true;
+    }
+
+    // Scrob sync — playback progress push (session start/heartbeat/complete).
+    // Ports the proven session model from the old standalone scrob.js plugin,
+    // against the same backend session endpoints this plugin's api.js now wraps
+    // (POST /history/session/start, PATCH /history/session/{key},
+    // POST .../complete, DELETE .../{key}).
+    //
+    // Design points carried over deliberately (see the old scrob.js, function
+    // onPlayerStart() onward, for the original reasoning and live-tested fixes):
+    // - "Watched" is decided ONLY on player destroy (real exit), never mid-
+    //   playback — otherwise a title reads as watched on the server while the
+    //   user is still actually watching (e.g. sitting through end credits).
+    // - A generation counter (session.gen) guards against a slow /session/start
+    //   response landing AFTER a newer video has already started — the stale
+    //   response just deletes its own orphaned server-side session instead of
+    //   overwriting the new one's key.
+    // - heartbeatInFlight coalesces rapid pause/resume into the LATEST position
+    //   only (network delivery order between two independent PATCH requests is
+    //   not guaranteed) instead of firing one PATCH per event.
+    // - completeSession() defers behind an in-flight heartbeat rather than racing
+    //   it — an out-of-order "playing" heartbeat arriving after /complete would
+    //   silently reopen the session on the server.
+    //
+    // Deliberately NOT ported (out of scope for this module):
+    // - Manual watched-mark clicks outside the player (Lampa.Timeline updates
+    //   with no active session) — that is the "viewed" Favorite-mark sync,
+    //   a separate later phase (SYNC-ARCHITECTURE-PLAN.md §5.3).
+    // - Grace-period undo window and a persisted offline queue — failed
+    //   heartbeat/complete calls are retried via this plugin's own list-sync
+    //   retry queue (engine.js's enqueueRetry) instead of a second, separate
+    //   Lampa.Storage-backed queue.
+
+    var WATCHED_THRESHOLD_PERCENT = 90;
+    var HEARTBEAT_THROTTLE_MS = 15000; // periodic heartbeat driven by Timeline updates
+    var SAME_STATE_GUARD_MS = 3000; // native pause/playing: ignore immediate repeats
+    var SEEK_GUARD_MS = 1500; // native seeked: ignore right after another heartbeat
+
+    var running = false;
+    var listenersBound = false;
+
+    // Single persistent session slot — mutated in place, never reassigned, so a
+    // stray closure holding a reference to `session` always sees the latest
+    // state (matches the original plugin's module-level `session` object).
+    // `session.card` falsy means "no active player session" everywhere below.
+    var session = {
+      card: null,
+      isSeries: false,
+      season: null,
+      episode: null,
+      expectedHash: null,
+      duration: 0,
+      lastPercent: 0,
+      lastTimeSeconds: 0,
+      expectedStartPercent: 0,
+      lastUpdateTime: 0,
+      completed: false,
+      lastReportedState: null,
+      playbackErrored: false,
+      heartbeatInFlight: false,
+      pendingHeartbeat: null,
+      key: null,
+      started: false,
+      destroyedBeforeStart: false,
+      gen: 0
+    };
+
+    // Set only while completeSession() is deferred behind an in-flight
+    // heartbeat — module-level (not session.*) because it must still resolve
+    // correctly even if resetSessionState() runs before that heartbeat returns.
+    var pendingCompleteAfterHeartbeat = null;
+    function resetSessionState() {
+      session.key = null;
+      session.card = null;
+      session.season = null;
+      session.episode = null;
+      session.expectedHash = null;
+      session.duration = 0;
+      session.lastPercent = 0;
+      session.lastTimeSeconds = 0;
+      session.expectedStartPercent = 0;
+      session.completed = false;
+      session.lastReportedState = null;
+      session.playbackErrored = false;
+      session.heartbeatInFlight = false;
+      session.pendingHeartbeat = null;
+      session.started = false;
+      session.destroyedBeforeStart = false;
+    }
+
+    // ─── Identification ────────────────────────────────────────
+
+    // Direct season/episode fields on the Player 'start' event data, when the
+    // source already provides them (the common case).
+    function extractSeasonEpisode(obj) {
+      if (!obj) return {};
+      var season = obj.season_number || obj.season || obj.seasonNumber || obj.s;
+      var episode = obj.episode_number || obj.episode || obj.episodeNumber || obj.e;
+      return {
+        season: season,
+        episode: episode
+      };
+    }
+
+    // Fallback when the source gives no direct season/episode fields: brute-
+    // force the same hash formula Lampa's own Lampa.Timeline uses internally
+    // (Utils.hash on [season, separator, episode, originalName]) against the
+    // hash Lampa already computed for this file — this only has to search,
+    // never guess the formula itself. Same technique the old scrob.js and the
+    // third-party TraktTV plugin both independently arrived at (see
+    // LAMPA-TRACKING-REFERENCE.md §4.1.3/§4.2.3).
+    function resolveSeasonEpisode(hash, originalName) {
+      if (!hash || !originalName) return {};
+      for (var s = 1; s <= 40; s++) {
+        var sep = s > 10 ? ':' : '';
+        for (var e = 1; e <= 1500; e++) {
+          if (String(Lampa.Utils.hash([s, sep, e, originalName].join(''))) === String(hash)) {
+            return {
+              season: s,
+              episode: e
+            };
+          }
+        }
+      }
+      return {};
+    }
+
+    // Best-effort runtime guess for the /session/start payload — corrected
+    // later from the real file duration via heartbeat's `runtime` field
+    // (backend/routers/history.py update_manual_session()) once the native
+    // 'durationchange' event or a Timeline tick reveals it.
+    function resolveRuntimeMinutes(card, timeline, isSeries) {
+      if (timeline && timeline.duration > 0) return Math.round(timeline.duration / 60);
+      if (timeline && timeline.time > 0 && timeline.percent > 0) {
+        return Math.max(1, Math.round(timeline.time / (timeline.percent / 100) / 60));
+      }
+      if (card && card.runtime) return card.runtime;
+      if (card && card.episode_run_time && card.episode_run_time.length) return card.episode_run_time[0];
+      return isSeries ? 45 : 90;
+    }
+
+    // ─── Player lifecycle ──────────────────────────────────────
+
+    function onPlayerStart(data) {
+      if (!running) return;
+      var card = data && data.card || Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie);
+      if (!card) return;
+      var se = extractSeasonEpisode(data);
+      var timeline = data && data.timeline;
+      var hash = timeline && timeline.hash;
+      if (hash && (!se.season || !se.episode)) {
+        var origName = card.original_name || card.original_title || card.title || card.name;
+        if (origName) se = resolveSeasonEpisode(hash, origName);
+      }
+      var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv' || se && se.season > 0);
+      var gen = (session.gen || 0) + 1;
+      resetSessionState();
+      session.gen = gen;
+      session.card = card;
+      session.isSeries = isSeries;
+      session.season = isSeries ? se.season || 1 : null;
+      session.episode = isSeries ? se.episode || 1 : null;
+      session.expectedHash = hash || null;
+      session.duration = timeline && timeline.duration || 0;
+      session.lastPercent = timeline && timeline.percent || 0;
+      session.expectedStartPercent = timeline && timeline.percent || 0;
+      session.lastUpdateTime = Date.now();
+      startScrobSession();
+    }
+    function onTimelineUpdate(e) {
+      if (!running) return;
+      if (!e || !e.data) return;
+      if (!session.card) return; // no active player session — a manual click elsewhere, handled by a separate module
+
+      var origName = session.card.original_name || session.card.original_title || session.card.title || session.card.name;
+      var isSeries = !!(session.card.original_name || session.season || session.episode);
+      if (isSeries) {
+        if (session.expectedHash) {
+          if (e.data.hash !== session.expectedHash) return;
+        } else {
+          var se = resolveSeasonEpisode(e.data.hash, origName);
+          if (!se.season || !se.episode || se.season !== session.season || se.episode !== session.episode) return;
+        }
+      } else {
+        var expectedHash = Lampa.Utils.hash(session.card.original_title || session.card.title);
+        if (String(expectedHash) !== String(e.data.hash)) return;
+      }
+      var road = e.data.road || {};
+      var percent = parseFloat(road.percent || 0);
+      var time = parseFloat(road.time || 0);
+      if (road.duration && !session.duration) session.duration = road.duration;
+      session.lastPercent = percent;
+      session.lastTimeSeconds = time;
+      if (!session.started || !session.key || session.completed) return;
+
+      // Threshold is deliberately NOT checked here — see module header.
+      if (Date.now() - session.lastUpdateTime > HEARTBEAT_THROTTLE_MS && !session.playbackErrored) {
+        sendSessionHeartbeat(time, 'playing');
+      }
+    }
+    function onPlayerDestroy() {
+      if (!running) return;
+      if (!session.card) return;
+      if (!hasSession()) {
+        resetSessionState();
+        return;
+      }
+      if (!session.key) {
+        // /session/start hasn't resolved yet — startScrobSession()'s own
+        // response handler will discard the session once it arrives.
+        session.destroyedBeforeStart = true;
+        return;
+      }
+      if (session.completed) {
+        resetSessionState();
+        return;
+      }
+      if (session.lastPercent >= WATCHED_THRESHOLD_PERCENT) {
+        completeScrobSession();
+        resetSessionState();
+      } else if (session.lastPercent < 1.5) {
+        deleteSession(session.key, function () {}, function () {});
+        resetSessionState();
+      } else {
+        sendSessionHeartbeat(session.lastTimeSeconds, 'paused', function () {
+          resetSessionState();
+        });
+      }
+    }
+
+    // ─── Native <video> events — immediate reaction, not waiting for the next
+    // rare Timeline update (same technique used by the old scrob.js and the
+    // third-party TraktTV plugin, LAMPA-TRACKING-REFERENCE.md §4.1.1/§4.2.1).
+
+    function onNativeVideoStateChange(e, state) {
+      if (!running) return;
+      if (!session.card || !session.key || session.completed) return;
+      var target = e && e.target;
+      if (!target || target.tagName !== 'VIDEO') return;
+      var sameStateRecently = session.lastReportedState === state && Date.now() - session.lastUpdateTime < SAME_STATE_GUARD_MS;
+      if (sameStateRecently) return;
+      var currentTime = typeof target.currentTime === 'number' ? target.currentTime : session.lastTimeSeconds;
+      // A resumed position hasn't caught up to Lampa's own expected resume point
+      // yet — a bare 0 here would otherwise erase the already-saved progress.
+      if (currentTime === 0 && session.expectedStartPercent > 1.5) return;
+      session.lastTimeSeconds = currentTime;
+      session.lastReportedState = state;
+      trackNativePositionAndHeartbeat(currentTime, state);
+    }
+    function trackNativePositionAndHeartbeat(currentTime, state) {
+      if (session.duration > 0) session.lastPercent = currentTime / session.duration * 100;
+      sendSessionHeartbeat(currentTime, state);
+    }
+    function onNativeVideoPause(e) {
+      onNativeVideoStateChange(e, 'paused');
+    }
+    function onNativeVideoPlaying(e) {
+      session.playbackErrored = false;
+      onNativeVideoStateChange(e, 'playing');
+    }
+    function onNativeVideoSeeked(e) {
+      if (!running) return;
+      if (!session.card || !session.key || session.completed) return;
+      if (Date.now() - session.lastUpdateTime < SEEK_GUARD_MS) return;
+      var target = e && e.target;
+      if (!target || target.tagName !== 'VIDEO' || typeof target.currentTime !== 'number') return;
+      var currentTime = target.currentTime;
+      if (currentTime === 0 && session.expectedStartPercent > 1.5) return;
+      var state = target.paused ? 'paused' : 'playing';
+      session.lastTimeSeconds = currentTime;
+      session.lastReportedState = state;
+      trackNativePositionAndHeartbeat(currentTime, state);
+    }
+    function onNativeVideoError(e) {
+      if (!running) return;
+      var target = e && e.target;
+      if (!target || target.tagName !== 'VIDEO') return;
+      if (!session.card || !session.key || session.completed) return;
+      session.playbackErrored = true;
+      onNativeVideoStateChange(e, 'paused');
+    }
+    function onNativeVideoDurationChange(e) {
+      if (!running) return;
+      var target = e && e.target;
+      if (!target || target.tagName !== 'VIDEO') return;
+      if (!session.card || !session.key || session.completed) return;
+      if (session.duration > 0) return;
+      var duration = target.duration;
+      if (!duration || !isFinite(duration) || duration <= 0) return;
+      session.duration = duration;
+      var currentTime = typeof target.currentTime === 'number' ? target.currentTime : session.lastTimeSeconds;
+      trackNativePositionAndHeartbeat(currentTime, target.paused ? 'paused' : 'playing');
+    }
+
+    // ─── Server calls ──────────────────────────────────────────
+
+    function startScrobSession() {
+      var startGen = session.gen;
+      var isSeries = session.isSeries;
+      var runtimeMinutes = resolveRuntimeMinutes(session.card, {
+        duration: session.duration,
+        time: session.lastTimeSeconds,
+        percent: session.lastPercent
+      }, isSeries);
+      var payload = {
+        tmdb_id: isSeries ? null : session.card.id,
+        media_type: isSeries ? 'episode' : 'movie',
+        title: session.card.title || session.card.name || 'Unknown',
+        runtime: runtimeMinutes,
+        reset: false
+      };
+      if (isSeries) {
+        payload.show_tmdb_id = session.card.id;
+        payload.season_number = session.season;
+        payload.episode_number = session.episode;
+      }
+      startSession(payload, function (res) {
+        if (session.gen !== startGen) {
+          // A newer video already started while this was in flight — this
+          // response belongs to nobody now, just clean up its orphan.
+          if (res && res.session_key) deleteSession(res.session_key, function () {}, function () {});
+          return;
+        }
+        if (!res || !res.session_key) return;
+        if (session.destroyedBeforeStart) {
+          deleteSession(res.session_key, function () {}, function () {});
+          resetSessionState();
+          return;
+        }
+        session.key = res.session_key;
+        session.started = true;
+      }, function () {
+        if (session.gen === startGen) resetSessionState();
+      });
+    }
+
+    // Called ONLY from onPlayerDestroy (a real exit) — see module header.
+    function completeScrobSession() {
+      if (!session.key || session.completed) return;
+      session.completed = true;
+      var key = session.key;
+      if (session.heartbeatInFlight) {
+        pendingCompleteAfterHeartbeat = key;
+        return;
+      }
+      fireCompleteRequest(key);
+    }
+    function fireCompleteRequest(key) {
+      completeSession(key, function () {
+        // ok
+      }, function (err, status) {
+        // The server's own background auto-completer (90%+, independent of
+        // this client) may have already completed & removed the session.
+        if (status === 404) return;
+        enqueueRetry({
+          type: 'custom',
+          run: function run(done, fail) {
+            completeSession(key, done, function (e2, s2) {
+              if (s2 === 404) {
+                done();
+                return;
+              }
+              fail();
+            });
+          }
+        });
+      });
+    }
+    function sendSessionHeartbeat(timeSeconds, state, callback) {
+      if (!session.key) return;
+
+      // Strict in-order delivery: two independent parallel PATCH requests are
+      // not guaranteed to arrive in the order they were sent (long buffering
+      // often makes the player emit pause/playing back-to-back). Coalesce into
+      // the LATEST known position/state instead of firing one per event.
+      if (session.heartbeatInFlight) {
+        session.pendingHeartbeat = {
+          timeSeconds: timeSeconds,
+          state: state,
+          callback: callback,
+          sessionKey: session.key
+        };
+        return;
+      }
+      session.heartbeatInFlight = true;
+      session.lastUpdateTime = Date.now();
+      session.lastReportedState = state || 'playing';
+      var key = session.key;
+      var payload = {
+        progress_seconds: Math.round(timeSeconds),
+        state: state || 'playing'
+      };
+      // The real file duration, once known — corrects the server-side percent
+      // calculation away from whatever guess was sent at session start.
+      if (session.duration > 0) payload.runtime = Math.round(session.duration / 60);
+      function afterSettled() {
+        session.heartbeatInFlight = false;
+        var pending = session.pendingHeartbeat;
+        session.pendingHeartbeat = null;
+
+        // A /complete deferred because THIS heartbeat was in flight takes
+        // priority — the session is already done, a stale pending
+        // intermediate heartbeat no longer means anything.
+        if (pendingCompleteAfterHeartbeat && pendingCompleteAfterHeartbeat === key) {
+          var completeKey = pendingCompleteAfterHeartbeat;
+          pendingCompleteAfterHeartbeat = null;
+          fireCompleteRequest(completeKey);
+          return;
+        }
+        // sessionKey may have changed (a new session started) while this was
+        // in flight — a stale pending call from the PREVIOUS session is
+        // simply dropped.
+        if (pending && pending.sessionKey === session.key) {
+          sendSessionHeartbeat(pending.timeSeconds, pending.state, pending.callback);
+        }
+      }
+      updateSession(key, payload, function () {
+        if (callback) callback();
+        afterSettled();
+      }, function (err, status) {
+        if (status === 404) {
+          // Already gone server-side (likely the same background auto-
+          // completer) — mark completed locally so further pause/playing/
+          // seeked don't keep hitting the same 404 through end credits.
+          if (session.key === key) session.completed = true;
+          if (callback) callback();
+          afterSettled();
+          return;
+        }
+        enqueueRetry({
+          type: 'custom',
+          run: function run(done, fail) {
+            updateSession(key, payload, done, function (e2, s2) {
+              if (s2 === 404) {
+                done();
+                return;
+              }
+              fail();
+            });
+          }
+        });
+        if (callback) callback();
+        afterSettled();
+      });
+    }
+
+    // ─── Lifecycle ──────────────────────────────────────────────
+
+    function start() {
+      if (running) return;
+      if (!hasSession()) return;
+      if (!Lampa.Storage.get(KEYS.SYNC_ENABLED)) return;
+      running = true;
+      if (!listenersBound) {
+        Lampa.Player.listener.follow('start', onPlayerStart);
+        Lampa.Player.listener.follow('destroy', onPlayerDestroy);
+        Lampa.Timeline.listener.follow('update', onTimelineUpdate);
+        document.addEventListener('pause', onNativeVideoPause, true);
+        document.addEventListener('playing', onNativeVideoPlaying, true);
+        document.addEventListener('seeked', onNativeVideoSeeked, true);
+        document.addEventListener('error', onNativeVideoError, true);
+        document.addEventListener('durationchange', onNativeVideoDurationChange, true);
+        listenersBound = true;
+      }
+    }
+    function stop() {
+      running = false;
+      // Listeners stay bound intentionally: Lampa.Player/Timeline's global
+      // listener buses have no targeted unfollow-by-reference API worth
+      // relying on here, and every handler above already checks `running`
+      // first, making this a clean no-op while stopped.
+      resetSessionState();
     }
 
     /**
@@ -3230,7 +3795,10 @@
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
 
         // Start sync if enabled (lifecycle wiring)
-        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start();
+        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+          start$1();
+          start();
+        }
       };
       if (me.is_admin) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
@@ -3352,6 +3920,7 @@
     }
     function doLogout() {
       // Stop sync before clearing session (lifecycle wiring)
+      stop$1();
       stop();
       clearSession();
       removeHeaderButton();
@@ -4264,10 +4833,12 @@
               }
             }
             if (!blocked) {
+              start$1();
               start();
               Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_started'));
             }
           } else {
+            stop$1();
             stop();
             Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_stopped'));
           }
@@ -4502,7 +5073,10 @@
         updateHeaderButton();
 
         // Start sync if enabled (lifecycle wiring)
-        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start();
+        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+          start$1();
+          start();
+        }
       }
     }
     function startPlugin() {

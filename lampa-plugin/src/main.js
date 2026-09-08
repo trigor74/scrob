@@ -7,6 +7,7 @@ import * as sync from './utils/sync'
 import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo, setOwnProfileInfo, pruneStaleBackups } from './utils/storage'
 import { avatarHtml, switchProfile, restoreIsolatedData } from './utils/profiles'
 import * as custom from './utils/sync/custom'
+import * as timelineSync from './utils/sync/timeline'
 import CategoryComponent from './component/category'
 
 // Settings section icon (gradient ids prefixed scrob- to avoid conflicts)
@@ -190,7 +191,10 @@ function completeLogin(token, me, username, password) {
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
 
         // Start sync if enabled (lifecycle wiring)
-        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
+        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+            sync.start()
+            timelineSync.start()
+        }
     }
 
     if (me.is_admin) {
@@ -314,6 +318,7 @@ function showAuthChoice(returnTo) {
 function doLogout() {
     // Stop sync before clearing session (lifecycle wiring)
     sync.stop()
+    timelineSync.stop()
 
     clearSession()
     removeHeaderButton()
@@ -1265,10 +1270,12 @@ function initSettings() {
 
                 if (!blocked) {
                     sync.start()
+                    timelineSync.start()
                     Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_started'))
                 }
             } else {
                 sync.stop()
+                timelineSync.stop()
                 Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_stopped'))
             }
         }
@@ -1494,7 +1501,10 @@ function restoreSession() {
         updateHeaderButton()
 
         // Start sync if enabled (lifecycle wiring)
-        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
+        if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+            sync.start()
+            timelineSync.start()
+        }
     }
 }
 

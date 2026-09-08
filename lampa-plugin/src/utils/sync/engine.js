@@ -650,8 +650,14 @@ function initialSync() {
 }
 
 // ─── Retry queue ──────────────────────────────────────────
+// Shared by list push/pull (below) and any other module needing bounded
+// retry-with-backoff for a failed REST call (e.g. utils/sync/timeline.js's
+// session heartbeats) — enqueueRetry() is exported for that reuse. A
+// `type: 'custom'` op carries its own `run(done, fail)` closure instead of
+// engine-specific fields, so callers outside this file never need to know
+// about listId/listName/mirror.
 
-function enqueueRetry(op) {
+export function enqueueRetry(op) {
     op.retries = (op.retries || 0) + 1
     if (op.retries <= RETRY_MAX) {
         retryQueue.push(op)
@@ -661,7 +667,18 @@ function enqueueRetry(op) {
 }
 
 function processRetryOp(op) {
-    if (op.type === 'add') {
+    if (op.type === 'custom') {
+        if (typeof op.run !== 'function') return
+        op.run(function done() {
+            // Success — nothing more to do, already removed from the queue.
+        }, function fail() {
+            // Same pattern as 'add'/'remove' below: a retry-of-a-retry that
+            // fails again is dropped silently past RETRY_MAX, not renotified —
+            // enqueueRetry() itself already shows the Noty on the FIRST failure.
+            op.retries = (op.retries || 0) + 1
+            if (op.retries <= RETRY_MAX) retryQueue.push(op)
+        })
+    } else if (op.type === 'add') {
         var parts = parseElementKey(op.key)
         var tmdbId = op.tmdbId || parseInt(parts.tmdbId, 10)
         var mediaType = op.mediaType || parts.mediaType
