@@ -3537,6 +3537,342 @@
       resetSessionState();
     }
 
+    var CURRENT_PROFILE_KEY = 'scrob_levende_current_profile_id';
+    var BACKUP_STORE_KEY = 'scrob_levende_backup';
+    var ACTIVE_FLAG_KEY = 'scrob_levende_active';
+    var MANAGED_FLAG_KEY = 'scrob_levende_managed';
+    // Separate from CURRENT_PROFILE_KEY itself - see doApplyUnsafe()'s
+    // everApplied check below for why comparing raw profileId values alone
+    // isn't safe here.
+    var HAS_APPLIED_KEY = 'scrob_levende_has_applied';
+    var APPLY_FALLBACK_DELAY_MS = 2000;
+
+    // "Regular account" fields backed up/restored per levende profile in
+    // situation (C). Deliberately excludes KEYS.PROFILES/SYNC_ENABLED/
+    // SYNC_INTERVAL/USERNAME/PASSWORD - the admin profile list has no meaning
+    // here (see isLevendeActive() below), and sync on/off + poll interval read
+    // more like a device-wide preference than a per-viewer one, matching this
+    // plugin's own ISOLATED_KEYS precedent of excluding similar app-level
+    // settings.
+    var BACKUP_FIELDS = [KEYS.OWN_API_KEY, KEYS.SERVER_URL, KEYS.ACCESS_TOKEN, KEYS.ME, KEYS.ACTIVE_API_KEY, KEYS.ACTIVE_PROFILE_ID, KEYS.DEVICE_ACCESS_TOKEN, KEYS.DEVICE_REFRESH_TOKEN, KEYS.DEVICE_EXPIRES_AT];
+
+    // Staged by stageProfile() on 'profile'/'changed', consumed by whichever
+    // fires first: the real 'state:changed' signal (applyPendingProfile(), called
+    // from main.js) or the fallback timer armed alongside it.
+    var pending = null;
+
+    // Persisted (not just in-memory) because both flags must already read
+    // correctly at the very first updateHeaderButton()/settingsListener check of
+    // a fresh page load - restoreSession() runs synchronously before levende's
+    // own 'profile' event has any chance to arrive (its init does a real network
+    // round-trip to Lampac first). An in-memory-only flag would default to false
+    // on every reload and let the icon/"Sign in" row flash briefly (or, on a
+    // slow connection, stay wrong) until that event finally showed up.
+    var levendeActive = !!Lampa.Storage.get(ACTIVE_FLAG_KEY, false);
+    var levendeManaged = !!Lampa.Storage.get(MANAGED_FLAG_KEY, false);
+
+    // True only once a REAL 'profile'/'changed' event has actually arrived THIS
+    // page load (set in stageProfile() below) - distinct from levendeActive
+    // itself, which may start out true purely from last session's persisted
+    // flag, with nothing yet having confirmed it's still accurate.
+    var confirmedThisSession = false;
+
+    // The persisted flags above exist so the icon/settings gating is already
+    // correct at the very first render of a fresh page load (see the comment
+    // above them) - but nothing besides a genuine levende 'profile' event ever
+    // updates them again. If levende itself gets removed/disabled entirely,
+    // that event will simply never fire again, and this plugin would be stuck
+    // forever believing levende is still active/managing credentials - hiding
+    // its own sign-in/server/logout UI with no way for the user to reach it,
+    // even though the credentials left behind (whatever levende last injected)
+    // are now just as "manual" as any other. Give levende's own init (a real
+    // network round-trip to Lampac's accsdb) a generous window to prove the
+    // flag is still accurate; if nothing confirms it by then, reset to "no
+    // levende" and let the plugin's normal UI/behavior take back over.
+    var STALE_CHECK_DELAY_MS = 8000;
+    function checkStaleLevendeState() {
+      if (!levendeActive) return;
+      setTimeout(function () {
+        if (confirmedThisSession) return;
+        resetLevendeState();
+      }, STALE_CHECK_DELAY_MS);
+    }
+    function resetLevendeState() {
+      levendeActive = false;
+      levendeManaged = false;
+      Lampa.Storage.set(ACTIVE_FLAG_KEY, false);
+      Lampa.Storage.set(MANAGED_FLAG_KEY, false);
+      if (onApplyCallback) onApplyCallback();
+    }
+
+    // Notified after every real apply (credential swap actually happened) - set
+    // once from main.js's initLevendeProfilesBridge(), used to refresh the
+    // header icon/settings screen without this module needing to import them
+    // back (main.js already owns those functions).
+    var onApplyCallback = null;
+    function setOnApply(callback) {
+      onApplyCallback = callback;
+    }
+    function isLevendeActive() {
+      return levendeActive;
+    }
+    function isLevendeManaged() {
+      return levendeManaged;
+    }
+    function getBackupStore() {
+      var raw = Lampa.Storage.get(BACKUP_STORE_KEY, {});
+      return raw && _typeof(raw) === 'object' && !Array.isArray(raw) ? raw : {};
+    }
+
+    // Snapshots the CURRENT live values of BACKUP_FIELDS under profileId. Safe to
+    // call even for a situation-(B) profile (accsdb-managed) - the snapshot just
+    // mirrors whatever accsdb already defines and stays unused, since re-entering
+    // a (B) profile always re-applies fresh from its own params, never from this
+    // backup.
+    function backupProfile(profileId) {
+      var store = getBackupStore();
+      var snapshot = {};
+      BACKUP_FIELDS.forEach(function (field) {
+        snapshot[field] = Lampa.Storage.get(field, '');
+      });
+      store[profileId] = snapshot;
+      Lampa.Storage.set(BACKUP_STORE_KEY, store);
+    }
+
+    // Restores profileId's own backed-up snapshot, or resets every field to
+    // empty if this levende profile has never signed in to Scrob before (first
+    // visit) - the same "restore-or-clean-default" shape as this plugin's own
+    // restoreIsolatedData().
+    function restoreProfile(profileId) {
+      var snapshot = getBackupStore()[profileId] || {};
+      BACKUP_FIELDS.forEach(function (field) {
+        Lampa.Storage.set(field, snapshot[field] || '');
+      });
+    }
+
+    // Actually switches credentials for `profile` (an object shaped like what
+    // stageProfile() builds below). Called once, by whichever of
+    // applyPendingProfile() / the fallback timer gets there first.
+    //
+    // applyPendingProfile() runs synchronously INSIDE Lampa's own 'state:changed'
+    // dispatch (Subscribe.send()) - confirmed against the real core source that
+    // its entire listener loop is wrapped in ONE try/catch around the WHOLE
+    // array, so a throw from any single listener (this one included) silently
+    // aborts EVERY remaining listener for that dispatch, not just this one.
+    // Live-testing traced a controller-focus regression (see
+    // fix/lampa-plugin-levende-picker-controller-focus) to exactly this: with
+    // this bridge active, some listener downstream of ours (very possibly
+    // Lampa's or levende's own, responsible for the natural post-switch content
+    // refresh) never got a chance to run at all. This wrapper is a hard
+    // boundary against that failure mode regardless of what specifically throws
+    // inside - this bridge must never be the thing that silently breaks
+    // everyone else sharing this event.
+    function doApply(profile) {
+      try {
+        doApplyUnsafe(profile);
+      } catch (err) {
+        console.error('ScrobLevendeBridge', 'doApply failed:', err);
+      }
+    }
+    function doApplyUnsafe(profile) {
+      // !! (not a raw truthy/null check) because Lampa.Storage.get() does NOT
+      // reliably return the literal `null` passed as its own default when a
+      // key was never set - confirmed live, it comes back as '' instead - so
+      // a boolean flag stored separately from CURRENT_PROFILE_KEY is the only
+      // safe way to know whether ANY profile has ever been applied yet.
+      var everApplied = !!Lampa.Storage.get(HAS_APPLIED_KEY, false);
+      var previousId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
+
+      // Only situation (C) short-circuits on "same profile, nothing to do" -
+      // its restoreProfile() would otherwise roll a live-refreshed value
+      // (e.g. a rotated device refresh_token) back to whatever the last real
+      // switch away had snapshotted, for no reason if nothing actually
+      // changed. Situation (B) has no such risk - it always writes directly
+      // from THIS event's own params, never from a backup - and accsdb can
+      // be edited live (server/key added, rotated, or removed) without the
+      // levende profile's own id ever changing, so it must always re-apply
+      // fresh on every 'changed' event regardless of previousId, exactly as
+      // the module comment at the top already documents. Skipping it here
+      // too used to mean an accsdb edit for the CURRENTLY active profile
+      // never took effect until some unrelated profile switch happened to
+      // touch it again.
+      if (!profile.hasScrobParams && everApplied && previousId === profile.profileId) {
+        // Same (C) profile re-confirmed (levende sends 'changed' on every
+        // app start too, not just on a real switch) - nothing actually
+        // changed, so touch nothing.
+        //
+        // everApplied guards this comparison because levende's own
+        // default/root profile commonly has a genuinely EMPTY STRING id
+        // (unlike explicitly-added sub-profiles, which get real ids like
+        // "1", "2", ...) - without this guard, that real '' would collide
+        // with the SAME '' the "never set" default above resolves to,
+        // making the very FIRST apply for that profile silently skip
+        // itself as "already applied, nothing to do": the api key was
+        // staged but never actually written to storage. Confirmed live
+        // via console tracing on a cleared localStorage: both previousId
+        // and profile.profileId logged as ''.
+        return;
+      }
+      stop$1();
+
+      // Back up whatever is CURRENTLY live under the outgoing profile, whether
+      // it came from situation B or C (harmless no-op to preserve for a B
+      // profile, since it's never read back - see backupProfile() above).
+      if (everApplied) backupProfile(previousId);
+      if (profile.hasScrobParams) {
+        // accsdb-managed profile - never a real login (the api key is never
+        // round-tripped through /auth/me, and there's no OAuth device
+        // pairing either), so any leftover "real identity" fields from
+        // whatever this device was doing BEFORE this switch - a real
+        // username/password login on a previous scenario-C profile, a QR/
+        // device pairing, or even an admin login predating levende
+        // altogether - must be cleared here. Otherwise getMe()/
+        // activeProfile() keep showing that stale identity's name/avatar
+        // (scrob_user_info in settings, in particular) even though every
+        // actual request already correctly uses THIS profile's own api key
+        // - confirmed live: api key correct, displayed identity wrong.
+        Lampa.Storage.set(KEYS.ME, '');
+        Lampa.Storage.set(KEYS.ACCESS_TOKEN, '');
+        Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, '');
+        Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, '');
+        Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, '');
+        if (profile.server) Lampa.Storage.set(KEYS.SERVER_URL, profile.server);
+        Lampa.Storage.set(KEYS.OWN_API_KEY, profile.apiKey || '');
+        Lampa.Storage.set(KEYS.ACTIVE_API_KEY, profile.apiKey || '');
+        // No real Scrob user id available here (accsdb-provided key, never
+        // round-tripped through /auth/me) - a stable synthetic id, unique
+        // per levende profile, is enough to correctly scope this plugin's
+        // own mirror/map storage (utils/sync/mirror.js, mapstore.js both key
+        // off ACTIVE_PROFILE_ID already).
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId);
+      } else {
+        restoreProfile(profile.profileId);
+      }
+      Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId);
+      Lampa.Storage.set(HAS_APPLIED_KEY, true);
+      if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start$1();
+      if (onApplyCallback) onApplyCallback();
+    }
+
+    // Called from the 'profile' Listener in main.js.
+    function stageProfile(e) {
+      if (!e || e.type !== 'changed') return;
+      confirmedThisSession = true;
+      levendeActive = true;
+      Lampa.Storage.set(ACTIVE_FLAG_KEY, true);
+      var params = e.params || {};
+      var server = params.scrob_server_url || '';
+      var apiKey = params.scrob_api_key || '';
+      var hasScrobParams = !!(server || apiKey);
+      levendeManaged = hasScrobParams;
+      Lampa.Storage.set(MANAGED_FLAG_KEY, hasScrobParams);
+      var profile = {
+        profileId: e.profileId,
+        hasScrobParams: hasScrobParams,
+        server: server,
+        apiKey: apiKey
+      };
+      pending = profile;
+
+      // Fallback: see the module comment above for why the real signal can be
+      // delayed or skipped entirely.
+      setTimeout(function () {
+        if (pending === profile) {
+          pending = null;
+          doApply(profile);
+        }
+      }, APPLY_FALLBACK_DELAY_MS);
+    }
+
+    // Called from the 'state:changed' Listener in main.js (already pre-filtered
+    // to target:'favorite', reason:'read').
+    function applyPendingProfile() {
+      if (!pending) return;
+      var profile = pending;
+      pending = null;
+      doApply(profile);
+    }
+
+    // ─── Status dot in levende's own profile picker ────────────
+    //
+    // levende's ProfileManager builds its picker as a plain Lampa.Select.show()
+    // call (Lampa core's own generic selectbox, not a custom-rendered element of
+    // levende's own) - Lampa.Select.show({title: Lampa.Lang.translate(
+    // 'account_profiles'), items: state.profiles.map(profile => ({title,
+    // template:'selectbox_icon', icon, selected, profile}))}) - verified in the
+    // real v3/profiles.js source. Each item's own `profile` field is the FULL
+    // parsed accsdb profile object (id + params), for every profile, not just
+    // the active one - so wrapping this one Lampa.Select.show call gives us
+    // everything needed to badge every row, without ever touching levende's own
+    // (private, unexported) internal state.
+    var originalSelectShow = null;
+
+    // Same shape as the plugin's own settings-section icon (main.js's
+    // ICON_SVG), recolored per status instead of a plain dot - gradient stop
+    // colors swap to red when not authorized, so the mark stays recognizably
+    // "Scrob" while still carrying the red/normal signal. Gradient ids are
+    // counter-suffixed since every row in the picker embeds its own copy of
+    // this SVG - two elements sharing one id in the same document is invalid
+    // and could make every row resolve to whichever gradient the browser saw
+    // first.
+    var svgIconCounter = 0;
+    function statusIconSvg(ok) {
+      svgIconCounter += 1;
+      var ringId = 'scrobLevendeRing' + svgIconCounter;
+      var dotId = 'scrobLevendeDot' + svgIconCounter;
+      var ringStops = ok ? '<stop offset="0%" stop-color="#5B34D6"/><stop offset="50%" stop-color="#9E3BC1"/><stop offset="100%" stop-color="#C147D8"/>' : '<stop offset="0%" stop-color="#7A1F1F"/><stop offset="50%" stop-color="#B23A3A"/><stop offset="100%" stop-color="#E05252"/>';
+      var dotStops = ok ? '<stop offset="0%" stop-color="#5B34D6"/><stop offset="100%" stop-color="#C147D8"/>' : '<stop offset="0%" stop-color="#7A1F1F"/><stop offset="100%" stop-color="#E05252"/>';
+      return '<svg class="scrob-levende-status-icon" viewBox="0 0 419 454" xmlns="http://www.w3.org/2000/svg">' + '<defs>' + '<linearGradient id="' + ringId + '" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="454">' + ringStops + '</linearGradient>' + '<linearGradient id="' + dotId + '" gradientUnits="objectBoundingBox" x1="0" y1="1" x2="0" y2="0">' + dotStops + '</linearGradient>' + '</defs>' + '<path d="M 394.09 73.88 A 226.5 226.5 0 1 0 332.74 427.26 L 287.64 358.22 A 144.6 144.6 0 1 1 334.56 130.14 Z" fill="url(#' + ringId + ')"/>' + '<circle cx="368.97" cy="347.2" r="48.29" fill="url(#' + dotId + ')"/>' + '</svg>';
+    }
+
+    // True only when accsdb gives BOTH the server and the key for a (B) profile
+    // - one without the other is exactly the "misconfigured" case worth
+    // flagging, same as a (C) profile that has never signed in successfully.
+    function isProfileAuthorized(profile) {
+      var params = profile && profile.params || {};
+      var server = params.scrob_server_url || '';
+      var apiKey = params.scrob_api_key || '';
+      if (server || apiKey) return !!(server && apiKey);
+
+      // Situation (C): the CURRENTLY active profile's live storage is the
+      // source of truth (may have just signed in this very session, before
+      // any backup snapshot exists for it yet); any other profile falls back
+      // to whatever was captured the last time we switched away from it.
+      var currentId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
+      if (profile && profile.id === currentId) {
+        return !!Lampa.Storage.get(KEYS.OWN_API_KEY, '');
+      }
+      var snapshot = getBackupStore()[profile && profile.id];
+      return !!(snapshot && snapshot[KEYS.OWN_API_KEY]);
+    }
+
+    // Prepended, not appended - levende already marks the current profile with
+    // its own end-of-row indicator (a CSS-only "selected" class, no title text
+    // involved), so a trailing dot here would sit right next to it.
+    function decorateProfilePickerItems(options) {
+      if (!options || options.title !== Lampa.Lang.translate('account_profiles')) return;
+      if (!Array.isArray(options.items) || !options.items.length) return;
+      if (!options.items[0].profile) return;
+      options.items.forEach(function (item) {
+        if (!item.profile) return;
+        var icon = statusIconSvg(isProfileAuthorized(item.profile));
+        item.title = icon + ' ' + (item.title || '');
+      });
+    }
+
+    // Called once from main.js's initLevendeProfilesBridge(). Idempotent - a
+    // second call is a no-op, so it's safe to call unconditionally even if
+    // levende ends up getting initialized more than once per page load.
+    function patchProfileSelect() {
+      if (originalSelectShow) return;
+      if (typeof Lampa.Select === 'undefined' || typeof Lampa.Select.show !== 'function') return;
+      originalSelectShow = Lampa.Select.show;
+      Lampa.Select.show = function (options) {
+        decorateProfilePickerItems(options);
+        return originalSelectShow.call(Lampa.Select, options);
+      };
+    }
+
     /**
      * Scrob custom category viewer component.
      * Pattern: kinobaza/myperson/component.js — Lampa.Maker.make('Category')
@@ -3661,12 +3997,21 @@
       return '';
     }
     function updateHeaderButton() {
-      if (hasSession()) {
-        renderHeaderButton();
-        ensureOwnProfileInfo();
-      } else {
+      if (!hasSession()) {
         removeHeaderButton();
+        return;
       }
+
+      // Fetch/refresh display_name+avatar regardless of levende - scrob_user_info
+      // in settings reads it for both levende scenarios (B and C) too, not just
+      // when this plugin's own header icon is the one showing it.
+      ensureOwnProfileInfo();
+
+      // Under levende, per-viewer identity switching is the bridge's job (its
+      // own head icon already exists for that) - this plugin's own switcher
+      // exists solely to pick between /admin/users profiles, which never
+      // applies while levende is active (see completeLogin() below).
+      if (!isLevendeActive()) renderHeaderButton();else removeHeaderButton();
     }
 
     // A bare API key or QR/device token (no real username/password login) never
@@ -3685,7 +4030,13 @@
 
       getProfile(function (profile) {
         setOwnProfileInfo(profile, key);
-        renderHeaderButton();
+        // updateHeaderButton(), not renderHeaderButton() directly - this now
+        // also runs while levende is active (for scrob_user_info's sake), and
+        // the header icon must stay hidden in that case regardless of a
+        // successful fetch. The re-entrant ensureOwnProfileInfo() call inside
+        // is a harmless no-op - the cache is already populated by now.
+        updateHeaderButton();
+        refreshSettings();
       }, function () {
         // Leave whatever was cached (possibly nothing) - the '?' fallback
         // avatar still works fine without this.
@@ -3789,7 +4140,7 @@
       if (password) Lampa.Storage.set(KEYS.PASSWORD, password);
       var finish = function finish(profiles) {
         Lampa.Storage.set(KEYS.PROFILES, profiles);
-        renderHeaderButton();
+        updateHeaderButton();
         refreshCustomMenu();
         refreshSettings();
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
@@ -3800,7 +4151,12 @@
           start();
         }
       };
-      if (me.is_admin) {
+
+      // Under levende, this account behaves like a plain single-profile sign-in
+      // regardless of is_admin - per-viewer switching is the levende bridge's
+      // job now, not this plugin's own /admin/users list (avoids a confusing
+      // nested "profile of a profile" switcher on top of levende's own).
+      if (me.is_admin && !isLevendeActive()) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
         adminUsers(token, function (profiles) {
           finish(profiles);
@@ -3999,7 +4355,7 @@
             Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000);
             Lampa.Modal.close();
             Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
-            renderHeaderButton();
+            updateHeaderButton();
             refreshSettings();
             Lampa.Controller.toggle(returnTo);
             return;
@@ -4971,6 +5327,14 @@
           var body = e.body.find('.scroll__body > div');
           if (hasSession()) {
             body.find('[data-name="scrob_auth_trigger_btn"]').remove();
+            if (isLevendeManaged()) {
+              // accsdb already supplies server/key directly for this
+              // profile - the address is config, not user-editable,
+              // and there's no separate log-out action (the bridge
+              // owns the switch, not this plugin's own login flow).
+              body.find('[data-name="' + KEYS.SERVER_URL + '"]').remove();
+              body.find('[data-name="scrob_logout_btn"]').remove();
+            }
           } else {
             body.find('[data-name="scrob_user_info"]').remove();
             body.find('[data-name="scrob_logout_btn"]').remove();
@@ -5060,16 +5424,22 @@
     // Re-render header button from saved session on startup
     function restoreSession() {
       if (hasSession()) {
-        // updateHeaderButton() (not renderHeaderButton() directly) - a plain
-        // render never kicks off ensureOwnProfileInfo(), so an API-key-only
-        // or QR-paired session established in an EARLIER page load never got
-        // its GET /profile/me fetched on a plain app restart: ownProfileInfo
-        // is in-memory-only (storage.js) and starts null every page load,
-        // so the header avatar and scrob_user_info in Settings stayed stuck
-        // on the generic "?"/authStatusText() fallback no matter how many
-        // times Settings was reopened, even though the credential itself was
-        // perfectly valid and /profile/me would have returned a real
-        // display_name if only anyone had asked it to.
+        // updateHeaderButton() (not renderHeaderButton() directly) - two
+        // separate reasons this matters:
+        // 1. A plain render never kicks off ensureOwnProfileInfo(), so an
+        //    API-key-only or QR-paired session established in an EARLIER page
+        //    load never got its GET /profile/me fetched on a plain app
+        //    restart: ownProfileInfo is in-memory-only (storage.js) and
+        //    starts null every page load, so the header avatar and
+        //    scrob_user_info in Settings stayed stuck on the generic
+        //    "?"/authStatusText() fallback no matter how many times Settings
+        //    was reopened, even though the credential itself was perfectly
+        //    valid and /profile/me would have returned a real display_name
+        //    if only anyone had asked it to.
+        // 2. A plain render also never respects isLevendeActive() - the icon
+        //    reappeared on every page load regardless of the persisted flag
+        //    (the flag was read correctly, this call site just never
+        //    consulted it).
         updateHeaderButton();
 
         // Start sync if enabled (lifecycle wiring)
@@ -5078,6 +5448,40 @@
           start();
         }
       }
+    }
+
+    // Wires the levende/lampa-plugins "profiles.js" bridge (utils/levende-bridge.js)
+    // to Lampa's own event bus. Registered unconditionally and early - both events
+    // are plain Lampa.Listener subscriptions, safe before window.appready, and
+    // levende's own 'changed' notification (fired at its OWN app-ready handling)
+    // must find this listener already attached.
+    function initLevendeProfilesBridge() {
+      // Credentials may switch either from the real 'state:changed' signal below
+      // or from levende-bridge.js's own fallback timer (see its module comment -
+      // that signal can be delayed or skipped by levende entirely) - registering
+      // this callback covers both paths with a single UI refresh point.
+      setOnApply(function () {
+        updateHeaderButton();
+        refreshSettings();
+      });
+
+      // Badges levende's OWN profile picker rows with a status dot - safe to
+      // call unconditionally here since it only touches Lampa.Select.show once
+      // and no-ops on a repeat call.
+      patchProfileSelect();
+
+      // If levende was active last session but got removed/disabled since,
+      // nothing will ever fire again to correct the persisted flags below -
+      // this arms a one-time fallback that resets them if no real 'profile'
+      // event confirms them within a generous window.
+      checkStaleLevendeState();
+      Lampa.Listener.follow('profile', function (e) {
+        stageProfile(e);
+      });
+      Lampa.Listener.follow('state:changed', function (e) {
+        if (!e || e.target !== 'favorite' || e.reason !== 'read') return;
+        applyPendingProfile();
+      });
     }
     function startPlugin() {
       console.log('Scrob', 'startPlugin called');
@@ -5090,7 +5494,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Scrob logo prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - gradient colors swap to red when the bridge\n   considers that profile not authorized (misconfigured accsdb pair, or\n   never signed in), the normal purple/pink gradient otherwise. Prepended\n   rather than appended: levende already marks the current profile at the\n   END of the row via a CSS-only "selected" class, no title text involved.\n   No intrinsic width/height on the SVG itself (only viewBox) - without\n   this it falls back to the browser\'s replaced-element default (300x150),\n   dwarfing the row text. */\n.scrob-levende-status-icon {\n  display: inline-block;\n  width: 1em;\n  height: 1.08em;\n  vertical-align: -0.15em;\n  margin-right: 0.35em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page template for sync settings
@@ -5099,6 +5503,7 @@
       // Register custom category viewer component
       Lampa.Component.add('scrob_category', component);
       initSettings();
+      initLevendeProfilesBridge();
 
       // Register bookmarks rows once — displays custom categories on bookmarks screen
       registerBookmarksRows();

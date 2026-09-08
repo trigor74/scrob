@@ -8,6 +8,7 @@ import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serv
 import { avatarHtml, switchProfile, restoreIsolatedData } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import * as timelineSync from './utils/sync/timeline'
+import * as levende from './utils/levende-bridge'
 import CategoryComponent from './component/category'
 
 // Settings section icon (gradient ids prefixed scrob- to avoid conflicts)
@@ -52,12 +53,22 @@ function authStatusText() {
 }
 
 function updateHeaderButton() {
-    if (hasSession()) {
-        renderHeaderButton()
-        ensureOwnProfileInfo()
-    } else {
+    if (!hasSession()) {
         removeHeaderButton()
+        return
     }
+
+    // Fetch/refresh display_name+avatar regardless of levende - scrob_user_info
+    // in settings reads it for both levende scenarios (B and C) too, not just
+    // when this plugin's own header icon is the one showing it.
+    ensureOwnProfileInfo()
+
+    // Under levende, per-viewer identity switching is the bridge's job (its
+    // own head icon already exists for that) - this plugin's own switcher
+    // exists solely to pick between /admin/users profiles, which never
+    // applies while levende is active (see completeLogin() below).
+    if (!levende.isLevendeActive()) renderHeaderButton()
+    else removeHeaderButton()
 }
 
 // A bare API key or QR/device token (no real username/password login) never
@@ -76,7 +87,13 @@ function ensureOwnProfileInfo() {
 
     api.getProfile(function (profile) {
         setOwnProfileInfo(profile, key)
-        renderHeaderButton()
+        // updateHeaderButton(), not renderHeaderButton() directly - this now
+        // also runs while levende is active (for scrob_user_info's sake), and
+        // the header icon must stay hidden in that case regardless of a
+        // successful fetch. The re-entrant ensureOwnProfileInfo() call inside
+        // is a harmless no-op - the cache is already populated by now.
+        updateHeaderButton()
+        refreshSettings()
     }, function () {
         // Leave whatever was cached (possibly nothing) - the '?' fallback
         // avatar still works fine without this.
@@ -185,7 +202,7 @@ function completeLogin(token, me, username, password) {
 
     var finish = function (profiles) {
         Lampa.Storage.set(KEYS.PROFILES, profiles)
-        renderHeaderButton()
+        updateHeaderButton()
         refreshCustomMenu()
         refreshSettings()
         Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
@@ -197,7 +214,11 @@ function completeLogin(token, me, username, password) {
         }
     }
 
-    if (me.is_admin) {
+    // Under levende, this account behaves like a plain single-profile sign-in
+    // regardless of is_admin - per-viewer switching is the levende bridge's
+    // job now, not this plugin's own /admin/users list (avoids a confusing
+    // nested "profile of a profile" switcher on top of levende's own).
+    if (me.is_admin && !levende.isLevendeActive()) {
         // Admin gets all server users as profiles; on failure fall back to own profile only
         api.adminUsers(token, function (profiles) {
             finish(profiles)
@@ -409,7 +430,7 @@ function showQrAuthModal(data, returnTo) {
                 Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000)
                 Lampa.Modal.close()
                 Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
-                renderHeaderButton()
+                updateHeaderButton()
                 refreshSettings()
                 Lampa.Controller.toggle(returnTo)
                 return
@@ -1395,6 +1416,15 @@ function initSettings() {
 
             if (hasSession()) {
                 body.find('[data-name="scrob_auth_trigger_btn"]').remove()
+
+                if (levende.isLevendeManaged()) {
+                    // accsdb already supplies server/key directly for this
+                    // profile - the address is config, not user-editable,
+                    // and there's no separate log-out action (the bridge
+                    // owns the switch, not this plugin's own login flow).
+                    body.find('[data-name="' + KEYS.SERVER_URL + '"]').remove()
+                    body.find('[data-name="scrob_logout_btn"]').remove()
+                }
             } else {
                 body.find('[data-name="scrob_user_info"]').remove()
                 body.find('[data-name="scrob_logout_btn"]').remove()
@@ -1488,16 +1518,22 @@ function initSocket() {
 // Re-render header button from saved session on startup
 function restoreSession() {
     if (hasSession()) {
-        // updateHeaderButton() (not renderHeaderButton() directly) - a plain
-        // render never kicks off ensureOwnProfileInfo(), so an API-key-only
-        // or QR-paired session established in an EARLIER page load never got
-        // its GET /profile/me fetched on a plain app restart: ownProfileInfo
-        // is in-memory-only (storage.js) and starts null every page load,
-        // so the header avatar and scrob_user_info in Settings stayed stuck
-        // on the generic "?"/authStatusText() fallback no matter how many
-        // times Settings was reopened, even though the credential itself was
-        // perfectly valid and /profile/me would have returned a real
-        // display_name if only anyone had asked it to.
+        // updateHeaderButton() (not renderHeaderButton() directly) - two
+        // separate reasons this matters:
+        // 1. A plain render never kicks off ensureOwnProfileInfo(), so an
+        //    API-key-only or QR-paired session established in an EARLIER page
+        //    load never got its GET /profile/me fetched on a plain app
+        //    restart: ownProfileInfo is in-memory-only (storage.js) and
+        //    starts null every page load, so the header avatar and
+        //    scrob_user_info in Settings stayed stuck on the generic
+        //    "?"/authStatusText() fallback no matter how many times Settings
+        //    was reopened, even though the credential itself was perfectly
+        //    valid and /profile/me would have returned a real display_name
+        //    if only anyone had asked it to.
+        // 2. A plain render also never respects isLevendeActive() - the icon
+        //    reappeared on every page load regardless of the persisted flag
+        //    (the flag was read correctly, this call site just never
+        //    consulted it).
         updateHeaderButton()
 
         // Start sync if enabled (lifecycle wiring)
@@ -1506,6 +1542,42 @@ function restoreSession() {
             timelineSync.start()
         }
     }
+}
+
+// Wires the levende/lampa-plugins "profiles.js" bridge (utils/levende-bridge.js)
+// to Lampa's own event bus. Registered unconditionally and early - both events
+// are plain Lampa.Listener subscriptions, safe before window.appready, and
+// levende's own 'changed' notification (fired at its OWN app-ready handling)
+// must find this listener already attached.
+function initLevendeProfilesBridge() {
+    // Credentials may switch either from the real 'state:changed' signal below
+    // or from levende-bridge.js's own fallback timer (see its module comment -
+    // that signal can be delayed or skipped by levende entirely) - registering
+    // this callback covers both paths with a single UI refresh point.
+    levende.setOnApply(function () {
+        updateHeaderButton()
+        refreshSettings()
+    })
+
+    // Badges levende's OWN profile picker rows with a status dot - safe to
+    // call unconditionally here since it only touches Lampa.Select.show once
+    // and no-ops on a repeat call.
+    levende.patchProfileSelect()
+
+    // If levende was active last session but got removed/disabled since,
+    // nothing will ever fire again to correct the persisted flags below -
+    // this arms a one-time fallback that resets them if no real 'profile'
+    // event confirms them within a generous window.
+    levende.checkStaleLevendeState()
+
+    Lampa.Listener.follow('profile', function (e) {
+        levende.stageProfile(e)
+    })
+
+    Lampa.Listener.follow('state:changed', function (e) {
+        if (!e || e.target !== 'favorite' || e.reason !== 'read') return
+        levende.applyPendingProfile()
+    })
 }
 
 function startPlugin() {
@@ -1532,6 +1604,7 @@ function startPlugin() {
     Lampa.Component.add('scrob_category', CategoryComponent)
 
     initSettings()
+    initLevendeProfilesBridge()
 
     // Register bookmarks rows once — displays custom categories on bookmarks screen
     registerBookmarksRows()
