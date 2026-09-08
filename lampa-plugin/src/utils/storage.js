@@ -37,9 +37,35 @@ var DEFAULTS = {
     torrents_filter_data: '[]'
 }
 
-// Backup storage key for one isolated key of one profile.
-export function backupKey(userId, key) {
-    return 'scrob_backup_' + userId + '_' + key
+// Backup storage key for ONE profile - a single JSON object holding all of
+// that profile's ISOLATED_KEYS at once, not one flat localStorage key per
+// (userId, key) pair. Two reasons: a corrupted/malformed backup then only
+// ever affects that one profile (switchProfile() in profiles.js falls back
+// to defaults for it, not for everyone), and removing a stale profile's whole
+// backup (pruneStaleBackups() below) becomes a single key deletion instead
+// of one per ISOLATED_KEY.
+export function backupKey(userId) {
+    return 'scrob_backup_' + userId
+}
+
+// Drop scrob_backup_<userId> entries for any userId no longer present in a
+// freshly-fetched, AUTHORITATIVE full user list. Caller's responsibility:
+// only call this with a real /admin/users result (main.js's completeLogin,
+// the api.adminUsers() success branch) - NEVER with the single-item
+// fallback list used both for a non-admin login and for an adminUsers()
+// failure, which would wrongly wipe out every OTHER profile's backup on a
+// shared device just because this session can't see the real list.
+export function pruneStaleBackups(profiles) {
+    var keep = {}
+    profiles.forEach(function (p) { keep[p.id] = true })
+
+    var prefix = 'scrob_backup_'
+    for (var i = window.localStorage.length - 1; i >= 0; i--) {
+        var key = window.localStorage.key(i)
+        if (key && key.indexOf(prefix) === 0 && !keep[key.slice(prefix.length)]) {
+            window.localStorage.removeItem(key)
+        }
+    }
 }
 
 // Default value for an isolated key.
