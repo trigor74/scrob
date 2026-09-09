@@ -473,6 +473,54 @@ export function deleteSession(sessionKey, onDone, onFail) {
     )
 }
 
+// GET /history/watch-status — lean, per-title watch state (movie or whole
+// show) for the pull direction: only rows with real state (watched, or an
+// in-progress bookmark), never a full episode list padded with zeroes.
+// `type` accepts either 'movie' or 'tv'/'series' (server maps both).
+export function getWatchStatus(tmdbId, type, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/watch-status?tmdb_id=' + tmdbId + '&type=' + type,
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (Array.isArray(json)) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: apiKeyHeaders() }
+    )
+}
+
+// GET /history/continue-watching — everything currently in progress, for the
+// bulk pull direction (login/profile switch/app start).
+export function getContinueWatching(onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/continue-watching',
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && Array.isArray(json.continue_watching)) onDone(json.continue_watching)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: apiKeyHeaders() }
+    )
+}
+
 // GET /history — fetch watch history with optional pagination and type filter
 export function getHistory(page, pageSize, mediaType, onDone, onFail) {
     var network = new Lampa.Reguest()
