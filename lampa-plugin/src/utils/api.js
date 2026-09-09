@@ -407,7 +407,7 @@ export function startSession(payload, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         JSON.stringify(payload),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -428,7 +428,7 @@ export function updateSession(sessionKey, payload, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         JSON.stringify(payload),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()), type: 'PATCH' }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), type: 'PATCH' }
     )
 }
 
@@ -449,7 +449,7 @@ export function completeSession(sessionKey, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         '{}',
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -469,7 +469,7 @@ export function deleteSession(sessionKey, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders(), type: 'DELETE' }
+        { headers: authHeaders(), type: 'DELETE' }
     )
 }
 
@@ -494,7 +494,7 @@ export function getWatchStatus(tmdbId, type, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders() }
+        { headers: authHeaders() }
     )
 }
 
@@ -517,7 +517,7 @@ export function getContinueWatching(onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders() }
+        { headers: authHeaders() }
     )
 }
 
