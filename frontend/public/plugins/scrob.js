@@ -3298,6 +3298,20 @@
     // shape both callers build from their own source's response fields:
     // { isSeries, originalName, season, episode, watched, percent, time,
     //   duration, runtimeMinutes, updatedAt }
+    //
+    // updatedAt may come from a naive-UTC server timestamp with no offset (some
+    // backend serializations still omit it, e.g. /history/continue-watching's
+    // watched_at) - a JS Date parses an offset-less string as LOCAL time (ECMA-262
+    // Date Time String Format), which would skew this exact LWW comparison by the
+    // client's own UTC offset. Same fix the Astro dashboard already applies
+    // (frontend/src/pages/history.astro etc: `new Date(watched_at + 'Z')`), just
+    // done defensively so a string that already carries an offset isn't doubled.
+    function parseServerTime(str) {
+      if (!str) return 0;
+      var s = String(str);
+      var hasOffset = /Z$|[+-]\d\d:?\d\d$/.test(s);
+      return new Date(hasOffset ? s : s + 'Z').getTime() || 0;
+    }
     function pullWriteTimeline(item) {
       var hash = buildHash(item.isSeries, item.originalName, item.season, item.episode);
       if (!hash) return;
@@ -3305,7 +3319,7 @@
 
       var local = Lampa.Timeline.view(hash);
       var localTime = local && local.updated || 0;
-      var serverTime = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+      var serverTime = parseServerTime(item.updatedAt);
       if (localTime && serverTime <= localTime) return; // local is not older — nothing to do
 
       var duration = resolveDuration({

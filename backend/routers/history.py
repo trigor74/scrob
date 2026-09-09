@@ -1565,6 +1565,17 @@ def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    # DB datetimes are stored naive (datetime.utcnow(), no tzinfo) but ARE UTC -
+    # bare dt.isoformat() then omits any offset, and a JS client's new Date(str)
+    # parses an offset-less string as LOCAL time (ECMA-262 Date Time String
+    # Format), skewing any client-side comparison against it by the client's
+    # own UTC offset. Stamp the UTC offset explicitly, same style as _iso_utc_now().
+    if not dt:
+        return None
+    return dt.replace(tzinfo=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 class DropShowRequest(BaseModel):
     show_id: int | None = None
     tmdb_id: int | None = None
@@ -3564,7 +3575,7 @@ def _watch_status_movie_item(
         "time": time_seconds,
         "duration": duration,
         "runtime_minutes": media.runtime,
-        "updated_at": updated_dt.isoformat() if updated_dt else None,
+        "updated_at": _iso_utc(updated_dt),
     }
 
 
@@ -3586,7 +3597,7 @@ def _watch_status_episode_item(
         "time": time_seconds,
         "duration": duration,
         "runtime_minutes": ep.runtime,
-        "updated_at": updated_dt.isoformat() if updated_dt else None,
+        "updated_at": _iso_utc(updated_dt),
     }
 
 
