@@ -154,7 +154,9 @@ function resolveSeasonEpisode(hash, originalName) {
 // Best-effort runtime guess for the /session/start payload — corrected
 // later from the real file duration via heartbeat's `runtime` field
 // (backend/routers/history.py update_manual_session()) once the native
-// 'durationchange' event or a Timeline tick reveals it.
+// 'durationchange' event or a Timeline tick reveals it. null (not a guessed
+// constant) when genuinely nothing is known yet — the server keeps its own
+// runtime as null in that case too, until a real value arrives.
 function resolveRuntimeMinutes(card, timeline, isSeries) {
     if (timeline && timeline.duration > 0) return Math.round(timeline.duration / 60)
     if (timeline && timeline.time > 0 && timeline.percent > 0) {
@@ -162,7 +164,7 @@ function resolveRuntimeMinutes(card, timeline, isSeries) {
     }
     if (card && card.runtime) return card.runtime
     if (card && card.episode_run_time && card.episode_run_time.length) return card.episode_run_time[0]
-    return isSeries ? 45 : 90
+    return null
 }
 
 // ─── Pull: server → Lampa.Timeline (SYNC-ARCHITECTURE-PLAN.md §5.2) ────────
@@ -178,12 +180,12 @@ function buildHash(isSeries, originalName, season, episode) {
 
 // Duration fallback chain for a pulled item — a manual "watched" mark can
 // leave both the real playback duration AND the TMDB runtime unknown
-// (§5.2.4). Same 45/90-minute constants as resolveRuntimeMinutes() above,
-// for symmetry between push and pull.
+// (§5.2.4). 0 (not a guessed constant) in that case — the real value, once
+// the native player reports it, is what corrects this going forward.
 function resolveDuration(item) {
     if (item.duration) return item.duration
     if (item.runtime_minutes) return item.runtime_minutes * 60
-    return item.media_type === 'episode' ? 2700 : 5400
+    return 0
 }
 
 // Single write path for both pull triggers (on-demand and bulk) — LWW
