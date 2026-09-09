@@ -351,6 +351,7 @@ def format_event(event: WatchEvent | PlaybackProgress, media: Media) -> dict:
             "tmdb_id": media.tmdb_id,
             "type": media.media_type,
             "title": media.title,
+            "original_title": media.original_title,
             "overview": media.overview,
             "poster_path": media.poster_path,
             "backdrop_path": media.backdrop_path,
@@ -374,6 +375,11 @@ def format_event(event: WatchEvent | PlaybackProgress, media: Media) -> dict:
 
     if media.media_type == MediaType.episode and media.show:
         data["media"]["show_title"] = media.show.title
+        # The name a Lampa-style client hashes an episode's Timeline entry by
+        # (Utils.hash([season, sep, episode, show.original_name])) is the
+        # SHOW's original title, not the episode's own — see
+        # SYNC-ARCHITECTURE-PLAN.md §5.2.2.
+        data["media"]["show_original_title"] = media.show.original_title
         data["media"]["show_poster_path"] = media.show.poster_path
         data["media"]["show_tmdb_id"] = media.show.tmdb_id
         data["media"]["show_tvdb_id"] = media.show.tvdb_id
@@ -3333,6 +3339,164 @@ async def get_sessions_for_title(
     sessions = [await _build_now_playing_item(session, media, db) for session, media in rows]
     await _apply_episode_order_to_sessions(sessions, db, current_user.id)
     return {"now_playing": sessions}
+
+
+def _watch_status_movie_item(media: Media, watched: bool, watched_at, prog: PlaybackProgress | None) -> dict:
+    duration = (media.runtime * 60) if media.runtime else None
+    updated_dt = prog.updated_at if prog else watched_at
+    return {
+        "tmdb_id": media.tmdb_id,
+        "media_type": "movie",
+        "series_tmdb_id": None,
+        "original_name": media.original_title,
+        "season_number": None,
+        "episode_number": None,
+        "watched": watched,
+        "percent": round(prog.progress_percent * 100, 1) if prog else None,
+        "time": prog.progress_seconds if prog else None,
+        "duration": duration,
+        "runtime_minutes": media.runtime,
+        "updated_at": updated_dt.isoformat() if updated_dt else None,
+    }
+
+
+def _watch_status_episode_item(
+    ep: Media, show: Show, watched: bool, watched_at, prog: PlaybackProgress | None
+) -> dict:
+    duration = (ep.runtime * 60) if ep.runtime else None
+    updated_dt = prog.updated_at if prog else watched_at
+    return {
+        "tmdb_id": ep.tmdb_id,
+        "media_type": "episode",
+        "series_tmdb_id": show.tmdb_id,
+        "original_name": show.original_title,
+        "season_number": ep.season_number,
+        "episode_number": ep.episode_number,
+        "watched": watched,
+        "percent": round(prog.progress_percent * 100, 1) if prog else None,
+        "time": prog.progress_seconds if prog else None,
+        "duration": duration,
+        "runtime_minutes": ep.runtime,
+        "updated_at": updated_dt.isoformat() if updated_dt else None,
+    }
+
+
+@router.get("/watch-status")
+async def get_watch_status(
+    tmdb_id: int = Query(...),
+    type: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_or_api_key),
+):
+    """Lean, TMDB-independent watch state for one title (movie or whole
+    show) — only rows with real state (watched, or an in-progress
+    PlaybackProgress bookmark), never a full episode list padded with
+    zeroes. Built for thin clients (e.g. a Lampa plugin) that resolve
+    identity/naming themselves and just need to know what to mark
+    locally. See SYNC-ARCHITECTURE-PLAN.md §5.2.1.
+
+    `type` accepts both TMDB's own "tv" and this API's "series" — Lampa
+    cards commonly carry `card.type === 'tv'` directly from TMDB's own
+    vocabulary, which MediaType itself does not (only "series").
+
+    Rewatch-aware: mirrors the same active-ShowRewatch/RewatchProgress
+    logic as enrich_with_state()/get_show() (not a third, divergent
+    watched-detection path) — while a show is mid-rewatch, "watched"
+    comes from the current cycle's RewatchProgress, not full history.
+    """
+    media_type = MediaType.series if type in ("tv", "series") else MediaType.movie
+
+    if media_type != MediaType.series:
+        media_q = await db.execute(
+            select(Media).where(Media.tmdb_id == tmdb_id, Media.media_type == MediaType.movie)
+        )
+        media = media_q.scalars().first()
+        if not media:
+            return []
+
+        we_q = await db.execute(
+            select(WatchEvent.watched_at, WatchEvent.created_at)
+            .where(
+                WatchEvent.user_id == current_user.id,
+                WatchEvent.media_id == media.id,
+                WatchEvent.completed == True,
+            )
+            .order_by(WatchEvent.id.desc())
+            .limit(1)
+        )
+        we_row = we_q.first()
+        watched = we_row is not None
+        watched_at = (we_row[0] or we_row[1]) if we_row else None
+
+        prog_q = await db.execute(
+            select(PlaybackProgress).where(
+                PlaybackProgress.user_id == current_user.id, PlaybackProgress.media_id == media.id
+            )
+        )
+        prog = prog_q.scalar_one_or_none()
+
+        if not watched and not prog:
+            return []
+        return [_watch_status_movie_item(media, watched, watched_at, prog)]
+
+    # media_type == series
+    show_q = await db.execute(select(Show).where(Show.tmdb_id == tmdb_id))
+    show = show_q.scalar_one_or_none()
+    if not show:
+        return []
+
+    episodes_q = await db.execute(
+        select(Media).where(Media.show_id == show.id, Media.media_type == MediaType.episode)
+    )
+    episodes = episodes_q.scalars().all()
+    if not episodes:
+        return []
+    episode_ids = [ep.id for ep in episodes]
+
+    active_rewatch = await get_active_rewatch(db, current_user.id, show.id)
+
+    watched_at_map: dict[int, Any] = {}
+    rewatch_media_ids: set[int] = set()
+    if active_rewatch:
+        # Current cycle's own completion events, not full (possibly stale,
+        # pre-rewatch) history — same source get_show()/enrich_with_state
+        # use for "watched" while a rewatch is active.
+        rp_q = await db.execute(
+            select(RewatchProgress.media_id, WatchEvent.watched_at, WatchEvent.created_at)
+            .join(WatchEvent, WatchEvent.id == RewatchProgress.watch_event_id)
+            .where(RewatchProgress.rewatch_id == active_rewatch.id)
+        )
+        for media_id, watched_at, created_at in rp_q.all():
+            rewatch_media_ids.add(media_id)
+            watched_at_map[media_id] = watched_at or created_at
+    else:
+        we_q = await db.execute(
+            select(WatchEvent.media_id, func.max(WatchEvent.watched_at), func.max(WatchEvent.created_at))
+            .where(
+                WatchEvent.user_id == current_user.id,
+                WatchEvent.media_id.in_(episode_ids),
+                WatchEvent.completed == True,
+            )
+            .group_by(WatchEvent.media_id)
+        )
+        for media_id, watched_at, created_at in we_q.all():
+            watched_at_map[media_id] = watched_at or created_at
+
+    progress_q = await db.execute(
+        select(PlaybackProgress).where(
+            PlaybackProgress.user_id == current_user.id, PlaybackProgress.media_id.in_(episode_ids)
+        )
+    )
+    progress_map = {p.media_id: p for p in progress_q.scalars().all()}
+
+    items = []
+    for ep in episodes:
+        watched = ep.id in (rewatch_media_ids if active_rewatch else watched_at_map)
+        prog = progress_map.get(ep.id)
+        if not watched and not prog:
+            continue
+        items.append(_watch_status_episode_item(ep, show, watched, watched_at_map.get(ep.id), prog))
+    return items
 
 
 @router.put("/session/{tmdb_id}")
