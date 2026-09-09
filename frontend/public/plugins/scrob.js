@@ -708,6 +708,23 @@
       });
     }
 
+    // GET /history/continue-watching — everything currently in progress, for the
+    // bulk pull direction (login/profile switch/app start).
+    function getContinueWatching(onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/continue-watching', function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json && Array.isArray(json.continue_watching)) onDone(json.continue_watching);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: apiKeyHeaders()
+      });
+    }
+
     // WebSocket client for real-time Scrob events.
     // Supports external (wss via itty.ws) and internal (ws direct) modes.
     // No external dependencies — native browser WebSocket only.
@@ -3339,6 +3356,44 @@
       });
     }
 
+    // Normalizes one GET /history/continue-watching item (format_event() shape:
+    // nested `media`, progress fields at the top level) into
+    // pullWriteTimeline()'s shape. Always partial progress, never "watched" —
+    // /continue-watching is sourced from PlaybackProgress alone, which only
+    // ever holds the 5%-90% in-progress window (backend/routers/history.py).
+    function applyContinueWatchingItem(item) {
+      var media = item.media || {};
+      var isSeries = media.type === 'episode';
+      pullWriteTimeline({
+        isSeries: isSeries,
+        originalName: isSeries ? media.show_original_title : media.original_title,
+        season: media.season_number,
+        episode: media.episode_number,
+        watched: false,
+        // format_event() passes PlaybackProgress.progress_percent through as
+        // a 0-1 fraction, unlike /history/watch-status's own 0-100 `percent`.
+        percent: (item.progress_percent || 0) * 100,
+        time: item.progress_seconds,
+        duration: null,
+        runtimeMinutes: media.runtime,
+        updatedAt: item.watched_at // aliases PlaybackProgress.updated_at, see format_event()
+      });
+    }
+
+    // Bulk pull: everything currently in progress, at login/profile-switch/app
+    // start — so the "continue watching" row is already correct without
+    // waiting for the user to open each card individually (on-demand pull
+    // above only fires per-card). Exported for main.js to call alongside its
+    // existing Lampa.Timeline.read()/Lampa.Favorite.read() calls.
+    function pullContinueWatching() {
+      if (!running) return;
+      getContinueWatching(function (items) {
+        for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i]);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'continue-watching pull failed', err);
+      });
+    }
+
     // Point-in-time pull: fires when a movie/show's own full card opens (not
     // episode lists, search, settings, or any other screen — 'activity' fires
     // for ALL of those). Exact filter/field path ported from the old scrob.js,
@@ -3382,6 +3437,15 @@
         listenersBound = true;
       }
       console.log('ScrobTimeline', 'started');
+      // Bulk pull once per start() — covers login, the sync toggle, and
+      // restoreSession() on app launch without needing a separate hook at
+      // each call site. NOT re-triggered on profile switch: switchProfile()
+      // (utils/profiles.js) restarts engine.js's own list-sync via its
+      // internal ACTIVE_PROFILE_ID listener, but has no equivalent call to
+      // timelineSync.start()/stop() — a pre-existing Phase 1 gap, not
+      // addressed here (see NOTES-FOR-LEVENDE-SESSION.md-style follow-up:
+      // flagged to the user rather than silently expanded into this branch).
+      pullContinueWatching();
     }
     function stop() {
       running = false;
