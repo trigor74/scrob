@@ -3528,9 +3528,30 @@ async def get_sessions_for_title(
     return {"now_playing": sessions}
 
 
-def _watch_status_movie_item(media: Media, watched: bool, watched_at, prog: PlaybackProgress | None) -> dict:
+def _watch_status_progress_fields(runtime_minutes: int | None, prog, session):
+    """Priority: PlaybackProgress (the official resume bookmark, 5%-90%
+    window) first, then a still-open PlaybackSession (covers the case a
+    session exists but never crossed into PlaybackProgress at all — either
+    genuinely under 5%, or stuck at a stored 0% because Media.runtime was
+    unknown when the heartbeat landed). Returns (percent, time, updated_at).
+    percent is None (not a guessed-runtime percent) whenever Media.runtime
+    is genuinely unknown — real progress_seconds still comes through."""
+    if prog:
+        return round(prog.progress_percent * 100, 1), prog.progress_seconds, prog.updated_at
+    if session and session.progress_seconds:
+        if not runtime_minutes:
+            return None, session.progress_seconds, session.updated_at
+        percent = round(min(100.0, session.progress_seconds / (runtime_minutes * 60) * 100), 1)
+        return percent, session.progress_seconds, session.updated_at
+    return None, None, None
+
+
+def _watch_status_movie_item(
+    media: Media, watched: bool, watched_at, prog: PlaybackProgress | None, session: PlaybackSession | None
+) -> dict:
+    percent, time_seconds, progress_updated = _watch_status_progress_fields(media.runtime, prog, session)
     duration = (media.runtime * 60) if media.runtime else None
-    updated_dt = prog.updated_at if prog else watched_at
+    updated_dt = progress_updated or watched_at
     return {
         "tmdb_id": media.tmdb_id,
         "media_type": "movie",
@@ -3539,8 +3560,8 @@ def _watch_status_movie_item(media: Media, watched: bool, watched_at, prog: Play
         "season_number": None,
         "episode_number": None,
         "watched": watched,
-        "percent": round(prog.progress_percent * 100, 1) if prog else None,
-        "time": prog.progress_seconds if prog else None,
+        "percent": percent,
+        "time": time_seconds,
         "duration": duration,
         "runtime_minutes": media.runtime,
         "updated_at": updated_dt.isoformat() if updated_dt else None,
@@ -3548,10 +3569,11 @@ def _watch_status_movie_item(media: Media, watched: bool, watched_at, prog: Play
 
 
 def _watch_status_episode_item(
-    ep: Media, show: Show, watched: bool, watched_at, prog: PlaybackProgress | None
+    ep: Media, show: Show, watched: bool, watched_at, prog: PlaybackProgress | None, session: PlaybackSession | None
 ) -> dict:
+    percent, time_seconds, progress_updated = _watch_status_progress_fields(ep.runtime, prog, session)
     duration = (ep.runtime * 60) if ep.runtime else None
-    updated_dt = prog.updated_at if prog else watched_at
+    updated_dt = progress_updated or watched_at
     return {
         "tmdb_id": ep.tmdb_id,
         "media_type": "episode",
@@ -3560,8 +3582,8 @@ def _watch_status_episode_item(
         "season_number": ep.season_number,
         "episode_number": ep.episode_number,
         "watched": watched,
-        "percent": round(prog.progress_percent * 100, 1) if prog else None,
-        "time": prog.progress_seconds if prog else None,
+        "percent": percent,
+        "time": time_seconds,
         "duration": duration,
         "runtime_minutes": ep.runtime,
         "updated_at": updated_dt.isoformat() if updated_dt else None,
@@ -3576,11 +3598,14 @@ async def get_watch_status(
     current_user: User = Depends(get_current_user_or_api_key),
 ):
     """Lean, TMDB-independent watch state for one title (movie or whole
-    show) — only rows with real state (watched, or an in-progress
-    PlaybackProgress bookmark), never a full episode list padded with
-    zeroes. Built for thin clients (e.g. a Lampa plugin) that resolve
-    identity/naming themselves and just need to know what to mark
-    locally. See SYNC-ARCHITECTURE-PLAN.md §5.2.1.
+    show) — only rows with real state (watched, an in-progress
+    PlaybackProgress bookmark, or a still-open PlaybackSession with real
+    progress_seconds — the latter covers a session that never crossed into
+    PlaybackProgress at all, including one stuck at a stored 0% because
+    Media.runtime was unknown when its heartbeat landed), never a full
+    episode list padded with zeroes. Built for thin clients (e.g. a Lampa
+    plugin) that resolve identity/naming themselves and just need to know
+    what to mark locally. See SYNC-ARCHITECTURE-PLAN.md §5.2.1.
 
     `type` accepts both TMDB's own "tv" and this API's "series" — Lampa
     cards commonly carry `card.type === 'tv'` directly from TMDB's own
@@ -3622,9 +3647,17 @@ async def get_watch_status(
         )
         prog = prog_q.scalar_one_or_none()
 
-        if not watched and not prog:
+        session_q = await db.execute(
+            select(PlaybackSession)
+            .where(PlaybackSession.user_id == current_user.id, PlaybackSession.media_id == media.id)
+            .order_by(desc(PlaybackSession.updated_at))
+            .limit(1)
+        )
+        session = session_q.scalar_one_or_none()
+
+        if not watched and not prog and not (session and session.progress_seconds):
             return []
-        return [_watch_status_movie_item(media, watched, watched_at, prog)]
+        return [_watch_status_movie_item(media, watched, watched_at, prog, session)]
 
     # media_type == series
     show_q = await db.execute(select(Show).where(Show.tmdb_id == tmdb_id))
@@ -3676,13 +3709,28 @@ async def get_watch_status(
     )
     progress_map = {p.media_id: p for p in progress_q.scalars().all()}
 
+    # Covers a session that never crossed into PlaybackProgress at all —
+    # either genuinely under 5%, or stuck at a stored 0% because
+    # Media.runtime was unknown when its heartbeat landed (see
+    # _watch_status_progress_fields()). Ordered so the first row seen per
+    # media_id in the loop below is the most recently updated one.
+    session_q = await db.execute(
+        select(PlaybackSession)
+        .where(PlaybackSession.user_id == current_user.id, PlaybackSession.media_id.in_(episode_ids))
+        .order_by(desc(PlaybackSession.updated_at))
+    )
+    session_map: dict[int, PlaybackSession] = {}
+    for s in session_q.scalars().all():
+        session_map.setdefault(s.media_id, s)
+
     items = []
     for ep in episodes:
         watched = ep.id in (rewatch_media_ids if active_rewatch else watched_at_map)
         prog = progress_map.get(ep.id)
-        if not watched and not prog:
+        session = session_map.get(ep.id)
+        if not watched and not prog and not (session and session.progress_seconds):
             continue
-        items.append(_watch_status_episode_item(ep, show, watched, watched_at_map.get(ep.id), prog))
+        items.append(_watch_status_episode_item(ep, show, watched, watched_at_map.get(ep.id), prog, session))
     return items
 
 
