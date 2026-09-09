@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-08
+ * Build: 2026-09-09
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -686,6 +686,25 @@
       }, false, {
         headers: apiKeyHeaders(),
         type: 'DELETE'
+      });
+    }
+
+    // GET /history/watch-status — lean, per-title watch state (movie or whole
+    // show) for the pull direction: only rows with real state (watched, or an
+    // in-progress bookmark), never a full episode list padded with zeroes.
+    // `type` accepts either 'movie' or 'tv'/'series' (server maps both).
+    function getWatchStatus(tmdbId, type, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/watch-status?tmdb_id=' + tmdbId + '&type=' + type, function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (Array.isArray(json)) onDone(json);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: apiKeyHeaders()
       });
     }
 
@@ -2736,7 +2755,10 @@
       return true;
     }
 
-    // Scrob sync — playback progress push (session start/heartbeat/complete).
+    // Scrob sync — playback progress: push (session start/heartbeat/complete)
+    // AND pull (server → Lampa.Timeline). See SYNC-ARCHITECTURE-PLAN.md §5.1/§5.2.
+    //
+    // ─── Push ───────────────────────────────────────────────────
     // Ports the proven session model from the old standalone scrob.js plugin,
     // against the same backend session endpoints this plugin's api.js now wraps
     // (POST /history/session/start, PATCH /history/session/{key},
@@ -2758,6 +2780,24 @@
     //   it — an out-of-order "playing" heartbeat arriving after /complete would
     //   silently reopen the session on the server.
     //
+    // ─── Pull ───────────────────────────────────────────────────
+    // On-demand (this file): a movie/show's own full card opening triggers
+    // GET /history/watch-status, written into Timeline via pullWriteTimeline().
+    // Bulk (continue-watching, at login/profile-switch/start) is a separate,
+    // later addition reusing the same pullWriteTimeline()/buildHash()/
+    // resolveDuration() helpers.
+    // - LWW against the local Timeline entry's own `updated` timestamp — never
+    //   blindly overwrites a possibly-newer local value (§5.2.3).
+    // - `syncingFromServer` guards onTimelineUpdate() against mistaking a pull's
+    //   own Timeline.update() echo for real local playback, and pullWriteTimeline()
+    //   additionally refuses to touch the hash of whatever is actively playing
+    //   right now — both needed because the active session's own local
+    //   `road.updated` only refreshes every ~2min (Lampa's natural cycle), not
+    //   every heartbeat, so LWW alone doesn't protect it.
+    // - "Watched" with no real progress writes percent:100 (matching how Lampa's
+    //   own "Просмотрено" menu action marks a file watched, not a Favorite('viewed')
+    //   toggle — that's a different, whole-card status, see §5.2.4/§5.3).
+    //
     // Deliberately NOT ported (out of scope for this module):
     // - Manual watched-mark clicks outside the player (Lampa.Timeline updates
     //   with no active session) — that is the "viewed" Favorite-mark sync,
@@ -2774,6 +2814,13 @@
 
     var running = false;
     var listenersBound = false;
+
+    // Set only while pull-code (below) is writing a server-sourced value into
+    // Lampa.Timeline — guards onTimelineUpdate() against mistaking that echo
+    // for real local playback (SYNC-ARCHITECTURE-PLAN.md §5.2.3). Same pattern
+    // as engine.js's own `received` flag for Favorite writes, and the old
+    // scrob.js's `isSyncingNow`.
+    var syncingFromServer = false;
 
     // Single persistent session slot — mutated in place, never reassigned, so a
     // stray closure holding a reference to `session` always sees the latest
@@ -2875,6 +2922,67 @@
       return isSeries ? 45 : 90;
     }
 
+    // ─── Pull: server → Lampa.Timeline (SYNC-ARCHITECTURE-PLAN.md §5.2) ────────
+
+    // Forward direction of resolveSeasonEpisode() above — same hash formula,
+    // building it from known identity instead of searching for one.
+    function buildHash(isSeries, originalName, season, episode) {
+      if (!originalName) return null;
+      if (!isSeries) return Lampa.Utils.hash(originalName);
+      var sep = season > 10 ? ':' : '';
+      return Lampa.Utils.hash([season, sep, episode, originalName].join(''));
+    }
+
+    // Duration fallback chain for a pulled item — a manual "watched" mark can
+    // leave both the real playback duration AND the TMDB runtime unknown
+    // (§5.2.4). Same 45/90-minute constants as resolveRuntimeMinutes() above,
+    // for symmetry between push and pull.
+    function resolveDuration(item) {
+      if (item.duration) return item.duration;
+      if (item.runtime_minutes) return item.runtime_minutes * 60;
+      return item.media_type === 'episode' ? 2700 : 5400;
+    }
+
+    // Single write path for both pull triggers (on-demand and bulk) — LWW
+    // against the local Timeline entry, guarded against corrupting whatever
+    // title is actively playing right now (§5.2.3). `item` is the normalized
+    // shape both callers build from their own source's response fields:
+    // { isSeries, originalName, season, episode, watched, percent, time,
+    //   duration, runtimeMinutes, updatedAt }
+    function pullWriteTimeline(item) {
+      var hash = buildHash(item.isSeries, item.originalName, item.season, item.episode);
+      if (!hash) return;
+      if (session.card && String(hash) === String(session.expectedHash)) return; // never clobber the active session
+
+      var local = Lampa.Timeline.view(hash);
+      var localTime = local && local.updated || 0;
+      var serverTime = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+      if (localTime && serverTime <= localTime) return; // local is not older — nothing to do
+
+      var duration = resolveDuration({
+        duration: item.duration,
+        runtime_minutes: item.runtimeMinutes,
+        media_type: item.isSeries ? 'episode' : 'movie'
+      });
+      var percent = item.watched ? 100 : item.percent || 0;
+      var time = item.watched ? duration : item.time || 0;
+      console.log('ScrobTimeline', 'pull write', {
+        hash: hash,
+        percent: percent,
+        watched: item.watched
+      });
+      syncingFromServer = true;
+      Lampa.Timeline.update({
+        hash: hash,
+        percent: percent,
+        time: time,
+        duration: duration,
+        received: true,
+        updated: serverTime || Date.now()
+      });
+      syncingFromServer = false;
+    }
+
     // ─── Player lifecycle ──────────────────────────────────────
 
     function onPlayerStart(data) {
@@ -2916,7 +3024,7 @@
       startScrobSession();
     }
     function onTimelineUpdate(e) {
-      if (!running) return;
+      if (!running || syncingFromServer) return;
       if (!e || !e.data) return;
       if (!session.card) return; // no active player session — a manual click elsewhere, handled by a separate module
 
@@ -3213,6 +3321,41 @@
       });
     }
 
+    // Normalizes one GET /history/watch-status item into pullWriteTimeline()'s
+    // shape — kept separate so the bulk pull (continue-watching, different
+    // field names) can build the same shape from its own response later.
+    function applyWatchStatusItem(item) {
+      pullWriteTimeline({
+        isSeries: item.media_type === 'episode',
+        originalName: item.original_name,
+        season: item.season_number,
+        episode: item.episode_number,
+        watched: !!item.watched,
+        percent: item.percent,
+        time: item.time,
+        duration: item.duration,
+        runtimeMinutes: item.runtime_minutes,
+        updatedAt: item.updated_at
+      });
+    }
+
+    // Point-in-time pull: fires when a movie/show's own full card opens (not
+    // episode lists, search, settings, or any other screen — 'activity' fires
+    // for ALL of those). Exact filter/field path ported from the old scrob.js,
+    // already proven against this same event (lines 677-679).
+    function onActivityStart(e) {
+      if (!running) return;
+      if (!e || e.type !== 'start' || e.component !== 'full') return;
+      var card = e.object && (e.object.card || e.object.data && e.object.data.movie || e.object.movie);
+      if (!card || !card.id) return;
+      var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
+      getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i]);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'watch-status request failed', err);
+      });
+    }
+
     // ─── Lifecycle ──────────────────────────────────────────────
 
     function start() {
@@ -3230,6 +3373,7 @@
         Lampa.Player.listener.follow('start', onPlayerStart);
         Lampa.Player.listener.follow('destroy', onPlayerDestroy);
         Lampa.Timeline.listener.follow('update', onTimelineUpdate);
+        Lampa.Listener.follow('activity', onActivityStart);
         document.addEventListener('pause', onNativeVideoPause, true);
         document.addEventListener('playing', onNativeVideoPlaying, true);
         document.addEventListener('seeked', onNativeVideoSeeked, true);
