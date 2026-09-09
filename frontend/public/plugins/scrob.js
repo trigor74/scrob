@@ -861,7 +861,7 @@
       }, JSON.stringify(payload), {
         headers: Object.assign({
           'Content-Type': 'application/json'
-        }, apiKeyHeaders())
+        }, authHeaders())
       });
     }
 
@@ -879,7 +879,7 @@
       }, JSON.stringify(payload), {
         headers: Object.assign({
           'Content-Type': 'application/json'
-        }, apiKeyHeaders()),
+        }, authHeaders()),
         type: 'PATCH'
       });
     }
@@ -898,7 +898,7 @@
       }, '{}', {
         headers: Object.assign({
           'Content-Type': 'application/json'
-        }, apiKeyHeaders())
+        }, authHeaders())
       });
     }
 
@@ -913,7 +913,7 @@
         network.clear();
         onFail(network.errorDecode(a, c));
       }, false, {
-        headers: apiKeyHeaders(),
+        headers: authHeaders(),
         type: 'DELETE'
       });
     }
@@ -933,7 +933,7 @@
         network.clear();
         onFail(network.errorDecode(a, c));
       }, false, {
-        headers: apiKeyHeaders()
+        headers: authHeaders()
       });
     }
 
@@ -950,7 +950,7 @@
         network.clear();
         onFail(network.errorDecode(a, c));
       }, false, {
-        headers: apiKeyHeaders()
+        headers: authHeaders()
       });
     }
 
