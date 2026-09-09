@@ -61,6 +61,7 @@ var SEEK_GUARD_MS = 1500            // native seeked: ignore right after another
 
 var running = false
 var listenersBound = false
+var profileListener = null // Profile change listener reference (engine.js has the same field, same reason)
 
 // Set only while pull-code (below) is writing a server-sourced value into
 // Lampa.Timeline — guards onTimelineUpdate() against mistaking that echo
@@ -643,6 +644,30 @@ function onActivityStart(e) {
     })
 }
 
+// ─── Profile switch ─────────────────────────────────────────
+// switchProfile() (utils/profiles.js) never calls start()/stop() directly —
+// it (like engine.js's own list-sync) just sets KEYS.ACTIVE_PROFILE_ID and
+// relies on whoever cares about that to notice. engine.js has always had
+// this listener (setupProfileListener() there); porting the exact same
+// pattern here — a previously-missing gap, this module ran unrestarted
+// across a profile switch until now.
+function setupProfileListener() {
+    var lastProfileId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
+
+    profileListener = function (e) {
+        if (e.name === KEYS.ACTIVE_PROFILE_ID) {
+            var newId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
+            if (newId !== lastProfileId) {
+                lastProfileId = newId
+                stop()
+                start()
+            }
+        }
+    }
+
+    Lampa.Storage.listener.follow('change', profileListener)
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────
 
 export function start() {
@@ -670,15 +695,12 @@ export function start() {
         document.addEventListener('durationchange', onNativeVideoDurationChange, true)
         listenersBound = true
     }
+    setupProfileListener()
     console.log('ScrobTimeline', 'started')
-    // Bulk pull once per start() — covers login, the sync toggle, and
-    // restoreSession() on app launch without needing a separate hook at
-    // each call site. NOT re-triggered on profile switch: switchProfile()
-    // (utils/profiles.js) restarts engine.js's own list-sync via its
-    // internal ACTIVE_PROFILE_ID listener, but has no equivalent call to
-    // timelineSync.start()/stop() — a pre-existing Phase 1 gap, not
-    // addressed here (see NOTES-FOR-LEVENDE-SESSION.md-style follow-up:
-    // flagged to the user rather than silently expanded into this branch).
+    // Bulk pull once per start() — covers login, the sync toggle,
+    // restoreSession() on app launch, AND now a profile switch (via
+    // setupProfileListener() above), without needing a separate hook at
+    // each call site.
     pullContinueWatching()
 }
 
@@ -689,5 +711,11 @@ export function stop() {
     // listener buses have no targeted unfollow-by-reference API worth
     // relying on here, and every handler above already checks `running`
     // first, making this a clean no-op while stopped.
+
+    if (profileListener) {
+        Lampa.Storage.listener.remove('change', profileListener)
+        profileListener = null
+    }
+
     resetSessionState()
 }
