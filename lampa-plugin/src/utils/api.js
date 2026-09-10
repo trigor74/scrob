@@ -407,7 +407,7 @@ export function startSession(payload, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         JSON.stringify(payload),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -428,7 +428,7 @@ export function updateSession(sessionKey, payload, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         JSON.stringify(payload),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()), type: 'PATCH' }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), type: 'PATCH' }
     )
 }
 
@@ -449,7 +449,7 @@ export function completeSession(sessionKey, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         '{}',
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, apiKeyHeaders()) }
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }
 
@@ -469,7 +469,55 @@ export function deleteSession(sessionKey, onDone, onFail) {
             onFail(network.errorDecode(a, c))
         },
         false,
-        { headers: apiKeyHeaders(), type: 'DELETE' }
+        { headers: authHeaders(), type: 'DELETE' }
+    )
+}
+
+// GET /history/watch-status — lean, per-title watch state (movie or whole
+// show) for the pull direction: only rows with real state (watched, or an
+// in-progress bookmark), never a full episode list padded with zeroes.
+// `type` accepts either 'movie' or 'tv'/'series' (server maps both).
+export function getWatchStatus(tmdbId, type, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/watch-status?tmdb_id=' + tmdbId + '&type=' + type,
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (Array.isArray(json)) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
+}
+
+// GET /history/continue-watching — everything currently in progress, for the
+// bulk pull direction (login/profile switch/app start).
+export function getContinueWatching(onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/continue-watching',
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && Array.isArray(json.continue_watching)) onDone(json.continue_watching)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
     )
 }
 

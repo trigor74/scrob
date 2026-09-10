@@ -1,4 +1,7 @@
-// Scrob sync — playback progress push (session start/heartbeat/complete).
+// Scrob sync — playback progress: push (session start/heartbeat/complete)
+// AND pull (server → Lampa.Timeline). See SYNC-ARCHITECTURE-PLAN.md §5.1/§5.2.
+//
+// ─── Push ───────────────────────────────────────────────────
 // Ports the proven session model from the old standalone scrob.js plugin,
 // against the same backend session endpoints this plugin's api.js now wraps
 // (POST /history/session/start, PATCH /history/session/{key},
@@ -20,6 +23,24 @@
 //   it — an out-of-order "playing" heartbeat arriving after /complete would
 //   silently reopen the session on the server.
 //
+// ─── Pull ───────────────────────────────────────────────────
+// On-demand (this file): a movie/show's own full card opening triggers
+// GET /history/watch-status, written into Timeline via pullWriteTimeline().
+// Bulk (continue-watching, at login/profile-switch/start) is a separate,
+// later addition reusing the same pullWriteTimeline()/buildHash()/
+// resolveDuration() helpers.
+// - LWW against the local Timeline entry's own `updated` timestamp — never
+//   blindly overwrites a possibly-newer local value (§5.2.3).
+// - `syncingFromServer` guards onTimelineUpdate() against mistaking a pull's
+//   own Timeline.update() echo for real local playback, and pullWriteTimeline()
+//   additionally refuses to touch the hash of whatever is actively playing
+//   right now — both needed because the active session's own local
+//   `road.updated` only refreshes every ~2min (Lampa's natural cycle), not
+//   every heartbeat, so LWW alone doesn't protect it.
+// - "Watched" with no real progress writes percent:100 (matching how Lampa's
+//   own "Просмотрено" menu action marks a file watched, not a Favorite('viewed')
+//   toggle — that's a different, whole-card status, see §5.2.4/§5.3).
+//
 // Deliberately NOT ported (out of scope for this module):
 // - Manual watched-mark clicks outside the player (Lampa.Timeline updates
 //   with no active session) — that is the "viewed" Favorite-mark sync,
@@ -40,6 +61,14 @@ var SEEK_GUARD_MS = 1500            // native seeked: ignore right after another
 
 var running = false
 var listenersBound = false
+var profileListener = null // Profile change listener reference (engine.js has the same field, same reason)
+
+// Set only while pull-code (below) is writing a server-sourced value into
+// Lampa.Timeline — guards onTimelineUpdate() against mistaking that echo
+// for real local playback (SYNC-ARCHITECTURE-PLAN.md §5.2.3). Same pattern
+// as engine.js's own `received` flag for Favorite writes, and the old
+// scrob.js's `isSyncingNow`.
+var syncingFromServer = false
 
 // Single persistent session slot — mutated in place, never reassigned, so a
 // stray closure holding a reference to `session` always sees the latest
@@ -125,7 +154,9 @@ function resolveSeasonEpisode(hash, originalName) {
 // Best-effort runtime guess for the /session/start payload — corrected
 // later from the real file duration via heartbeat's `runtime` field
 // (backend/routers/history.py update_manual_session()) once the native
-// 'durationchange' event or a Timeline tick reveals it.
+// 'durationchange' event or a Timeline tick reveals it. null (not a guessed
+// constant) when genuinely nothing is known yet — the server keeps its own
+// runtime as null in that case too, until a real value arrives.
 function resolveRuntimeMinutes(card, timeline, isSeries) {
     if (timeline && timeline.duration > 0) return Math.round(timeline.duration / 60)
     if (timeline && timeline.time > 0 && timeline.percent > 0) {
@@ -133,7 +164,81 @@ function resolveRuntimeMinutes(card, timeline, isSeries) {
     }
     if (card && card.runtime) return card.runtime
     if (card && card.episode_run_time && card.episode_run_time.length) return card.episode_run_time[0]
-    return isSeries ? 45 : 90
+    return null
+}
+
+// ─── Pull: server → Lampa.Timeline (SYNC-ARCHITECTURE-PLAN.md §5.2) ────────
+
+// Forward direction of resolveSeasonEpisode() above — same hash formula,
+// building it from known identity instead of searching for one.
+function buildHash(isSeries, originalName, season, episode) {
+    if (!originalName) return null
+    if (!isSeries) return Lampa.Utils.hash(originalName)
+    var sep = season > 10 ? ':' : ''
+    return Lampa.Utils.hash([season, sep, episode, originalName].join(''))
+}
+
+// Duration fallback chain for a pulled item — a manual "watched" mark can
+// leave both the real playback duration AND the TMDB runtime unknown
+// (§5.2.4). 0 (not a guessed constant) in that case — the real value, once
+// the native player reports it, is what corrects this going forward.
+function resolveDuration(item) {
+    if (item.duration) return item.duration
+    if (item.runtime_minutes) return item.runtime_minutes * 60
+    return 0
+}
+
+// Single write path for both pull triggers (on-demand and bulk) — LWW
+// against the local Timeline entry, guarded against corrupting whatever
+// title is actively playing right now (§5.2.3). `item` is the normalized
+// shape both callers build from their own source's response fields:
+// { isSeries, originalName, season, episode, watched, percent, time,
+//   duration, runtimeMinutes, updatedAt }
+//
+// updatedAt may come from a naive-UTC server timestamp with no offset (some
+// backend serializations still omit it, e.g. /history/continue-watching's
+// watched_at) - a JS Date parses an offset-less string as LOCAL time (ECMA-262
+// Date Time String Format), which would skew this exact LWW comparison by the
+// client's own UTC offset. Same fix the Astro dashboard already applies
+// (frontend/src/pages/history.astro etc: `new Date(watched_at + 'Z')`), just
+// done defensively so a string that already carries an offset isn't doubled.
+function parseServerTime(str) {
+    if (!str) return 0
+    var s = String(str)
+    var hasOffset = /Z$|[+-]\d\d:?\d\d$/.test(s)
+    return new Date(hasOffset ? s : s + 'Z').getTime() || 0
+}
+
+function pullWriteTimeline(item) {
+    var hash = buildHash(item.isSeries, item.originalName, item.season, item.episode)
+    if (!hash) return
+    if (session.card && String(hash) === String(session.expectedHash)) return // never clobber the active session
+
+    var local = Lampa.Timeline.view(hash)
+    var localTime = (local && local.updated) || 0
+    var serverTime = parseServerTime(item.updatedAt)
+    if (localTime && serverTime <= localTime) return // local is not older — nothing to do
+
+    var duration = resolveDuration({
+        duration: item.duration,
+        runtime_minutes: item.runtimeMinutes,
+        media_type: item.isSeries ? 'episode' : 'movie'
+    })
+    var percent = item.watched ? 100 : (item.percent || 0)
+    var time = item.watched ? duration : (item.time || 0)
+
+    console.log('ScrobTimeline', 'pull write', { hash: hash, percent: percent, watched: item.watched })
+
+    syncingFromServer = true
+    Lampa.Timeline.update({
+        hash: hash,
+        percent: percent,
+        time: time,
+        duration: duration,
+        received: true,
+        updated: serverTime || Date.now()
+    })
+    syncingFromServer = false
 }
 
 // ─── Player lifecycle ──────────────────────────────────────
@@ -143,7 +248,10 @@ function onPlayerStart(data) {
 
     var card = (data && data.card) ||
         (Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie))
-    if (!card) return
+    if (!card) {
+        console.warn('ScrobTimeline', 'player start: no card found, skipping', data)
+        return
+    }
 
     var se = extractSeasonEpisode(data)
     var timeline = data && data.timeline
@@ -169,11 +277,16 @@ function onPlayerStart(data) {
     session.expectedStartPercent = (timeline && timeline.percent) || 0
     session.lastUpdateTime = Date.now()
 
+    console.log('ScrobTimeline', 'player start', {
+        id: card.id, isSeries: isSeries, season: session.season, episode: session.episode,
+        title: card.title || card.name, hash: session.expectedHash, gen: session.gen
+    })
+
     startScrobSession()
 }
 
 function onTimelineUpdate(e) {
-    if (!running) return
+    if (!running || syncingFromServer) return
     if (!e || !e.data) return
     if (!session.card) return // no active player session — a manual click elsewhere, handled by a separate module
 
@@ -224,11 +337,16 @@ function onPlayerDestroy() {
         return
     }
 
+    console.log('ScrobTimeline', 'player destroy, final percent: ' + session.lastPercent + '%')
+
     if (session.lastPercent >= WATCHED_THRESHOLD_PERCENT) {
         completeScrobSession()
         resetSessionState()
     } else if (session.lastPercent < 1.5) {
-        api.deleteSession(session.key, function () {}, function () {})
+        console.log('ScrobTimeline', 'exited early (<1.5%), deleting session', session.key)
+        api.deleteSession(session.key, function () {}, function (err) {
+            console.warn('ScrobTimeline', 'failed to delete session', err)
+        })
         resetSessionState()
     } else {
         sendSessionHeartbeat(session.lastTimeSeconds, 'paused', function () {
@@ -328,22 +446,31 @@ function startScrobSession() {
         payload.episode_number = session.episode
     }
 
+    console.log('ScrobTimeline', 'sending session start', payload)
+
     api.startSession(payload, function (res) {
         if (session.gen !== startGen) {
             // A newer video already started while this was in flight — this
             // response belongs to nobody now, just clean up its orphan.
+            console.log('ScrobTimeline', 'stale session/start response (gen mismatch), discarding', res)
             if (res && res.session_key) api.deleteSession(res.session_key, function () {}, function () {})
             return
         }
-        if (!res || !res.session_key) return
+        if (!res || !res.session_key) {
+            console.warn('ScrobTimeline', 'session/start response had no session_key', res)
+            return
+        }
         if (session.destroyedBeforeStart) {
+            console.log('ScrobTimeline', 'player destroyed before session_key arrived, discarding', res.session_key)
             api.deleteSession(res.session_key, function () {}, function () {})
             resetSessionState()
             return
         }
         session.key = res.session_key
         session.started = true
-    }, function () {
+        console.log('ScrobTimeline', 'session started, key: ' + session.key)
+    }, function (err) {
+        console.warn('ScrobTimeline', 'session/start request failed', err)
         if (session.gen === startGen) resetSessionState()
     })
 }
@@ -362,12 +489,17 @@ function completeScrobSession() {
 }
 
 function fireCompleteRequest(key) {
+    console.log('ScrobTimeline', 'completing session', key)
     api.completeSession(key, function () {
-        // ok
+        console.log('ScrobTimeline', 'session completed successfully', key)
     }, function (err, status) {
         // The server's own background auto-completer (90%+, independent of
         // this client) may have already completed & removed the session.
-        if (status === 404) return
+        if (status === 404) {
+            console.log('ScrobTimeline', 'session already completed server-side (404)', key)
+            return
+        }
+        console.warn('ScrobTimeline', 'failed to complete session, queued for retry', err)
         enqueueRetry({
             type: 'custom',
             run: function (done, fail) {
@@ -423,7 +555,10 @@ function sendSessionHeartbeat(timeSeconds, state, callback) {
         }
     }
 
+    console.log('ScrobTimeline', 'sending heartbeat', key, payload)
+
     api.updateSession(key, payload, function () {
+        console.log('ScrobTimeline', 'heartbeat sent successfully')
         if (callback) callback()
         afterSettled()
     }, function (err, status) {
@@ -431,11 +566,13 @@ function sendSessionHeartbeat(timeSeconds, state, callback) {
             // Already gone server-side (likely the same background auto-
             // completer) — mark completed locally so further pause/playing/
             // seeked don't keep hitting the same 404 through end credits.
+            console.log('ScrobTimeline', 'session already gone server-side (404), marking completed locally')
             if (session.key === key) session.completed = true
             if (callback) callback()
             afterSettled()
             return
         }
+        console.warn('ScrobTimeline', 'failed to send heartbeat, queued for retry', err)
         enqueueRetry({
             type: 'custom',
             run: function (done, fail) {
@@ -450,12 +587,116 @@ function sendSessionHeartbeat(timeSeconds, state, callback) {
     })
 }
 
+// Normalizes one GET /history/watch-status item into pullWriteTimeline()'s
+// shape — kept separate so the bulk pull (continue-watching, different
+// field names) can build the same shape from its own response later.
+function applyWatchStatusItem(item) {
+    pullWriteTimeline({
+        isSeries: item.media_type === 'episode',
+        originalName: item.original_name,
+        season: item.season_number,
+        episode: item.episode_number,
+        watched: !!item.watched,
+        percent: item.percent,
+        time: item.time,
+        duration: item.duration,
+        runtimeMinutes: item.runtime_minutes,
+        updatedAt: item.updated_at
+    })
+}
+
+// Normalizes one GET /history/continue-watching item (format_event() shape:
+// nested `media`, progress fields at the top level) into
+// pullWriteTimeline()'s shape. Always partial progress, never "watched" —
+// /continue-watching is sourced from PlaybackProgress alone, which only
+// ever holds the 5%-90% in-progress window (backend/routers/history.py).
+function applyContinueWatchingItem(item) {
+    var media = item.media || {}
+    var isSeries = media.type === 'episode'
+    pullWriteTimeline({
+        isSeries: isSeries,
+        originalName: isSeries ? media.show_original_title : media.original_title,
+        season: media.season_number,
+        episode: media.episode_number,
+        watched: false,
+        // format_event() passes PlaybackProgress.progress_percent through as
+        // a 0-1 fraction, unlike /history/watch-status's own 0-100 `percent`.
+        percent: (item.progress_percent || 0) * 100,
+        time: item.progress_seconds,
+        duration: null,
+        runtimeMinutes: media.runtime,
+        updatedAt: item.watched_at // aliases PlaybackProgress.updated_at, see format_event()
+    })
+}
+
+// Bulk pull: everything currently in progress, at login/profile-switch/app
+// start — so the "continue watching" row is already correct without
+// waiting for the user to open each card individually (on-demand pull
+// above only fires per-card). Exported for main.js to call alongside its
+// existing Lampa.Timeline.read()/Lampa.Favorite.read() calls.
+export function pullContinueWatching() {
+    if (!running) return
+    api.getContinueWatching(function (items) {
+        for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i])
+    }, function (err) {
+        console.warn('ScrobTimeline', 'continue-watching pull failed', err)
+    })
+}
+
+// Point-in-time pull: fires when a movie/show's own full card opens (not
+// episode lists, search, settings, or any other screen — 'activity' fires
+// for ALL of those). Exact filter/field path ported from the old scrob.js,
+// already proven against this same event (lines 677-679).
+function onActivityStart(e) {
+    if (!running) return
+    if (!e || e.type !== 'start' || e.component !== 'full') return
+    var card = e.object && (e.object.card || (e.object.data && e.object.data.movie) || e.object.movie)
+    if (!card || !card.id) return
+
+    var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv')
+    api.getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i])
+    }, function (err) {
+        console.warn('ScrobTimeline', 'watch-status request failed', err)
+    })
+}
+
+// ─── Profile switch ─────────────────────────────────────────
+// switchProfile() (utils/profiles.js) never calls start()/stop() directly —
+// it (like engine.js's own list-sync) just sets KEYS.ACTIVE_PROFILE_ID and
+// relies on whoever cares about that to notice. engine.js has always had
+// this listener (setupProfileListener() there); porting the exact same
+// pattern here — a previously-missing gap, this module ran unrestarted
+// across a profile switch until now.
+function setupProfileListener() {
+    var lastProfileId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
+
+    profileListener = function (e) {
+        if (e.name === KEYS.ACTIVE_PROFILE_ID) {
+            var newId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
+            if (newId !== lastProfileId) {
+                lastProfileId = newId
+                stop()
+                start()
+            }
+        }
+    }
+
+    Lampa.Storage.listener.follow('change', profileListener)
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────
 
 export function start() {
     if (running) return
-    if (!hasSession()) return
-    if (!Lampa.Storage.get(KEYS.SYNC_ENABLED)) return
+    if (!hasSession()) {
+        console.warn('ScrobTimeline', 'start skipped: no session')
+        return
+    }
+    if (!Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+        console.warn('ScrobTimeline', 'start skipped: sync disabled')
+        return
+    }
 
     running = true
 
@@ -463,6 +704,7 @@ export function start() {
         Lampa.Player.listener.follow('start', onPlayerStart)
         Lampa.Player.listener.follow('destroy', onPlayerDestroy)
         Lampa.Timeline.listener.follow('update', onTimelineUpdate)
+        Lampa.Listener.follow('activity', onActivityStart)
         document.addEventListener('pause', onNativeVideoPause, true)
         document.addEventListener('playing', onNativeVideoPlaying, true)
         document.addEventListener('seeked', onNativeVideoSeeked, true)
@@ -470,13 +712,27 @@ export function start() {
         document.addEventListener('durationchange', onNativeVideoDurationChange, true)
         listenersBound = true
     }
+    setupProfileListener()
+    console.log('ScrobTimeline', 'started')
+    // Bulk pull once per start() — covers login, the sync toggle,
+    // restoreSession() on app launch, AND now a profile switch (via
+    // setupProfileListener() above), without needing a separate hook at
+    // each call site.
+    pullContinueWatching()
 }
 
 export function stop() {
     running = false
+    console.log('ScrobTimeline', 'stopped')
     // Listeners stay bound intentionally: Lampa.Player/Timeline's global
     // listener buses have no targeted unfollow-by-reference API worth
     // relying on here, and every handler above already checks `running`
     // first, making this a clean no-op while stopped.
+
+    if (profileListener) {
+        Lampa.Storage.listener.remove('change', profileListener)
+        profileListener = null
+    }
+
     resetSessionState()
 }
