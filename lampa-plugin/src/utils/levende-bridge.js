@@ -40,6 +40,7 @@
 // instead of leaving this plugin on the outgoing profile's credentials.
 import { KEYS } from './storage'
 import * as sync from './sync'
+import * as timelineSync from './sync/timeline'
 
 var CURRENT_PROFILE_KEY = 'scrob_levende_current_profile_id'
 var BACKUP_STORE_KEY = 'scrob_levende_backup'
@@ -230,7 +231,13 @@ function doApplyUnsafe(profile) {
         return
     }
 
+    // Both sync engines restart around a credential swap - list-sync
+    // (engine.js) already did before timeline push/pull (timeline.js)
+    // existed; this was never extended here when it was added, so under
+    // levende progress never actually reached the server (timelineSync
+    // never even called start() once) even though list-sync worked fine.
     sync.stop()
+    timelineSync.stop()
 
     // Back up whatever is CURRENTLY live under the outgoing profile, whether
     // it came from situation B or C (harmless no-op to preserve for a B
@@ -271,7 +278,10 @@ function doApplyUnsafe(profile) {
     Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId)
     Lampa.Storage.set(HAS_APPLIED_KEY, true)
 
-    if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) sync.start()
+    if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+        sync.start()
+        timelineSync.start()
+    }
 
     if (onApplyCallback) onApplyCallback()
 }

@@ -4003,7 +4003,14 @@
         // and profile.profileId logged as ''.
         return;
       }
+
+      // Both sync engines restart around a credential swap - list-sync
+      // (engine.js) already did before timeline push/pull (timeline.js)
+      // existed; this was never extended here when it was added, so under
+      // levende progress never actually reached the server (timelineSync
+      // never even called start() once) even though list-sync worked fine.
       stop$1();
+      stop();
 
       // Back up whatever is CURRENTLY live under the outgoing profile, whether
       // it came from situation B or C (harmless no-op to preserve for a B
@@ -4040,7 +4047,10 @@
       }
       Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId);
       Lampa.Storage.set(HAS_APPLIED_KEY, true);
-      if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) start$1();
+      if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+        start$1();
+        start();
+      }
       if (onApplyCallback) onApplyCallback();
     }
 
