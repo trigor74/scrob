@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-08
+ * Build: 2026-09-10
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -4745,10 +4745,22 @@
     // Re-render header button from saved session on startup
     function restoreSession() {
       if (hasSession()) {
-        // updateHeaderButton(), not renderHeaderButton() directly - must still
-        // respect isLevendeActive() here, or the icon reappears on every page
-        // load regardless of the persisted flag (this was the actual bug: the
-        // flag was read correctly, but this call site never consulted it).
+        // updateHeaderButton() (not renderHeaderButton() directly) - two
+        // separate reasons this matters:
+        // 1. A plain render never kicks off ensureOwnProfileInfo(), so an
+        //    API-key-only or QR-paired session established in an EARLIER page
+        //    load never got its GET /profile/me fetched on a plain app
+        //    restart: ownProfileInfo is in-memory-only (storage.js) and
+        //    starts null every page load, so the header avatar and
+        //    scrob_user_info in Settings stayed stuck on the generic
+        //    "?"/authStatusText() fallback no matter how many times Settings
+        //    was reopened, even though the credential itself was perfectly
+        //    valid and /profile/me would have returned a real display_name
+        //    if only anyone had asked it to.
+        // 2. A plain render also never respects isLevendeActive() - the icon
+        //    reappeared on every page load regardless of the persisted flag
+        //    (the flag was read correctly, this call site just never
+        //    consulted it).
         updateHeaderButton();
 
         // Start sync if enabled (lifecycle wiring)
