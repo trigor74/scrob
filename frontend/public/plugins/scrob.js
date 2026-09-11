@@ -3953,8 +3953,19 @@
     // after a plain onSelect isn't confirmed one way or the other, so this
     // guard is needed regardless. "Закрити" itself is NOT guarded by it (its
     // own restore is idempotent — a redundant second run is harmless).
+    //
+    // `enabled` + Controller.toggle(enabled) in every branch (found missing by
+    // live test 2026-09-13 — real app.min.js's own Select.show() call sites,
+    // e.g. player quality/flow menus, always do this): selecting an item only
+    // hides the select box (bind$7()'s goclose(), app.min.js:12848) - it does
+    // NOT detach Controller's 'select' group (toggle$c(), app.min.js:12917),
+    // which stays bound (back/left → close$a) until something explicitly
+    // switches the Controller elsewhere. Without this, the box is invisible but
+    // still "focused" - the user sees a dead/phantom screen, and every further
+    // back-press still reaches close$a() → onBack() → another restore call.
     function showUnmarkMenu(identity, events, mediaId) {
       var resolved = false;
+      var enabled = Lampa.Controller.enabled().name;
       var items = [{
         title: Lampa.Lang.translate('scrob_unmark_close'),
         action: 'close'
@@ -3977,6 +3988,7 @@
         onSelect: function onSelect(item) {
           if (item.action === 'close') {
             restoreTimelineFromServer(identity);
+            Lampa.Controller.toggle(enabled);
             return;
           }
           resolved = true;
@@ -3999,9 +4011,11 @@
               console.warn('ScrobTimeline', 'manual unmark: delete all failed', err);
             });
           }
+          Lampa.Controller.toggle(enabled);
         },
         onBack: function onBack() {
           if (!resolved) restoreTimelineFromServer(identity);
+          Lampa.Controller.toggle(enabled);
         }
       });
     }
