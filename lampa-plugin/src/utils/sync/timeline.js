@@ -588,8 +588,8 @@ function resolveActiveSession(identity, callback) {
     api.getNowPlaying(true, function (sessions) {
         for (var i = 0; i < sessions.length; i++) {
             var media = sessions[i].media || {}
-            if (media.type === 'episode' && media.show_tmdb_id === identity.seriesTmdbId &&
-                media.season_number === identity.season && media.episode_number === identity.episode) {
+            if (media.type === 'episode' && String(media.show_tmdb_id) === String(identity.seriesTmdbId) &&
+                String(media.season_number) === String(identity.season) && String(media.episode_number) === String(identity.episode)) {
                 callback(sessions[i].session_key)
                 return
             }
@@ -613,13 +613,20 @@ function pushManualWatchedMark(identity) {
         api.completeSession(sessionKey, function () {
             console.log('ScrobTimeline', 'manual watched mark: completed active session', sessionKey)
         }, function (err, status) {
-            if (status === 404) return // already gone server-side, nothing left to do
+            if (status === 404) {
+                // Session was already gone server-side (closed elsewhere) by the
+                // time this landed - the user still explicitly asked to mark it
+                // watched, so that intent has to go through some other way now.
+                console.log('ScrobTimeline', 'manual watched mark: session already gone (404), falling back to plain mark', sessionKey)
+                sendPlainManualWatchedMark(identity)
+                return
+            }
             console.warn('ScrobTimeline', 'manual watched mark: completeSession failed, queued for retry', err)
             enqueueRetry({
                 type: 'custom',
                 run: function (done, fail) {
                     api.completeSession(sessionKey, done, function (e2, s2) {
-                        if (s2 === 404) { done(); return }
+                        if (s2 === 404) { done(); sendPlainManualWatchedMark(identity); return }
                         fail()
                     })
                 }
@@ -743,9 +750,10 @@ function restoreTimelineFromServer(identity) {
 function showUnmarkMenu(identity, events, mediaId) {
     var resolved = false
     var enabled = Lampa.Controller.enabled().name
+    var removeDate = formatManualDate(events[0].watched_at)
     var items = [
         { title: Lampa.Lang.translate('scrob_unmark_close'), action: 'close' },
-        { title: Lampa.Lang.translate('scrob_unmark_remove_event') + ' (' + formatManualDate(events[0].watched_at) + ')', action: 'remove_event' },
+        { title: Lampa.Lang.translate('scrob_unmark_remove_event') + (removeDate ? ' (' + removeDate + ')' : ''), action: 'remove_event' },
         { title: Lampa.Lang.translate('scrob_unmark_rewatch'), action: 'rewatch' }
     ]
     if (events.length > 1) {
