@@ -407,6 +407,37 @@
           ru: 'Удалено из категории',
           en: 'Removed from category',
           be: 'Выдалена з катэгорыі'
+        },
+        // ─── Manual unmark menu (§5.2.6) ────────────────────
+        scrob_unmark_menu_title: {
+          uk: 'Дії з переглядом',
+          ru: 'Действия с просмотром',
+          en: 'Watch actions',
+          be: 'Дзеянні з праглядам'
+        },
+        scrob_unmark_close: {
+          uk: 'Закрити',
+          ru: 'Закрыть',
+          en: 'Close',
+          be: 'Закрыць'
+        },
+        scrob_unmark_remove_event: {
+          uk: 'Видалити перегляд',
+          ru: 'Удалить просмотр',
+          en: 'Delete watch',
+          be: 'Выдаліць прагляд'
+        },
+        scrob_unmark_rewatch: {
+          uk: 'Почати заново',
+          ru: 'Начать заново',
+          en: 'Start over',
+          be: 'Пачаць нанова'
+        },
+        scrob_unmark_delete_all: {
+          uk: 'Видалити всю історію',
+          ru: 'Удалить всю историю',
+          en: 'Delete all history',
+          be: 'Выдаліць усю гісторыю'
         }
       });
     }
@@ -872,6 +903,24 @@
       });
     }
 
+    // DELETE /history/event/{eventId} — remove a watch event
+    function removeHistoryEvent(eventId, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/event/' + eventId, function () {
+        network.clear();
+        onDone();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, '{}', {
+        headers: Object.assign({
+          'X-HTTP-Method-Override': 'DELETE'
+        }, authHeaders()),
+        type: 'DELETE'
+      });
+    }
+
     // ─── Manual scrobble session API (playback progress tracking) ────
     // Session key is derived server-side from title identity (tmdb_id for a
     // movie, show_tmdb_id+season+episode for an episode) — repeated starts for
@@ -984,6 +1033,73 @@
         onFail(network.errorDecode(a, c));
       }, false, {
         headers: authHeaders()
+      });
+    }
+
+    // GET /history/item-events — real WatchEvent list for one episode (or one
+    // movie via tmdb_id), newest first, already rewatch-aware. Used by the
+    // manual "unmark" flow (SYNC-ARCHITECTURE-PLAN.md §5.2.6) to decide which
+    // menu options to offer and which event id to delete.
+    function getItemEvents(params, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      var query = ['media_type=' + params.mediaType];
+      if (params.tmdbId) query.push('tmdb_id=' + params.tmdbId);
+      if (params.seriesTmdbId) query.push('series_tmdb_id=' + params.seriesTmdbId);
+      if (params.season != null) query.push('season_number=' + params.season);
+      if (params.episode != null) query.push('episode_number=' + params.episode);
+      network.native(base() + '/history/item-events?' + query.join('&'), function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json) onDone(json);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: authHeaders()
+      });
+    }
+
+    // POST /history/rewatch — start a fresh rewatch cycle (whole show, a season,
+    // or a single episode); never touches existing history.
+    function startRewatch(seriesTmdbId, season, episode, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      var query = ['series_tmdb_id=' + seriesTmdbId];
+      if (season != null) query.push('season_number=' + season);
+      if (episode != null) query.push('episode_number=' + episode);
+      network.native(base() + '/history/rewatch?' + query.join('&'), function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json) onDone(json);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, '{}', {
+        headers: Object.assign({
+          'Content-Type': 'application/json'
+        }, authHeaders())
+      });
+    }
+
+    // DELETE /history/item?id={mediaId}&media_type=... — remove ALL watch events
+    // for one media item (all rewatch cycles included). `mediaId` is the
+    // server's internal Media.id (from GET /history/item-events's media_id),
+    // not a tmdb_id.
+    function deleteHistoryItem(mediaId, mediaType, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/item?id=' + mediaId + '&media_type=' + mediaType, function () {
+        network.clear();
+        onDone();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, '{}', {
+        headers: Object.assign({
+          'X-HTTP-Method-Override': 'DELETE'
+        }, authHeaders()),
+        type: 'DELETE'
       });
     }
 
@@ -3423,7 +3539,14 @@
       var hasOffset = /Z$|[+-]\d\d:?\d\d$/.test(s);
       return new Date(hasOffset ? s : s + 'Z').getTime() || 0;
     }
-    function pullWriteTimeline(item) {
+
+    // `force` (§5.2.6, "Закрити") bypasses the LWW guard entirely — needed
+    // because Lampa's own manual uncheck already stamped `updated: Date.now()`
+    // locally, synchronously, before this ever runs, which would otherwise
+    // always look "newer" than the server and silently block the restore. When
+    // forced, the write itself is stamped `Date.now()` too (not `serverTime`)
+    // so it correctly stays "newest" for any later LWW comparison.
+    function pullWriteTimeline(item, force) {
       var hash = buildHash(item.isSeries, item.originalName, item.season, item.episode);
       if (!hash) return;
       if (session.card && String(hash) === String(session.expectedHash)) return; // never clobber the active session
@@ -3431,7 +3554,7 @@
       var local = Lampa.Timeline.view(hash);
       var localTime = local && local.updated || 0;
       var serverTime = parseServerTime(item.updatedAt);
-      if (localTime && serverTime <= localTime) return; // local is not older — nothing to do
+      if (!force && localTime && serverTime <= localTime) return; // local is not older — nothing to do
 
       var duration = resolveDuration({
         duration: item.duration,
@@ -3443,7 +3566,8 @@
       console.log('ScrobTimeline', 'pull write', {
         hash: hash,
         percent: percent,
-        watched: item.watched
+        watched: item.watched,
+        force: !!force
       });
       syncingFromServer = true;
       Lampa.Timeline.update({
@@ -3452,7 +3576,7 @@
         time: time,
         duration: duration,
         received: true,
-        updated: serverTime || Date.now()
+        updated: force ? Date.now() : serverTime || Date.now()
       });
       syncingFromServer = false;
     }
@@ -3541,8 +3665,9 @@
       if (!session.card) {
         // No internal player session — either an external-player result
         // (§5.1.1, handled below) or a manual click elsewhere with no
-        // active player of any kind (§5.2.6, not yet implemented).
-        if (externalContext.active) handleExternalTimelineUpdate(e);
+        // active player of any kind (§5.2.6: season-episode__viewed checkbox
+        // or "Просмотрено" outside the player).
+        if (externalContext.active) handleExternalTimelineUpdate(e);else handleManualTimelineUpdate(e);
         return;
       }
       var origName = session.card.original_name || session.card.original_title || session.card.title || session.card.name;
@@ -3701,6 +3826,183 @@
         });
       }, function (err) {
         console.warn('ScrobTimeline', 'external session/start request failed', err);
+      });
+    }
+
+    // ─── Manual marks outside the player (§5.2.6) ──────────────
+    // Episodes only — a movie has no comparable per-item checkbox UI (its only
+    // manual action is "Скинути прогрес перегляду", a different, unanalyzed
+    // action outside this scope). Fires when Lampa.Timeline.listener('update')
+    // lands with no internal session (session.card) AND no external-player
+    // context active — the only remaining source is a real local click on
+    // season-episode__viewed (or "Просмотрено" on a file).
+
+    // Resolves the clicked hash against whatever full-card screen is currently
+    // open — same resolveSeasonEpisode() search onPlayerStart()/onExternalPlayerStart()
+    // already use, just without a session/externalContext to anchor identity to.
+    function resolveManualIdentity(hash) {
+      var active = Lampa.Activity.active();
+      if (!active) return null;
+      var card = active.card_data || active.card || active.movie;
+      if (!card || !card.id) return null;
+      var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
+      if (!isSeries) return null; // movies out of scope, see module header above
+
+      var originalName = card.original_name || card.original_title || card.title || card.name;
+      var se = resolveSeasonEpisode(hash, originalName);
+      if (!se.season || !se.episode) return null;
+      return {
+        seriesTmdbId: card.id,
+        season: se.season,
+        episode: se.episode
+      };
+    }
+    function handleManualTimelineUpdate(e) {
+      var hash = e.data.hash;
+      if (!hash) return;
+      var identity = resolveManualIdentity(hash);
+      if (!identity) return; // not this screen's episode, or a movie — nothing to do
+
+      var road = e.data.road || {};
+      var percent = parseFloat(road.percent || 0);
+      if (percent >= WATCHED_THRESHOLD_PERCENT) pushManualWatchedMark(identity);else handleManualUnmark(identity);
+    }
+
+    // "Positive" direction — simple, low-risk: one POST /history, no
+    // progress_seconds (server already treats that as "manually marked", same
+    // convention as the external-player watched mark above).
+    function pushManualWatchedMark(identity) {
+      var episode = {
+        seriesTmdbId: identity.seriesTmdbId,
+        season: identity.season,
+        episode: identity.episode
+      };
+      addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, function () {
+        console.log('ScrobTimeline', 'manual watched mark sent', identity);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'failed to send manual watched mark, queued for retry', err);
+        enqueueRetry({
+          type: 'custom',
+          run: function run(done, fail) {
+            addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, done, fail);
+          }
+        });
+      });
+    }
+
+    // Full (not relative) date for the "Видалити перегляд" menu label.
+    function formatManualDate(isoString) {
+      var time = parseServerTime(isoString);
+      if (!time) return '';
+      var d = new Date(time);
+      function pad(n) {
+        return n < 10 ? '0' + n : '' + n;
+      }
+      return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear();
+    }
+
+    // "Unmark" direction — never deletes anything silently (see §5.2.6 module
+    // notes). Lampa already unchecked the box locally by the time this runs, so
+    // the first step is always a real lookup of what the server actually knows
+    // about this episode.
+    function handleManualUnmark(identity) {
+      Lampa.Loading.start(function () {
+        Lampa.Loading.stop();
+      });
+      getItemEvents({
+        mediaType: 'episode',
+        seriesTmdbId: identity.seriesTmdbId,
+        season: identity.season,
+        episode: identity.episode
+      }, function (res) {
+        Lampa.Loading.stop();
+        var events = res && res.events || [];
+        // Server has nothing for this episode at all — nothing to reconcile,
+        // the local uncheck already matches the server's (empty) state.
+        if (!events.length) return;
+        showUnmarkMenu(identity, events, res.media_id);
+      }, function (err) {
+        Lampa.Loading.stop();
+        console.warn('ScrobTimeline', 'item-events request failed', err);
+      });
+    }
+
+    // Re-runs the on-demand pull (§5.2.5) for exactly this episode's hash, with
+    // `force: true` — restores whatever the server actually has (100%, 31%, or
+    // nothing) instead of guessing, and bypasses the LWW guard that Lampa's own
+    // synchronous local uncheck would otherwise trip (see pullWriteTimeline()).
+    function restoreTimelineFromServer(identity) {
+      getWatchStatus(identity.seriesTmdbId, 'tv', function (items) {
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          if (item.media_type === 'episode' && item.season_number === identity.season && item.episode_number === identity.episode) {
+            applyWatchStatusItem(item, true);
+            return;
+          }
+        }
+        // Nothing server-side for this episode — Lampa's own local uncheck
+        // (0%/unwatched) already matches that; nothing to force.
+      }, function (err) {
+        console.warn('ScrobTimeline', 'restore after "close" failed', err);
+      });
+    }
+
+    // Four-item menu, exact order per §5.2.6. `resolved` guards onBack against
+    // re-running "Закрити"'s restore after items 2-4 already took a real,
+    // server-affecting action — Lampa.Select.show's onBack firing behavior
+    // after a plain onSelect isn't confirmed one way or the other, so this
+    // guard is needed regardless. "Закрити" itself is NOT guarded by it (its
+    // own restore is idempotent — a redundant second run is harmless).
+    function showUnmarkMenu(identity, events, mediaId) {
+      var resolved = false;
+      var items = [{
+        title: Lampa.Lang.translate('scrob_unmark_close'),
+        action: 'close'
+      }, {
+        title: Lampa.Lang.translate('scrob_unmark_remove_event') + ' (' + formatManualDate(events[0].watched_at) + ')',
+        action: 'remove_event'
+      }, {
+        title: Lampa.Lang.translate('scrob_unmark_rewatch'),
+        action: 'rewatch'
+      }];
+      if (events.length > 1) {
+        items.push({
+          title: Lampa.Lang.translate('scrob_unmark_delete_all') + ' (' + events.length + ')',
+          action: 'delete_all'
+        });
+      }
+      Lampa.Select.show({
+        title: Lampa.Lang.translate('scrob_unmark_menu_title'),
+        items: items,
+        onSelect: function onSelect(item) {
+          if (item.action === 'close') {
+            restoreTimelineFromServer(identity);
+            return;
+          }
+          resolved = true;
+          if (item.action === 'remove_event') {
+            removeHistoryEvent(events[0].id, function () {
+              console.log('ScrobTimeline', 'manual unmark: removed event', events[0].id);
+            }, function (err) {
+              console.warn('ScrobTimeline', 'manual unmark: remove event failed', err);
+            });
+          } else if (item.action === 'rewatch') {
+            startRewatch(identity.seriesTmdbId, identity.season, identity.episode, function () {
+              console.log('ScrobTimeline', 'manual unmark: rewatch started', identity);
+            }, function (err) {
+              console.warn('ScrobTimeline', 'manual unmark: rewatch start failed', err);
+            });
+          } else if (item.action === 'delete_all') {
+            deleteHistoryItem(mediaId, 'episode', function () {
+              console.log('ScrobTimeline', 'manual unmark: deleted all history', mediaId);
+            }, function (err) {
+              console.warn('ScrobTimeline', 'manual unmark: delete all failed', err);
+            });
+          }
+        },
+        onBack: function onBack() {
+          if (!resolved) restoreTimelineFromServer(identity);
+        }
       });
     }
     function onPlayerDestroy() {
@@ -3973,7 +4275,7 @@
     // Normalizes one GET /history/watch-status item into pullWriteTimeline()'s
     // shape — kept separate so the bulk pull (continue-watching, different
     // field names) can build the same shape from its own response later.
-    function applyWatchStatusItem(item) {
+    function applyWatchStatusItem(item, force) {
       pullWriteTimeline({
         isSeries: item.media_type === 'episode',
         originalName: item.original_name,
@@ -3985,7 +4287,7 @@
         duration: item.duration,
         runtimeMinutes: item.runtime_minutes,
         updatedAt: item.updated_at
-      });
+      }, force);
     }
 
     // Normalizes one GET /history/continue-watching item (format_event() shape:
