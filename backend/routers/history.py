@@ -2129,9 +2129,11 @@ async def mark_as_watched(
 
 @router.get("/item-events")
 async def get_item_events(
-    tmdb_id: int = Query(...),
+    tmdb_id: int | None = Query(None),
     media_type: MediaType = Query(...),
     series_tmdb_id: int | None = Query(None),
+    season_number: int | None = Query(None),
+    episode_number: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
@@ -2139,15 +2141,47 @@ async def get_item_events(
     plus whether it currently counts as watched. Full play history is always
     returned as-is - but for an episode whose show has an active rewatch,
     "watched" reflects that rewatch's own progress rather than raw history,
-    since a pre-rewatch play shouldn't make an episode look watched again."""
+    since a pre-rewatch play shouldn't make an episode look watched again.
+
+    An episode's own tmdb_id is frequently unknown to a thin client (a Lampa
+    plugin only ever resolves a season/episode against the SHOW's tmdb_id,
+    never the episode's own one - SYNC-ARCHITECTURE-PLAN.md §5.2.6) -
+    series_tmdb_id+season_number+episode_number is accepted as an
+    alternative identity for media_type=episode."""
+    episode_has_context = (
+        media_type == MediaType.episode
+        and series_tmdb_id is not None
+        and season_number is not None
+        and episode_number is not None
+    )
+    if not episode_has_context and tmdb_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="tmdb_id is required unless series_tmdb_id+season_number+episode_number are all given",
+        )
+
+    show = None
+    if episode_has_context:
+        show_q = await db.execute(select(Show).where(Show.tmdb_id == series_tmdb_id))
+        show = show_q.scalar_one_or_none()
+        if not show:
+            return {"watched": False, "events": [], "media_id": None}
+        media_filters = [
+            Media.show_id == show.id,
+            Media.season_number == season_number,
+            Media.episode_number == episode_number,
+            Media.media_type == MediaType.episode,
+        ]
+    else:
+        media_filters = [Media.tmdb_id == tmdb_id, Media.media_type == media_type]
+
     query = (
         select(WatchEvent, Media.id)
         .join(Media, Media.id == WatchEvent.media_id)
         .where(
             WatchEvent.user_id == current_user.id,
             WatchEvent.completed == True,
-            Media.tmdb_id == tmdb_id,
-            Media.media_type == media_type,
+            *media_filters,
         )
         .order_by(WatchEvent.watched_at.desc().nulls_last(), WatchEvent.id.desc())
     )
@@ -2158,16 +2192,15 @@ async def get_item_events(
 
     watched = len(events) > 0
     if media_type == MediaType.episode and series_tmdb_id:
-        show_q = await db.execute(select(Show).where(Show.tmdb_id == series_tmdb_id))
-        show = show_q.scalar_one_or_none()
+        if show is None:
+            show_q = await db.execute(select(Show).where(Show.tmdb_id == series_tmdb_id))
+            show = show_q.scalar_one_or_none()
         if show:
             active_rewatch = await get_active_rewatch(db, current_user.id, show.id)
             if active_rewatch:
                 if media_id is None:
                     media_q = await db.execute(
-                        select(Media.id)
-                        .where(Media.tmdb_id == tmdb_id, Media.media_type == MediaType.episode)
-                        .order_by(Media.id)
+                        select(Media.id).where(*media_filters).order_by(Media.id)
                     )
                     media_id = media_q.scalars().first()
                 watched = False
@@ -2186,6 +2219,7 @@ async def get_item_events(
             {"id": e.id, "watched_at": e.watched_at.isoformat() if e.watched_at else None}
             for e in events
         ],
+        "media_id": media_id,
     }
 
 
