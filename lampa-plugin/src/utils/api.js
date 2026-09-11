@@ -338,10 +338,21 @@ export function adminSettings(onDone, onFail) {
     )
 }
 
-// POST /history — mark a media as watched
-export function addHistoryEvent(tmdbId, mediaType, completed, onDone, onFail) {
+// POST /history — mark a media as watched. episode fields optional (movie: omit all three).
+export function addHistoryEvent(tmdbId, mediaType, completed, episode, onDone, onFail) {
     var network = new Lampa.Reguest()
     network.timeout(15000)
+
+    var payload = {
+        tmdb_id: tmdbId,
+        media_type: mediaType,
+        completed: completed
+    }
+    if (episode) {
+        payload.series_tmdb_id = episode.seriesTmdbId
+        payload.season_number = episode.season
+        payload.episode_number = episode.episode
+    }
 
     network.native(
         base() + '/history',
@@ -355,11 +366,7 @@ export function addHistoryEvent(tmdbId, mediaType, completed, onDone, onFail) {
             network.clear()
             onFail(network.errorDecode(a, c))
         },
-        JSON.stringify({
-            tmdb_id: tmdbId,
-            media_type: mediaType,
-            completed: completed
-        }),
+        JSON.stringify(payload),
         { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
     )
 }

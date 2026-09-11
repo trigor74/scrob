@@ -58,6 +58,25 @@ var WATCHED_THRESHOLD_PERCENT = 90
 var HEARTBEAT_THROTTLE_MS = 15000   // periodic heartbeat driven by Timeline updates
 var SAME_STATE_GUARD_MS = 3000      // native pause/playing: ignore immediate repeats
 var SEEK_GUARD_MS = 1500            // native seeked: ignore right after another heartbeat
+// External player (SYNC-ARCHITECTURE-PLAN.md §5.1.1): Android's own result-handling
+// loop fires all of a playlist's Timeline.update() calls back-to-back, same JS tick
+// range - not gated by our own network calls (those go out separately, asynchronously,
+// and don't feed back into this timer). This only needs to bridge the gap between
+// Android-side calls themselves, which is normally single-digit milliseconds. Used
+// to re-arm the timer on EACH incoming Timeline.update while a burst is landing -
+// never at launch, see EXTERNAL_CONTEXT_SAFETY_MS below for why.
+var EXTERNAL_CONTEXT_RESET_MS = 1000
+// The ONLY timer armed at 'external' launch time (onExternalPlayerStart) - has to
+// outlive the entire external viewing session (could be hours), not just a burst of
+// updates. Android deliberately keeps this WebView's JS timers running while the
+// external player has focus (MainActivity.kt: "suppress WebView pauseTimers while
+// our external player is open"), so a short debounce here would fire mid-playback
+// and silently drop every subsequent Timeline.update for that whole session - a
+// confirmed bug, not hypothetical (EXTERNAL_CONTEXT_RESET_MS was wrongly reused here
+// originally). Pure safety net for "the external player never returns any result at
+// all" - normal exits are covered by the short reset above once updates start
+// arriving, well before this ever fires.
+var EXTERNAL_CONTEXT_SAFETY_MS = 6 * 60 * 60 * 1000
 
 var running = false
 var listenersBound = false
@@ -100,6 +119,32 @@ var session = {
 // heartbeat — module-level (not session.*) because it must still resolve
 // correctly even if resetSessionState() runs before that heartbeat returns.
 var pendingCompleteAfterHeartbeat = null
+
+// External player context (§5.1.1) — deliberately separate from `session`
+// above, not reused: `session.expectedHash`/`session.key`/`started` etc are
+// all internal-player-specific (one fixed title, one long-lived server
+// session). An external playback burst can touch MANY different episodes'
+// hashes in one go (playlist auto-next, already resolved on the Android
+// side - see module header) and never has a session to keep open; each
+// Timeline.update is pushed as its own self-contained snapshot instead.
+var externalContext = {
+    active: false,
+    isSeries: false,
+    originalName: null,
+    card: null,
+    handledHashes: {}
+}
+var externalResetTimer = null
+
+function resetExternalContext() {
+    if (externalResetTimer) clearTimeout(externalResetTimer)
+    externalResetTimer = null
+    externalContext.active = false
+    externalContext.isSeries = false
+    externalContext.originalName = null
+    externalContext.card = null
+    externalContext.handledHashes = {}
+}
 
 function resetSessionState() {
     session.key = null
@@ -246,6 +291,12 @@ function pullWriteTimeline(item) {
 function onPlayerStart(data) {
     if (!running) return
 
+    // Guard against a stale external-player context outliving a real internal
+    // session that starts AND finishes inside the debounce window (§5.1.1,
+    // point 6) - unconditional, every internal start wins over any pending
+    // external context regardless of its own state.
+    resetExternalContext()
+
     var card = (data && data.card) ||
         (Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie))
     if (!card) {
@@ -285,10 +336,51 @@ function onPlayerStart(data) {
     startScrobSession()
 }
 
+// External player (§5.1.1) — Lampa fires 'external', not 'start', when the
+// video is handed off to an outside app (Just+/MX Player and similar on
+// Android; confirmed cross-platform - same event on iOS/macOS/webOS too,
+// see app.min.js's Player module). No session.card gets set here on
+// purpose: there is no long-lived internal session to track, just identity
+// context for whatever Timeline.update() calls come back later (real
+// device/duration verified only for Android - see §5.1.1 for the source
+// references this was confirmed against).
+function onExternalPlayerStart(data) {
+    if (!running) return
+
+    var card = (data && data.card) ||
+        (Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie))
+    if (!card) {
+        console.warn('ScrobTimeline', 'external player start: no card found, skipping', data)
+        return
+    }
+
+    var se = extractSeasonEpisode(data)
+    var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv' || (se && se.season > 0))
+    var originalName = card.original_name || card.original_title || card.title || card.name
+
+    externalContext.active = true
+    externalContext.isSeries = isSeries
+    externalContext.originalName = originalName || null
+    externalContext.card = card
+    externalContext.handledHashes = {}
+    if (externalResetTimer) clearTimeout(externalResetTimer)
+    externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS)
+
+    console.log('ScrobTimeline', 'external player start', {
+        id: card.id, isSeries: isSeries, title: originalName
+    })
+}
+
 function onTimelineUpdate(e) {
     if (!running || syncingFromServer) return
     if (!e || !e.data) return
-    if (!session.card) return // no active player session — a manual click elsewhere, handled by a separate module
+    if (!session.card) {
+        // No internal player session — either an external-player result
+        // (§5.1.1, handled below) or a manual click elsewhere with no
+        // active player of any kind (§5.2.6, not yet implemented).
+        if (externalContext.active) handleExternalTimelineUpdate(e)
+        return
+    }
 
     var origName = session.card.original_name || session.card.original_title || session.card.title || session.card.name
     var isSeries = !!(session.card.original_name || session.season || session.episode)
@@ -319,6 +411,121 @@ function onTimelineUpdate(e) {
     if (Date.now() - session.lastUpdateTime > HEARTBEAT_THROTTLE_MS && !session.playbackErrored) {
         sendSessionHeartbeat(time, 'playing')
     }
+}
+
+// Resolves a Timeline.update() hash against the identity captured at
+// 'external' launch (§5.1.1, points 1-2) — season/episode search for a
+// show (the hash can belong to ANY episode of it, not just the one that
+// started the playlist), or a direct hash check for a movie. null when the
+// hash doesn't belong to this context's title at all.
+function resolveExternalIdentity(hash) {
+    var card = externalContext.card
+    if (!card) return null
+    if (externalContext.isSeries) {
+        var se = resolveSeasonEpisode(hash, externalContext.originalName)
+        if (!se.season || !se.episode) return null
+        return { isSeries: true, seriesTmdbId: card.id, season: se.season, episode: se.episode }
+    }
+    var expectedHash = Lampa.Utils.hash(card.original_title || card.title)
+    if (String(expectedHash) !== String(hash)) return null
+    return { isSeries: false, tmdbId: card.id }
+}
+
+// External player (§5.1.1) — no session.card, so onTimelineUpdate() routes
+// here instead of the internal-player branch above. Each call is a
+// self-contained snapshot (no start→heartbeat→destroy lifecycle - there is
+// no 'destroy'-equivalent for an external player at all).
+function handleExternalTimelineUpdate(e) {
+    var hash = e.data.hash
+    if (!hash || externalContext.handledHashes[hash]) return // point 7: dedupe within one burst
+
+    var identity = resolveExternalIdentity(hash)
+    if (!identity) return // some other title's Timeline tick, not this context's
+
+    externalContext.handledHashes[hash] = true
+    // Still mid-burst (or a fresh one) — extend the debounce window (point 4).
+    if (externalResetTimer) clearTimeout(externalResetTimer)
+    externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_RESET_MS)
+
+    var road = e.data.road || {}
+    var percent = parseFloat(road.percent || 0)
+    var time = parseFloat(road.time || 0)
+    var duration = parseFloat(road.duration || 0)
+
+    console.log('ScrobTimeline', 'external timeline update', { hash: hash, percent: percent, time: time, duration: duration, identity: identity })
+
+    if (percent < 1.5) return // nothing meaningful watched, same threshold as onPlayerDestroy()
+
+    if (percent >= WATCHED_THRESHOLD_PERCENT) {
+        pushExternalWatchedMark(identity)
+    } else {
+        var runtimeMinutes = duration > 0 ? Math.round(duration / 60) : null
+        pushExternalProgressSnapshot(identity, runtimeMinutes, time)
+    }
+}
+
+// Fully watched (§5.1.1, point 5) — one lightweight POST /history instead of
+// a full start→update→complete cycle. Deliberately doesn't carry runtime
+// (WatchEventCreate has no such field) - accepted tradeoff for the common
+// "batch of finished playlist episodes" case, see §5.1.1 point 5.
+function pushExternalWatchedMark(identity) {
+    var tmdbId = identity.isSeries ? identity.seriesTmdbId : identity.tmdbId
+    var mediaType = identity.isSeries ? 'episode' : 'movie'
+    var episode = identity.isSeries
+        ? { seriesTmdbId: identity.seriesTmdbId, season: identity.season, episode: identity.episode }
+        : null
+
+    api.addHistoryEvent(tmdbId, mediaType, true, episode, function () {
+        console.log('ScrobTimeline', 'external watched mark sent', identity)
+    }, function (err) {
+        console.warn('ScrobTimeline', 'failed to send external watched mark, queued for retry', err)
+        enqueueRetry({
+            type: 'custom',
+            run: function (done, fail) {
+                api.addHistoryEvent(tmdbId, mediaType, true, episode, done, fail)
+            }
+        })
+    })
+}
+
+// Exited mid-episode via the external player (1.5%-90%, §5.1.1 point 3) —
+// full start→(pause heartbeat, or delete if it somehow lands under 1.5%
+// after all) cycle, same thresholds as onPlayerDestroy(), so a resumable
+// PlaybackProgress bookmark is preserved exactly like a real internal exit.
+function pushExternalProgressSnapshot(identity, runtimeMinutes, timeSeconds) {
+    var payload = {
+        tmdb_id: identity.isSeries ? null : identity.tmdbId,
+        media_type: identity.isSeries ? 'episode' : 'movie',
+        title: externalContext.card && (externalContext.card.title || externalContext.card.name) || 'Unknown',
+        runtime: runtimeMinutes,
+        reset: false
+    }
+    if (identity.isSeries) {
+        payload.show_tmdb_id = identity.seriesTmdbId
+        payload.season_number = identity.season
+        payload.episode_number = identity.episode
+    }
+
+    api.startSession(payload, function (res) {
+        if (!res || !res.session_key) {
+            console.warn('ScrobTimeline', 'external session/start response had no session_key', res)
+            return
+        }
+        var key = res.session_key
+        api.updateSession(key, { progress_seconds: Math.round(timeSeconds), state: 'paused' }, function () {
+            console.log('ScrobTimeline', 'external progress snapshot sent', key)
+        }, function (err) {
+            console.warn('ScrobTimeline', 'failed to send external progress, queued for retry', err)
+            enqueueRetry({
+                type: 'custom',
+                run: function (done, fail) {
+                    api.updateSession(key, { progress_seconds: Math.round(timeSeconds), state: 'paused' }, done, fail)
+                }
+            })
+        })
+    }, function (err) {
+        console.warn('ScrobTimeline', 'external session/start request failed', err)
+    })
 }
 
 function onPlayerDestroy() {
@@ -703,6 +910,7 @@ export function start() {
     if (!listenersBound) {
         Lampa.Player.listener.follow('start', onPlayerStart)
         Lampa.Player.listener.follow('destroy', onPlayerDestroy)
+        Lampa.Player.listener.follow('external', onExternalPlayerStart)
         Lampa.Timeline.listener.follow('update', onTimelineUpdate)
         Lampa.Listener.follow('activity', onActivityStart)
         document.addEventListener('pause', onNativeVideoPause, true)
@@ -735,4 +943,5 @@ export function stop() {
     }
 
     resetSessionState()
+    resetExternalContext()
 }
