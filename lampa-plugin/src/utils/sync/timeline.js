@@ -52,6 +52,7 @@
 
 import * as api from '../api'
 import { enqueueRetry } from './engine'
+import { bindPlaybackUpdate } from './handler'
 import { KEYS, hasSession } from '../storage'
 
 var WATCHED_THRESHOLD_PERCENT = 90
@@ -62,8 +63,21 @@ var SEEK_GUARD_MS = 1500            // native seeked: ignore right after another
 // loop fires all of a playlist's Timeline.update() calls back-to-back, same JS tick
 // range - not gated by our own network calls (those go out separately, asynchronously,
 // and don't feed back into this timer). This only needs to bridge the gap between
-// Android-side calls themselves, which is normally single-digit milliseconds.
+// Android-side calls themselves, which is normally single-digit milliseconds. Used
+// to re-arm the timer on EACH incoming Timeline.update while a burst is landing -
+// never at launch, see EXTERNAL_CONTEXT_SAFETY_MS below for why.
 var EXTERNAL_CONTEXT_RESET_MS = 1000
+// The ONLY timer armed at 'external' launch time (onExternalPlayerStart) - has to
+// outlive the entire external viewing session (could be hours), not just a burst of
+// updates. Android deliberately keeps this WebView's JS timers running while the
+// external player has focus (MainActivity.kt: "suppress WebView pauseTimers while
+// our external player is open"), so a short debounce here would fire mid-playback
+// and silently drop every subsequent Timeline.update for that whole session - a
+// confirmed bug, not hypothetical (EXTERNAL_CONTEXT_RESET_MS was wrongly reused here
+// originally). Pure safety net for "the external player never returns any result at
+// all" - normal exits are covered by the short reset above once updates start
+// arriving, well before this ever fires.
+var EXTERNAL_CONTEXT_SAFETY_MS = 6 * 60 * 60 * 1000
 
 var running = false
 var listenersBound = false
@@ -351,7 +365,7 @@ function onExternalPlayerStart(data) {
     externalContext.card = card
     externalContext.handledHashes = {}
     if (externalResetTimer) clearTimeout(externalResetTimer)
-    externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_RESET_MS)
+    externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS)
 
     console.log('ScrobTimeline', 'external player start', {
         id: card.id, isSeries: isSeries, title: originalName
@@ -855,6 +869,30 @@ function onActivityStart(e) {
     })
 }
 
+// Socket-triggered pull (§5.1.1/§5.4, Гілка 9) — a playback_session.started/
+// playing/paused event arrived for this account, from any device. The socket
+// payload itself doesn't carry enough identity for a targeted pull (playing/
+// paused have no tmdb_id at all; started's media_tmdb_id is frequently null
+// for an episode) and enriching it would need a server change - instead,
+// just re-run the same on-demand pull as onActivityStart() above for
+// whatever full card happens to already be open right now. Harmless no-op
+// when nothing relevant is open or the event was about a different title
+// entirely (pullWriteTimeline()'s own LWW/active-session guards still apply).
+function pullActiveCard() {
+    if (!running) return
+    var active = Lampa.Activity.active()
+    if (!active || active.component !== 'full') return
+    var card = active.card_data || active.card || active.movie
+    if (!card || !card.id) return
+
+    var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv')
+    api.getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i])
+    }, function (err) {
+        console.warn('ScrobTimeline', 'watch-status request failed (socket-triggered)', err)
+    })
+}
+
 // ─── Profile switch ─────────────────────────────────────────
 // switchProfile() (utils/profiles.js) never calls start()/stop() directly —
 // it (like engine.js's own list-sync) just sets KEYS.ACTIVE_PROFILE_ID and
@@ -905,6 +943,12 @@ export function start() {
         document.addEventListener('seeked', onNativeVideoSeeked, true)
         document.addEventListener('error', onNativeVideoError, true)
         document.addEventListener('durationchange', onNativeVideoDurationChange, true)
+        // engine.js owns the actual socket connection and calls handler.js's
+        // registerHandlers() on it independently of this module's lifecycle -
+        // this just makes sure playback_session.* events have somewhere to
+        // go once that happens (order between the two doesn't matter,
+        // requestPlaybackPull() reads this at call time, not bind time).
+        bindPlaybackUpdate(pullActiveCard)
         listenersBound = true
     }
     setupProfileListener()

@@ -1257,6 +1257,13 @@
     // Registered update callback from the engine (set via bindUpdate)
     var updateFn = null;
 
+    // Registered playback-pull callback from timeline.js (set via bindPlaybackUpdate).
+    // Deliberately a SEPARATE hook from updateFn/requestUpdate above, not routed
+    // through the engine at all - a playback_session.* event calls for a targeted
+    // re-pull of whatever card happens to be open right now (SYNC-ARCHITECTURE-
+    // PLAN.md §5.1.1/§5.4, Гілка 9), not the engine's own list convergence.
+    var playbackPullFn = null;
+
     // Named handlers: stable references so off() actually unregisters (unlike
     // anonymous closures, which silently leak and double-fire after restarts).
     function onItemAdded(payload) {
@@ -1280,15 +1287,37 @@
     function onPlaybackCompleted(payload) {
       requestUpdate('playback_session.completed');
     }
+    function onPlaybackStarted(payload) {
+      requestPlaybackPull();
+    }
+    function onPlaybackPlaying(payload) {
+      requestPlaybackPull();
+    }
+    function onPlaybackPaused(payload) {
+      requestPlaybackPull();
+    }
 
     // Bind the engine update() entry point. Called once from engine.start().
     function bindUpdate(fn) {
       updateFn = fn;
     }
 
+    // Bind the playback-pull entry point. Called once from timelineSync.start().
+    function bindPlaybackUpdate(fn) {
+      playbackPullFn = fn;
+    }
+
     // Single notification path: ask the engine to refetch and converge.
     function requestUpdate(reason) {
       if (typeof updateFn === 'function') updateFn(reason || 'socket');
+    }
+
+    // Notify timeline.js that a playback_session.* event arrived somewhere for
+    // this account - no payload passed through on purpose (see timeline.js's
+    // pullActiveCard(): it re-pulls whatever card is on screen right now,
+    // regardless of which title the event was actually about).
+    function requestPlaybackPull() {
+      if (typeof playbackPullFn === 'function') playbackPullFn();
     }
 
     // ─── Public API ───────────────────────────────────────────
@@ -1303,6 +1332,9 @@
       socket.on('list.deleted', onListDeleted);
       socket.on('watch_event.created', onWatchEvent);
       socket.on('playback_session.completed', onPlaybackCompleted);
+      socket.on('playback_session.started', onPlaybackStarted);
+      socket.on('playback_session.playing', onPlaybackPlaying);
+      socket.on('playback_session.paused', onPlaybackPaused);
     }
 
     // Unregister invalidation handlers from the socket.
@@ -1314,6 +1346,9 @@
       socket.off('list.deleted', onListDeleted);
       socket.off('watch_event.created', onWatchEvent);
       socket.off('playback_session.completed', onPlaybackCompleted);
+      socket.off('playback_session.started', onPlaybackStarted);
+      socket.off('playback_session.playing', onPlaybackPlaying);
+      socket.off('playback_session.paused', onPlaybackPaused);
     }
 
     // Scrob sync — category mapping between Lampa favorite keys and Scrob list names.
@@ -3194,8 +3229,21 @@
     // loop fires all of a playlist's Timeline.update() calls back-to-back, same JS tick
     // range - not gated by our own network calls (those go out separately, asynchronously,
     // and don't feed back into this timer). This only needs to bridge the gap between
-    // Android-side calls themselves, which is normally single-digit milliseconds.
+    // Android-side calls themselves, which is normally single-digit milliseconds. Used
+    // to re-arm the timer on EACH incoming Timeline.update while a burst is landing -
+    // never at launch, see EXTERNAL_CONTEXT_SAFETY_MS below for why.
     var EXTERNAL_CONTEXT_RESET_MS = 1000;
+    // The ONLY timer armed at 'external' launch time (onExternalPlayerStart) - has to
+    // outlive the entire external viewing session (could be hours), not just a burst of
+    // updates. Android deliberately keeps this WebView's JS timers running while the
+    // external player has focus (MainActivity.kt: "suppress WebView pauseTimers while
+    // our external player is open"), so a short debounce here would fire mid-playback
+    // and silently drop every subsequent Timeline.update for that whole session - a
+    // confirmed bug, not hypothetical (EXTERNAL_CONTEXT_RESET_MS was wrongly reused here
+    // originally). Pure safety net for "the external player never returns any result at
+    // all" - normal exits are covered by the short reset above once updates start
+    // arriving, well before this ever fires.
+    var EXTERNAL_CONTEXT_SAFETY_MS = 6 * 60 * 60 * 1000;
     var running = false;
     var listenersBound = false;
     var profileListener = null; // Profile change listener reference (engine.js has the same field, same reason)
@@ -3480,7 +3528,7 @@
       externalContext.card = card;
       externalContext.handledHashes = {};
       if (externalResetTimer) clearTimeout(externalResetTimer);
-      externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_RESET_MS);
+      externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS);
       console.log('ScrobTimeline', 'external player start', {
         id: card.id,
         isSeries: isSeries,
@@ -3995,6 +4043,29 @@
       });
     }
 
+    // Socket-triggered pull (§5.1.1/§5.4, Гілка 9) — a playback_session.started/
+    // playing/paused event arrived for this account, from any device. The socket
+    // payload itself doesn't carry enough identity for a targeted pull (playing/
+    // paused have no tmdb_id at all; started's media_tmdb_id is frequently null
+    // for an episode) and enriching it would need a server change - instead,
+    // just re-run the same on-demand pull as onActivityStart() above for
+    // whatever full card happens to already be open right now. Harmless no-op
+    // when nothing relevant is open or the event was about a different title
+    // entirely (pullWriteTimeline()'s own LWW/active-session guards still apply).
+    function pullActiveCard() {
+      if (!running) return;
+      var active = Lampa.Activity.active();
+      if (!active || active.component !== 'full') return;
+      var card = active.card_data || active.card || active.movie;
+      if (!card || !card.id) return;
+      var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
+      getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i]);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'watch-status request failed (socket-triggered)', err);
+      });
+    }
+
     // ─── Profile switch ─────────────────────────────────────────
     // switchProfile() (utils/profiles.js) never calls start()/stop() directly —
     // it (like engine.js's own list-sync) just sets KEYS.ACTIVE_PROFILE_ID and
@@ -4041,6 +4112,12 @@
         document.addEventListener('seeked', onNativeVideoSeeked, true);
         document.addEventListener('error', onNativeVideoError, true);
         document.addEventListener('durationchange', onNativeVideoDurationChange, true);
+        // engine.js owns the actual socket connection and calls handler.js's
+        // registerHandlers() on it independently of this module's lifecycle -
+        // this just makes sure playback_session.* events have somewhere to
+        // go once that happens (order between the two doesn't matter,
+        // requestPlaybackPull() reads this at call time, not bind time).
+        bindPlaybackUpdate(pullActiveCard);
         listenersBound = true;
       }
       setupProfileListener();

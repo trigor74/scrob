@@ -371,13 +371,13 @@ export function addHistoryEvent(tmdbId, mediaType, completed, episode, onDone, o
     )
 }
 
-// DELETE /history/{eventId} — remove a watch event
+// DELETE /history/event/{eventId} — remove a watch event
 export function removeHistoryEvent(eventId, onDone, onFail) {
     var network = new Lampa.Reguest()
     network.timeout(15000)
 
     network.native(
-        base() + '/history/' + eventId,
+        base() + '/history/event/' + eventId,
         function () {
             network.clear()
             onDone()
