@@ -52,6 +52,7 @@
 
 import * as api from '../api'
 import { enqueueRetry } from './engine'
+import { bindPlaybackUpdate } from './handler'
 import { KEYS, hasSession } from '../storage'
 
 var WATCHED_THRESHOLD_PERCENT = 90
@@ -868,6 +869,30 @@ function onActivityStart(e) {
     })
 }
 
+// Socket-triggered pull (§5.1.1/§5.4, Гілка 9) — a playback_session.started/
+// playing/paused event arrived for this account, from any device. The socket
+// payload itself doesn't carry enough identity for a targeted pull (playing/
+// paused have no tmdb_id at all; started's media_tmdb_id is frequently null
+// for an episode) and enriching it would need a server change - instead,
+// just re-run the same on-demand pull as onActivityStart() above for
+// whatever full card happens to already be open right now. Harmless no-op
+// when nothing relevant is open or the event was about a different title
+// entirely (pullWriteTimeline()'s own LWW/active-session guards still apply).
+function pullActiveCard() {
+    if (!running) return
+    var active = Lampa.Activity.active()
+    if (!active || active.component !== 'full') return
+    var card = active.card_data || active.card || active.movie
+    if (!card || !card.id) return
+
+    var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv')
+    api.getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i])
+    }, function (err) {
+        console.warn('ScrobTimeline', 'watch-status request failed (socket-triggered)', err)
+    })
+}
+
 // ─── Profile switch ─────────────────────────────────────────
 // switchProfile() (utils/profiles.js) never calls start()/stop() directly —
 // it (like engine.js's own list-sync) just sets KEYS.ACTIVE_PROFILE_ID and
@@ -918,6 +943,12 @@ export function start() {
         document.addEventListener('seeked', onNativeVideoSeeked, true)
         document.addEventListener('error', onNativeVideoError, true)
         document.addEventListener('durationchange', onNativeVideoDurationChange, true)
+        // engine.js owns the actual socket connection and calls handler.js's
+        // registerHandlers() on it independently of this module's lifecycle -
+        // this just makes sure playback_session.* events have somewhere to
+        // go once that happens (order between the two doesn't matter,
+        // requestPlaybackPull() reads this at call time, not bind time).
+        bindPlaybackUpdate(pullActiveCard)
         listenersBound = true
     }
     setupProfileListener()
