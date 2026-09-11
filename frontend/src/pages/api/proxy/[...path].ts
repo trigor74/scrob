@@ -48,6 +48,13 @@ async function handle({ params, request }: Parameters<APIRoute>[0]): Promise<Res
   const apiKey = request.headers.get("X-Api-Key");
   if (apiKey) forwardHeaders.set("X-Api-Key", apiKey);
 
+  // The Lampa Android app's native httpReq bridge never sends a real
+  // PATCH/DELETE - only POST (body) or GET (no body) - so the Lampa plugin
+  // sends the intended method here instead, for main.py's MethodOverrideMiddleware
+  // to apply before backend routing. Forward it like the other allowlisted headers.
+  const methodOverride = request.headers.get("X-HTTP-Method-Override");
+  if (methodOverride) forwardHeaders.set("X-HTTP-Method-Override", methodOverride);
+
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const body = hasBody ? await request.arrayBuffer() : undefined;
 

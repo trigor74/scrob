@@ -280,8 +280,8 @@ export function deleteListItem(listId, itemId, onDone, onFail) {
             network.clear()
             onFail(network.errorDecode(a, c))
         },
-        false,
-        { headers: authHeaders(), type: 'DELETE' }
+        '{}',
+        { headers: Object.assign({ 'X-HTTP-Method-Override': 'DELETE' }, authHeaders()), type: 'DELETE' }
     )
 }
 
@@ -379,8 +379,8 @@ export function removeHistoryEvent(eventId, onDone, onFail) {
             network.clear()
             onFail(network.errorDecode(a, c))
         },
-        false,
-        { headers: authHeaders(), type: 'DELETE' }
+        '{}',
+        { headers: Object.assign({ 'X-HTTP-Method-Override': 'DELETE' }, authHeaders()), type: 'DELETE' }
     )
 }
 
@@ -428,7 +428,7 @@ export function updateSession(sessionKey, payload, onDone, onFail) {
             onFail(network.errorDecode(a, c), status)
         },
         JSON.stringify(payload),
-        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), type: 'PATCH' }
+        { headers: Object.assign({ 'Content-Type': 'application/json', 'X-HTTP-Method-Override': 'PATCH' }, authHeaders()), type: 'PATCH' }
     )
 }
 
@@ -468,8 +468,8 @@ export function deleteSession(sessionKey, onDone, onFail) {
             network.clear()
             onFail(network.errorDecode(a, c))
         },
-        false,
-        { headers: authHeaders(), type: 'DELETE' }
+        '{}',
+        { headers: Object.assign({ 'X-HTTP-Method-Override': 'DELETE' }, authHeaders()), type: 'DELETE' }
     )
 }
 

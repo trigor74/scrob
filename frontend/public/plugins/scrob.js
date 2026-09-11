@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-09
+ * Build: 2026-09-11
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -816,8 +816,10 @@
       }, function (a, c) {
         network.clear();
         onFail(network.errorDecode(a, c));
-      }, false, {
-        headers: authHeaders(),
+      }, '{}', {
+        headers: Object.assign({
+          'X-HTTP-Method-Override': 'DELETE'
+        }, authHeaders()),
         type: 'DELETE'
       });
     }
@@ -878,7 +880,8 @@
         onFail(network.errorDecode(a, c), status);
       }, JSON.stringify(payload), {
         headers: Object.assign({
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'X-HTTP-Method-Override': 'PATCH'
         }, authHeaders()),
         type: 'PATCH'
       });
@@ -912,8 +915,10 @@
       }, function (a, c) {
         network.clear();
         onFail(network.errorDecode(a, c));
-      }, false, {
-        headers: authHeaders(),
+      }, '{}', {
+        headers: Object.assign({
+          'X-HTTP-Method-Override': 'DELETE'
+        }, authHeaders()),
         type: 'DELETE'
       });
     }
