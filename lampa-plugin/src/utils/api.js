@@ -480,6 +480,32 @@ export function deleteSession(sessionKey, onDone, onFail) {
     )
 }
 
+// GET /history/now-playing — this account's active/paused playback
+// sessions. `includeHidden` bypasses the dropped-show/movie filter that the
+// homepage's own display list applies - needed for a targeted "does THIS
+// exact title still have a live session" lookup (SYNC-ARCHITECTURE-PLAN.md
+// §5.2.6's manual-mark/unmark reconciliation), not a display list.
+export function getNowPlaying(includeHidden, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/now-playing' + (includeHidden ? '?include_hidden=true' : ''),
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && Array.isArray(json.now_playing)) onDone(json.now_playing)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
+}
+
 // GET /history/watch-status — lean, per-title watch state (movie or whole
 // show) for the pull direction: only rows with real state (watched, or an
 // in-progress bookmark), never a full episode list padded with zeroes.

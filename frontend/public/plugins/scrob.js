@@ -1000,6 +1000,26 @@
       });
     }
 
+    // GET /history/now-playing — this account's active/paused playback
+    // sessions. `includeHidden` bypasses the dropped-show/movie filter that the
+    // homepage's own display list applies - needed for a targeted "does THIS
+    // exact title still have a live session" lookup (SYNC-ARCHITECTURE-PLAN.md
+    // §5.2.6's manual-mark/unmark reconciliation), not a display list.
+    function getNowPlaying(includeHidden, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/now-playing' + ('?include_hidden=true' ), function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json && Array.isArray(json.now_playing)) onDone(json.now_playing);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: authHeaders()
+      });
+    }
+
     // GET /history/watch-status — lean, per-title watch state (movie or whole
     // show) for the pull direction: only rows with real state (watched, or an
     // in-progress bookmark), never a full episode list padded with zeroes.
@@ -3868,10 +3888,64 @@
       if (percent >= WATCHED_THRESHOLD_PERCENT) pushManualWatchedMark(identity);else handleManualUnmark(identity);
     }
 
-    // "Positive" direction — simple, low-risk: one POST /history, no
-    // progress_seconds (server already treats that as "manually marked", same
-    // convention as the external-player watched mark above).
+    // Finds a still-active PlaybackSession for this exact episode, if any
+    // (GET /history/now-playing, include_hidden — a reconciliation lookup for
+    // one specific title, not the homepage's own dropped-aware display list).
+    // Bug found by live test 2026-09-13: a session left paused server-side
+    // (e.g. the player was never properly exited) is invisible to §5.2.6's
+    // WatchEvent-only item-events check — POST /history alone (mark) leaves it
+    // dangling ("watched" in history AND still "in progress" in now-playing),
+    // and unchecking has nothing to reconcile against at all if no WatchEvent
+    // ever existed. Callback receives the session_key, or null when none found.
+    function resolveActiveSession(identity, callback) {
+      getNowPlaying(true, function (sessions) {
+        for (var i = 0; i < sessions.length; i++) {
+          var media = sessions[i].media || {};
+          if (media.type === 'episode' && media.show_tmdb_id === identity.seriesTmdbId && media.season_number === identity.season && media.episode_number === identity.episode) {
+            callback(sessions[i].session_key);
+            return;
+          }
+        }
+        callback(null);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'now-playing lookup failed', err);
+        callback(null);
+      });
+    }
+
+    // "Positive" direction. When a PlaybackSession is still active for this
+    // episode, complete THAT (POST /history/session/{key}/complete) instead —
+    // it creates the same completed WatchEvent AND atomically clears both
+    // PlaybackSession and PlaybackProgress in one server-side transaction,
+    // exactly like a real player exit would (§5.1). Only when no session is
+    // active does this fall back to the simple, session-less POST /history.
     function pushManualWatchedMark(identity) {
+      resolveActiveSession(identity, function (sessionKey) {
+        if (!sessionKey) {
+          sendPlainManualWatchedMark(identity);
+          return;
+        }
+        completeSession(sessionKey, function () {
+          console.log('ScrobTimeline', 'manual watched mark: completed active session', sessionKey);
+        }, function (err, status) {
+          if (status === 404) return; // already gone server-side, nothing left to do
+          console.warn('ScrobTimeline', 'manual watched mark: completeSession failed, queued for retry', err);
+          enqueueRetry({
+            type: 'custom',
+            run: function run(done, fail) {
+              completeSession(sessionKey, done, function (e2, s2) {
+                if (s2 === 404) {
+                  done();
+                  return;
+                }
+                fail();
+              });
+            }
+          });
+        });
+      });
+    }
+    function sendPlainManualWatchedMark(identity) {
       var episode = {
         seriesTmdbId: identity.seriesTmdbId,
         season: identity.season,
@@ -3905,7 +3979,31 @@
     // notes). Lampa already unchecked the box locally by the time this runs, so
     // the first step is always a real lookup of what the server actually knows
     // about this episode.
+    //
+    // Independent of the WatchEvent menu below: an active PlaybackSession
+    // (a title left paused/playing server-side, e.g. never properly exited) has
+    // no WatchEvent at all, so it would never surface through item-events - but
+    // "unwatched" still has to mean "not in progress either" (bug found by live
+    // test 2026-09-13). discardActiveSession() reconciles that unconditionally,
+    // in parallel with the WatchEvent lookup, not gated by its result.
+    function discardActiveSession(identity) {
+      resolveActiveSession(identity, function (sessionKey) {
+        if (!sessionKey) return;
+        deleteSession(sessionKey, function () {
+          console.log('ScrobTimeline', 'manual unmark: discarded active session', sessionKey);
+        }, function (err) {
+          console.warn('ScrobTimeline', 'manual unmark: failed to discard session, queued for retry', err);
+          enqueueRetry({
+            type: 'custom',
+            run: function run(done, fail) {
+              deleteSession(sessionKey, done, fail);
+            }
+          });
+        });
+      });
+    }
     function handleManualUnmark(identity) {
+      discardActiveSession(identity);
       Lampa.Loading.start(function () {
         Lampa.Loading.stop();
       });
