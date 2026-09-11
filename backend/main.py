@@ -713,6 +713,33 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 
+class MethodOverrideMiddleware:
+    """The Lampa Android app's native httpReq bridge (AndroidJS.kt) never reads
+    a custom HTTP method - it only ever sends POST (body present) or GET (no
+    body), regardless of what the JS layer asked for. PATCH/DELETE calls from
+    the Lampa plugin arrive here as POST with an X-HTTP-Method-Override header
+    instead - rewrite scope["method"] before routing so the correctly-decorated
+    @router.patch/@router.delete handler still gets dispatched to. A real
+    PATCH/DELETE request (web Lampa builds, direct API use) is unaffected."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST":
+            headers = dict(scope.get("headers") or [])
+            override = headers.get(b"x-http-method-override")
+            if override:
+                method = override.decode("latin-1").upper()
+                if method in ("PATCH", "DELETE", "PUT"):
+                    scope = dict(scope)
+                    scope["method"] = method
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(MethodOverrideMiddleware)
+
+
 @app.get("/openapi.json", include_in_schema=False)
 async def get_openapi_schema(_: User = Depends(require_admin)):
     return JSONResponse(app.openapi())
