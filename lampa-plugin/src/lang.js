@@ -402,6 +402,38 @@ export default function addLang() {
             ru: 'Удалено из категории',
             en: 'Removed from category',
             be: 'Выдалена з катэгорыі'
+        },
+
+        // ─── Manual unmark menu (§5.2.6) ────────────────────
+        scrob_unmark_menu_title: {
+            uk: 'Дії з переглядом',
+            ru: 'Действия с просмотром',
+            en: 'Watch actions',
+            be: 'Дзеянні з праглядам'
+        },
+        scrob_unmark_close: {
+            uk: 'Закрити',
+            ru: 'Закрыть',
+            en: 'Close',
+            be: 'Закрыць'
+        },
+        scrob_unmark_remove_event: {
+            uk: 'Видалити перегляд',
+            ru: 'Удалить просмотр',
+            en: 'Delete watch',
+            be: 'Выдаліць прагляд'
+        },
+        scrob_unmark_rewatch: {
+            uk: 'Почати заново',
+            ru: 'Начать заново',
+            en: 'Start over',
+            be: 'Пачаць нанова'
+        },
+        scrob_unmark_delete_all: {
+            uk: 'Видалити всю історію',
+            ru: 'Удалить всю историю',
+            en: 'Delete all history',
+            be: 'Выдаліць усю гісторыю'
         }
     })
 }

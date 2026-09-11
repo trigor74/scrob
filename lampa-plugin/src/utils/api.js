@@ -480,6 +480,32 @@ export function deleteSession(sessionKey, onDone, onFail) {
     )
 }
 
+// GET /history/now-playing — this account's active/paused playback
+// sessions. `includeHidden` bypasses the dropped-show/movie filter that the
+// homepage's own display list applies - needed for a targeted "does THIS
+// exact title still have a live session" lookup (SYNC-ARCHITECTURE-PLAN.md
+// §5.2.6's manual-mark/unmark reconciliation), not a display list.
+export function getNowPlaying(includeHidden, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/now-playing' + (includeHidden ? '?include_hidden=true' : ''),
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && Array.isArray(json.now_playing)) onDone(json.now_playing)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
+}
+
 // GET /history/watch-status — lean, per-title watch state (movie or whole
 // show) for the pull direction: only rows with real state (watched, or an
 // in-progress bookmark), never a full episode list padded with zeroes.
@@ -525,6 +551,87 @@ export function getContinueWatching(onDone, onFail) {
         },
         false,
         { headers: authHeaders() }
+    )
+}
+
+// GET /history/item-events — real WatchEvent list for one episode (or one
+// movie via tmdb_id), newest first, already rewatch-aware. Used by the
+// manual "unmark" flow (SYNC-ARCHITECTURE-PLAN.md §5.2.6) to decide which
+// menu options to offer and which event id to delete.
+export function getItemEvents(params, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    var query = ['media_type=' + params.mediaType]
+    if (params.tmdbId) query.push('tmdb_id=' + params.tmdbId)
+    if (params.seriesTmdbId) query.push('series_tmdb_id=' + params.seriesTmdbId)
+    if (params.season != null) query.push('season_number=' + params.season)
+    if (params.episode != null) query.push('episode_number=' + params.episode)
+
+    network.native(
+        base() + '/history/item-events?' + query.join('&'),
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
+}
+
+// POST /history/rewatch — start a fresh rewatch cycle (whole show, a season,
+// or a single episode); never touches existing history.
+export function startRewatch(seriesTmdbId, season, episode, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    var query = ['series_tmdb_id=' + seriesTmdbId]
+    if (season != null) query.push('season_number=' + season)
+    if (episode != null) query.push('episode_number=' + episode)
+
+    network.native(
+        base() + '/history/rewatch?' + query.join('&'),
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        '{}',
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
+    )
+}
+
+// DELETE /history/item?id={mediaId}&media_type=... — remove ALL watch events
+// for one media item (all rewatch cycles included). `mediaId` is the
+// server's internal Media.id (from GET /history/item-events's media_id),
+// not a tmdb_id.
+export function deleteHistoryItem(mediaId, mediaType, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/item?id=' + mediaId + '&media_type=' + mediaType,
+        function () {
+            network.clear()
+            onDone()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        '{}',
+        { headers: Object.assign({ 'X-HTTP-Method-Override': 'DELETE' }, authHeaders()), type: 'DELETE' }
     )
 }
 

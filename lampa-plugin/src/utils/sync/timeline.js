@@ -255,7 +255,13 @@ function parseServerTime(str) {
     return new Date(hasOffset ? s : s + 'Z').getTime() || 0
 }
 
-function pullWriteTimeline(item) {
+// `force` (§5.2.6, "Закрити") bypasses the LWW guard entirely — needed
+// because Lampa's own manual uncheck already stamped `updated: Date.now()`
+// locally, synchronously, before this ever runs, which would otherwise
+// always look "newer" than the server and silently block the restore. When
+// forced, the write itself is stamped `Date.now()` too (not `serverTime`)
+// so it correctly stays "newest" for any later LWW comparison.
+function pullWriteTimeline(item, force) {
     var hash = buildHash(item.isSeries, item.originalName, item.season, item.episode)
     if (!hash) return
     if (session.card && String(hash) === String(session.expectedHash)) return // never clobber the active session
@@ -263,7 +269,7 @@ function pullWriteTimeline(item) {
     var local = Lampa.Timeline.view(hash)
     var localTime = (local && local.updated) || 0
     var serverTime = parseServerTime(item.updatedAt)
-    if (localTime && serverTime <= localTime) return // local is not older — nothing to do
+    if (!force && localTime && serverTime <= localTime) return // local is not older — nothing to do
 
     var duration = resolveDuration({
         duration: item.duration,
@@ -273,7 +279,7 @@ function pullWriteTimeline(item) {
     var percent = item.watched ? 100 : (item.percent || 0)
     var time = item.watched ? duration : (item.time || 0)
 
-    console.log('ScrobTimeline', 'pull write', { hash: hash, percent: percent, watched: item.watched })
+    console.log('ScrobTimeline', 'pull write', { hash: hash, percent: percent, watched: item.watched, force: !!force })
 
     syncingFromServer = true
     Lampa.Timeline.update({
@@ -282,7 +288,7 @@ function pullWriteTimeline(item) {
         time: time,
         duration: duration,
         received: true,
-        updated: serverTime || Date.now()
+        updated: force ? Date.now() : (serverTime || Date.now())
     })
     syncingFromServer = false
 }
@@ -378,8 +384,10 @@ function onTimelineUpdate(e) {
     if (!session.card) {
         // No internal player session — either an external-player result
         // (§5.1.1, handled below) or a manual click elsewhere with no
-        // active player of any kind (§5.2.6, not yet implemented).
+        // active player of any kind (§5.2.6: season-episode__viewed checkbox
+        // or "Просмотрено" outside the player).
         if (externalContext.active) handleExternalTimelineUpdate(e)
+        else handleManualTimelineUpdate(e)
         return
     }
 
@@ -526,6 +534,259 @@ function pushExternalProgressSnapshot(identity, runtimeMinutes, timeSeconds) {
         })
     }, function (err) {
         console.warn('ScrobTimeline', 'external session/start request failed', err)
+    })
+}
+
+// ─── Manual marks outside the player (§5.2.6) ──────────────
+// Episodes only — a movie has no comparable per-item checkbox UI (its only
+// manual action is "Скинути прогрес перегляду", a different, unanalyzed
+// action outside this scope). Fires when Lampa.Timeline.listener('update')
+// lands with no internal session (session.card) AND no external-player
+// context active — the only remaining source is a real local click on
+// season-episode__viewed (or "Просмотрено" on a file).
+
+// Resolves the clicked hash against whatever full-card screen is currently
+// open — same resolveSeasonEpisode() search onPlayerStart()/onExternalPlayerStart()
+// already use, just without a session/externalContext to anchor identity to.
+function resolveManualIdentity(hash) {
+    var active = Lampa.Activity.active()
+    if (!active) return null
+    var card = active.card_data || active.card || active.movie
+    if (!card || !card.id) return null
+    var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv')
+    if (!isSeries) return null // movies out of scope, see module header above
+
+    var originalName = card.original_name || card.original_title || card.title || card.name
+    var se = resolveSeasonEpisode(hash, originalName)
+    if (!se.season || !se.episode) return null
+    return { seriesTmdbId: card.id, season: se.season, episode: se.episode }
+}
+
+function handleManualTimelineUpdate(e) {
+    var hash = e.data.hash
+    if (!hash) return
+    var identity = resolveManualIdentity(hash)
+    if (!identity) return // not this screen's episode, or a movie — nothing to do
+
+    var road = e.data.road || {}
+    var percent = parseFloat(road.percent || 0)
+
+    if (percent >= WATCHED_THRESHOLD_PERCENT) pushManualWatchedMark(identity)
+    else handleManualUnmark(identity)
+}
+
+// Finds a still-active PlaybackSession for this exact episode, if any
+// (GET /history/now-playing, include_hidden — a reconciliation lookup for
+// one specific title, not the homepage's own dropped-aware display list).
+// Bug found by live test 2026-09-13: a session left paused server-side
+// (e.g. the player was never properly exited) is invisible to §5.2.6's
+// WatchEvent-only item-events check — POST /history alone (mark) leaves it
+// dangling ("watched" in history AND still "in progress" in now-playing),
+// and unchecking has nothing to reconcile against at all if no WatchEvent
+// ever existed. Callback receives the session_key, or null when none found.
+function resolveActiveSession(identity, callback) {
+    api.getNowPlaying(true, function (sessions) {
+        for (var i = 0; i < sessions.length; i++) {
+            var media = sessions[i].media || {}
+            if (media.type === 'episode' && media.show_tmdb_id === identity.seriesTmdbId &&
+                media.season_number === identity.season && media.episode_number === identity.episode) {
+                callback(sessions[i].session_key)
+                return
+            }
+        }
+        callback(null)
+    }, function (err) {
+        console.warn('ScrobTimeline', 'now-playing lookup failed', err)
+        callback(null)
+    })
+}
+
+// "Positive" direction. When a PlaybackSession is still active for this
+// episode, complete THAT (POST /history/session/{key}/complete) instead —
+// it creates the same completed WatchEvent AND atomically clears both
+// PlaybackSession and PlaybackProgress in one server-side transaction,
+// exactly like a real player exit would (§5.1). Only when no session is
+// active does this fall back to the simple, session-less POST /history.
+function pushManualWatchedMark(identity) {
+    resolveActiveSession(identity, function (sessionKey) {
+        if (!sessionKey) { sendPlainManualWatchedMark(identity); return }
+        api.completeSession(sessionKey, function () {
+            console.log('ScrobTimeline', 'manual watched mark: completed active session', sessionKey)
+        }, function (err, status) {
+            if (status === 404) return // already gone server-side, nothing left to do
+            console.warn('ScrobTimeline', 'manual watched mark: completeSession failed, queued for retry', err)
+            enqueueRetry({
+                type: 'custom',
+                run: function (done, fail) {
+                    api.completeSession(sessionKey, done, function (e2, s2) {
+                        if (s2 === 404) { done(); return }
+                        fail()
+                    })
+                }
+            })
+        })
+    })
+}
+
+function sendPlainManualWatchedMark(identity) {
+    var episode = { seriesTmdbId: identity.seriesTmdbId, season: identity.season, episode: identity.episode }
+    api.addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, function () {
+        console.log('ScrobTimeline', 'manual watched mark sent', identity)
+    }, function (err) {
+        console.warn('ScrobTimeline', 'failed to send manual watched mark, queued for retry', err)
+        enqueueRetry({
+            type: 'custom',
+            run: function (done, fail) {
+                api.addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, done, fail)
+            }
+        })
+    })
+}
+
+// Full (not relative) date for the "Видалити перегляд" menu label.
+function formatManualDate(isoString) {
+    var time = parseServerTime(isoString)
+    if (!time) return ''
+    var d = new Date(time)
+    function pad(n) { return n < 10 ? '0' + n : '' + n }
+    return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear()
+}
+
+// "Unmark" direction — never deletes anything silently (see §5.2.6 module
+// notes). Lampa already unchecked the box locally by the time this runs, so
+// the first step is always a real lookup of what the server actually knows
+// about this episode.
+//
+// Independent of the WatchEvent menu below: an active PlaybackSession
+// (a title left paused/playing server-side, e.g. never properly exited) has
+// no WatchEvent at all, so it would never surface through item-events - but
+// "unwatched" still has to mean "not in progress either" (bug found by live
+// test 2026-09-13). discardActiveSession() reconciles that unconditionally,
+// in parallel with the WatchEvent lookup, not gated by its result.
+function discardActiveSession(identity) {
+    resolveActiveSession(identity, function (sessionKey) {
+        if (!sessionKey) return
+        api.deleteSession(sessionKey, function () {
+            console.log('ScrobTimeline', 'manual unmark: discarded active session', sessionKey)
+        }, function (err) {
+            console.warn('ScrobTimeline', 'manual unmark: failed to discard session, queued for retry', err)
+            enqueueRetry({
+                type: 'custom',
+                run: function (done, fail) {
+                    api.deleteSession(sessionKey, done, fail)
+                }
+            })
+        })
+    })
+}
+
+function handleManualUnmark(identity) {
+    discardActiveSession(identity)
+
+    Lampa.Loading.start(function () {
+        Lampa.Loading.stop()
+    })
+    api.getItemEvents({
+        mediaType: 'episode',
+        seriesTmdbId: identity.seriesTmdbId,
+        season: identity.season,
+        episode: identity.episode
+    }, function (res) {
+        Lampa.Loading.stop()
+        var events = (res && res.events) || []
+        // Server has nothing for this episode at all — nothing to reconcile,
+        // the local uncheck already matches the server's (empty) state.
+        if (!events.length) return
+        showUnmarkMenu(identity, events, res.media_id)
+    }, function (err) {
+        Lampa.Loading.stop()
+        console.warn('ScrobTimeline', 'item-events request failed', err)
+    })
+}
+
+// Re-runs the on-demand pull (§5.2.5) for exactly this episode's hash, with
+// `force: true` — restores whatever the server actually has (100%, 31%, or
+// nothing) instead of guessing, and bypasses the LWW guard that Lampa's own
+// synchronous local uncheck would otherwise trip (see pullWriteTimeline()).
+function restoreTimelineFromServer(identity) {
+    api.getWatchStatus(identity.seriesTmdbId, 'tv', function (items) {
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i]
+            if (item.media_type === 'episode' && item.season_number === identity.season && item.episode_number === identity.episode) {
+                applyWatchStatusItem(item, true)
+                return
+            }
+        }
+        // Nothing server-side for this episode — Lampa's own local uncheck
+        // (0%/unwatched) already matches that; nothing to force.
+    }, function (err) {
+        console.warn('ScrobTimeline', 'restore after "close" failed', err)
+    })
+}
+
+// Four-item menu, exact order per §5.2.6. `resolved` guards onBack against
+// re-running "Закрити"'s restore after items 2-4 already took a real,
+// server-affecting action — Lampa.Select.show's onBack firing behavior
+// after a plain onSelect isn't confirmed one way or the other, so this
+// guard is needed regardless. "Закрити" itself is NOT guarded by it (its
+// own restore is idempotent — a redundant second run is harmless).
+//
+// `enabled` + Controller.toggle(enabled) in every branch (found missing by
+// live test 2026-09-13 — real app.min.js's own Select.show() call sites,
+// e.g. player quality/flow menus, always do this): selecting an item only
+// hides the select box (bind$7()'s goclose(), app.min.js:12848) - it does
+// NOT detach Controller's 'select' group (toggle$c(), app.min.js:12917),
+// which stays bound (back/left → close$a) until something explicitly
+// switches the Controller elsewhere. Without this, the box is invisible but
+// still "focused" - the user sees a dead/phantom screen, and every further
+// back-press still reaches close$a() → onBack() → another restore call.
+function showUnmarkMenu(identity, events, mediaId) {
+    var resolved = false
+    var enabled = Lampa.Controller.enabled().name
+    var items = [
+        { title: Lampa.Lang.translate('scrob_unmark_close'), action: 'close' },
+        { title: Lampa.Lang.translate('scrob_unmark_remove_event') + ' (' + formatManualDate(events[0].watched_at) + ')', action: 'remove_event' },
+        { title: Lampa.Lang.translate('scrob_unmark_rewatch'), action: 'rewatch' }
+    ]
+    if (events.length > 1) {
+        items.push({ title: Lampa.Lang.translate('scrob_unmark_delete_all') + ' (' + events.length + ')', action: 'delete_all' })
+    }
+
+    Lampa.Select.show({
+        title: Lampa.Lang.translate('scrob_unmark_menu_title'),
+        items: items,
+        onSelect: function (item) {
+            if (item.action === 'close') {
+                restoreTimelineFromServer(identity)
+                Lampa.Controller.toggle(enabled)
+                return
+            }
+            resolved = true
+            if (item.action === 'remove_event') {
+                api.removeHistoryEvent(events[0].id, function () {
+                    console.log('ScrobTimeline', 'manual unmark: removed event', events[0].id)
+                }, function (err) {
+                    console.warn('ScrobTimeline', 'manual unmark: remove event failed', err)
+                })
+            } else if (item.action === 'rewatch') {
+                api.startRewatch(identity.seriesTmdbId, identity.season, identity.episode, function () {
+                    console.log('ScrobTimeline', 'manual unmark: rewatch started', identity)
+                }, function (err) {
+                    console.warn('ScrobTimeline', 'manual unmark: rewatch start failed', err)
+                })
+            } else if (item.action === 'delete_all') {
+                api.deleteHistoryItem(mediaId, 'episode', function () {
+                    console.log('ScrobTimeline', 'manual unmark: deleted all history', mediaId)
+                }, function (err) {
+                    console.warn('ScrobTimeline', 'manual unmark: delete all failed', err)
+                })
+            }
+            Lampa.Controller.toggle(enabled)
+        },
+        onBack: function () {
+            if (!resolved) restoreTimelineFromServer(identity)
+            Lampa.Controller.toggle(enabled)
+        }
     })
 }
 
@@ -798,7 +1059,7 @@ function sendSessionHeartbeat(timeSeconds, state, callback) {
 // Normalizes one GET /history/watch-status item into pullWriteTimeline()'s
 // shape — kept separate so the bulk pull (continue-watching, different
 // field names) can build the same shape from its own response later.
-function applyWatchStatusItem(item) {
+function applyWatchStatusItem(item, force) {
     pullWriteTimeline({
         isSeries: item.media_type === 'episode',
         originalName: item.original_name,
@@ -810,7 +1071,7 @@ function applyWatchStatusItem(item) {
         duration: item.duration,
         runtimeMinutes: item.runtime_minutes,
         updatedAt: item.updated_at
-    })
+    }, force)
 }
 
 // Normalizes one GET /history/continue-watching item (format_event() shape:
