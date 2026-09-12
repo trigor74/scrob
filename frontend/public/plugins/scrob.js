@@ -1560,7 +1560,14 @@
     // Scrob sync — category mapping between Lampa favorite keys and Scrob list names.
     // Canonical list names are static English, never translated.
     // Universal rule: any other array key → '[Lampa] ' + Capitalized(key).
-    // Excluded from iteration: card, history, viewed.
+    // Excluded from iteration: card, viewed (whole-card "переглянуто" status,
+    // §5.3/Гілка 8 - separate change).
+    //
+    // `history` (SYNC-ARCHITECTURE-PLAN.md §5.3.1) is Lampa's own recently-
+    // opened-cards playlist (Favorite.add('history', card, 100), capped
+    // client-side at 100 - NOT the Scrob WatchEvent journal, a completely
+    // separate table/concept; syncing it here only moves cards in/out of this
+    // UI list across devices, never touches watch history/timeline data.
 
     // Canonical mapping: Lampa key → Scrob list name
     var CANONICAL = {
@@ -1570,13 +1577,13 @@
       scheduled: '[Lampa] Scheduled',
       continued: '[Lampa] To be continued',
       thrown: '[Lampa] Thrown',
-      look: '[Lampa] Look'
+      look: '[Lampa] Look',
+      history: '[Lampa] History'
     };
 
     // Keys excluded from sync iteration
     var EXCLUDED = {
       card: true,
-      history: true,
       viewed: true
     };
 
@@ -1696,7 +1703,7 @@
           if (map[mapKeys[i]].list_name === listName) return mapKeys[i];
         }
       }
-      var canonicals = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look'];
+      var canonicals = Object.keys(CANONICAL);
       for (var j = 0; j < canonicals.length; j++) {
         if (CANONICAL[canonicals[j]] === listName) return canonicals[j];
       }
