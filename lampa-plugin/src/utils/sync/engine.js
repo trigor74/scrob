@@ -40,6 +40,7 @@ var healing = false        // Self-heal guard: prevent re-entrant missing-key re
 var activeSocket = null    // Current WebSocket instance (inbound-only notify)
 var handlersBound = false  // Socket handlers registered flag
 var socketPollBound = null // Socket open/close hook reference
+var dropActivityBound = false // 'activity' listener (dropped-status refresh, §5.3.2) registered flag
 
 // Debounce window for batching outbound changes (ms, core bookmarks.js: 500)
 var DEBOUNCE_MS = 500
@@ -104,9 +105,21 @@ function readFavorite() {
 }
 
 // Single favorite write under the received guard (core Timeline received pattern).
+// Lampa.Favorite.check()/Lampa.Favorite.get() read from the core's own
+// in-memory data$1 cache, NOT from Storage directly (confirmed against
+// app.min.js) - that cache only ever refreshes inside Lampa.Favorite.read()
+// itself. Without calling it here, every remote list-sync write this file
+// makes (all 9 categories, not just thrown - found via §5.3.2's dropped-
+// status review) landed correctly in Storage but stayed invisible in the
+// live UI (mark buttons, badges) until something ELSE happened to call
+// Favorite.read() (a profile switch, a page reload). Favorite.read() itself
+// fires Lampa.Listener.send('state:changed', {target:'favorite', reason:
+// 'read'}) - the same signal timeline.js's own prefetch (Гілка 13) already
+// relies on elsewhere to make a fresh pull show up immediately.
 function writeFavorite(favorite) {
     received = true
     Lampa.Storage.set('favorite', favorite)
+    if (Lampa.Favorite && typeof Lampa.Favorite.read === 'function') Lampa.Favorite.read()
     received = false
 }
 
@@ -165,30 +178,120 @@ function dropMediaShape(mediaType, source) {
     }
 }
 
-// One-shot bulk pull at start()/profile-switch, same spirit as timeline.js's
-// pullContinueWatching() - idempotent (only touches titles not already
-// locally marked thrown), so safe to call unconditionally every start().
-function pullDropped() {
+// favorite.thrown holds raw card.id values, which can be either a number or
+// a string depending on where the card originally came from (the same
+// nuance mapping.js's own localElementSet() already normalizes for) - a
+// plain === / Array.indexOf (including the one inside applyRemoteRemove()
+// itself) can silently miss a type-mismatched entry. Not touched in
+// mapping.js itself (still shared by the generic list-sync above, for the
+// other 8 categories) - normalized locally here instead, only for `thrown`.
+function hasThrown(favorite, tmdbId) {
+    var arr = favorite.thrown
+    if (!Array.isArray(arr)) return false
+    var target = parseInt(tmdbId, 10)
+    for (var i = 0; i < arr.length; i++) {
+        if (parseInt(arr[i], 10) === target) return true
+    }
+    return false
+}
+
+function removeThrown(favorite, tmdbId) {
+    var arr = favorite.thrown
+    if (!Array.isArray(arr)) return false
+    var target = parseInt(tmdbId, 10)
+    for (var i = 0; i < arr.length; i++) {
+        if (parseInt(arr[i], 10) === target) {
+            applyRemoteRemove(favorite, 'thrown', arr[i]) // the raw stored element, not `target` - its own indexOf needs an exact match too
+            return true
+        }
+    }
+    return false
+}
+
+// Throttle shared by every pullDropped() caller (start(), the poll cycle,
+// and the activity trigger below) - a single flag/timestamp, not per-caller,
+// so none of them can race each other into overlapping GET /history/dropped
+// calls. A session-once flag (mirroring timeline.js's own `prefetched`) was
+// considered and rejected (found by review 2026-09-12): prefetch is a one-
+// time bootstrap whose ongoing freshness other, per-card mechanisms take
+// over afterward - dropped-status has no such fallback, the activity
+// trigger IS the only extra freshness source beyond polling/socket, so
+// going one-shot would permanently disable it after the very first run.
+var lastDropPullAt = 0
+var dropPullInFlight = false
+var DROP_PULL_MIN_INTERVAL_MS = 15000
+
+// Bulk pull - bidirectional (adds AND removes local thrown marks the server
+// no longer agrees with), safe to call from start() (force=true, bypasses
+// the throttle - a lifecycle event, not rapid navigation), the poll cycle,
+// and the activity trigger (both without force - throttled/in-flight-guarded).
+function pullDropped(force) {
+    if (dropPullInFlight) return
+    if (!force && Date.now() - lastDropPullAt < DROP_PULL_MIN_INTERVAL_MS) return
+    dropPullInFlight = true
+
     api.getDropped(function (result) {
+        dropPullInFlight = false
+        lastDropPullAt = Date.now()
+
         var favorite = readFavorite()
-        var localThrown = Array.isArray(favorite.thrown) ? favorite.thrown : []
         var changed = false
+        var remoteIds = {}
 
         function addMissing(mediaType, items) {
             for (var i = 0; i < items.length; i++) {
                 var item = items[i]
-                if (!item.tmdb_id || localThrown.indexOf(item.tmdb_id) !== -1) continue
-                applyRemoteAdd(favorite, 'thrown', item.tmdb_id, dropMediaShape(mediaType, item))
+                var tmdbId = parseInt(item.tmdb_id, 10)
+                if (!tmdbId) continue
+                remoteIds[tmdbId] = true
+                if (hasThrown(favorite, tmdbId)) continue
+                applyRemoteAdd(favorite, 'thrown', tmdbId, dropMediaShape(mediaType, item))
                 changed = true
             }
         }
         addMissing('show', result.shows)
         addMissing('movie', result.movies)
 
+        // Bidirectional: a title undropped elsewhere (web dashboard, another
+        // device) while this device was offline/socket-disconnected must
+        // lose its local mark too - unless it's still sitting in pushQueue
+        // (this device marked it thrown just now, hasn't reached the server
+        // yet) - same stillQueued guard convergeOneList() already uses for
+        // the generic list-sync above, ported here for 'thrown'.
+        var localThrown = Array.isArray(favorite.thrown) ? favorite.thrown.slice() : []
+        for (var li = 0; li < localThrown.length; li++) {
+            var localId = parseInt(localThrown[li], 10)
+            if (!localId || remoteIds[localId]) continue
+            var stillQueued = false
+            for (var q = 0; q < pushQueue.length; q++) {
+                if (pushQueue[q].lampaKey === 'thrown' && parseInt(pushQueue[q].card.id, 10) === localId) { stillQueued = true; break }
+            }
+            if (stillQueued) continue
+            if (removeThrown(favorite, localId)) changed = true
+        }
+
         if (changed) writeFavorite(favorite)
     }, function (err) {
+        dropPullInFlight = false
+        // Set on failure too (found by review 2026-09-12) - otherwise an
+        // offline server/500 means every subsequent card open or `main`
+        // visit retries immediately instead of backing off for the same
+        // DROP_PULL_MIN_INTERVAL_MS.
+        lastDropPullAt = Date.now()
         console.warn('ScrobSync', 'dropped pull failed', err)
     })
+}
+
+// Home screen / full card visit - separate 'activity' listener (engine.js
+// had none before this), same component filter timeline.js's own
+// onActivityStart()/onMainScreenActivity() already use. Throttled by
+// pullDropped()'s own guard above, not a session-once flag - see the
+// rejected-alternative note there for why.
+function onDropSyncActivity(e) {
+    if (!running) return
+    if (!e || e.type !== 'start') return
+    if (e.component !== 'main' && e.component !== 'full') return
+    pullDropped()
 }
 
 // Inbound socket event (handler.js's bindDropSync) - a show/movie was
@@ -200,12 +303,16 @@ function pullDropped() {
 function applyRemoteDropEvent(mediaType, action, payload) {
     if (!running || !payload || !payload.tmdb_id) return
     var favorite = readFavorite()
+    var tmdbId = parseInt(payload.tmdb_id, 10)
+    if (!tmdbId) return
+    var changed
     if (action === 'dropped') {
-        applyRemoteAdd(favorite, 'thrown', payload.tmdb_id, dropMediaShape(mediaType, payload))
+        changed = !hasThrown(favorite, tmdbId)
+        if (changed) applyRemoteAdd(favorite, 'thrown', tmdbId, dropMediaShape(mediaType, payload))
     } else {
-        applyRemoteRemove(favorite, 'thrown', payload.tmdb_id)
+        changed = removeThrown(favorite, tmdbId)
     }
-    writeFavorite(favorite)
+    if (changed) writeFavorite(favorite)
 }
 
 // Custom categories bypass core Favorite (see main.js toggleCustomCategory) and
@@ -483,6 +590,9 @@ export function update(reason) {
         return
     }
     updateRunning = true
+    // Own throttle/in-flight guard (pullDropped() itself) - independent of
+    // updateRunning above, never blocks or is blocked by the /lists convergence.
+    pullDropped()
     api.getLists(function (serverLists) {
         convergeAll(serverLists, function () {
             updateRunning = false
@@ -1091,6 +1201,10 @@ export function start() {
         socketPollBound = true
         Lampa.Listener.follow('state:changed', onStateChanged)
     }
+    if (Lampa.Listener && !dropActivityBound) {
+        dropActivityBound = true
+        Lampa.Listener.follow('activity', onDropSyncActivity)
+    }
 
     // Socket handlers register after start; polling stops once WS is live.
     bindSocketHandlers()
@@ -1112,7 +1226,9 @@ export function start() {
     // above (dropped_shows/dropped_movies aren't a list), idempotent, so
     // safe to run unconditionally on every start() (login, sync toggle,
     // profile switch) same as timeline.js's own pullContinueWatching().
-    pullDropped()
+    // force=true: a lifecycle event, not rapid navigation - bypasses the
+    // throttle so a profile switch always gets a fresh pull immediately.
+    pullDropped(true)
 
     console.log('ScrobSync', 'started', { mirrorLists: Object.keys(mirror.get().lists).length })
 }
@@ -1134,6 +1250,10 @@ export function stop() {
         Lampa.Listener.remove('state:changed', onStateChanged)
         socketPollBound = null
     }
+    if (Lampa.Listener && typeof Lampa.Listener.remove === 'function' && dropActivityBound) {
+        Lampa.Listener.remove('activity', onDropSyncActivity)
+        dropActivityBound = false
+    }
 
     if (profileListener) {
         Lampa.Storage.listener.remove('change', profileListener)
@@ -1152,6 +1272,13 @@ export function stop() {
     pushRunning = false
     pushQueue = []
 
+    // Dropped-status throttle state (§5.3.2) - reset so a stale timestamp
+    // from the profile/session just left doesn't linger into the next one
+    // (start()'s own pullDropped(true) bypasses it anyway, but a mid-flight
+    // request from the old profile shouldn't keep dropPullInFlight stuck).
+    lastDropPullAt = 0
+    dropPullInFlight = false
+
     stopPolling()
     stopRetryLoop()
 }
@@ -1161,6 +1288,7 @@ export function forceSync() {
     if (!running) return
     mirror.clearInitialDone()
     initialSync()
+    pullDropped(true)
 }
 
 // Get sync status for display
