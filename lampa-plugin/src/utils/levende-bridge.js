@@ -7,9 +7,13 @@
 // (utils/profiles.js switchProfile()), which stays admin-only and unrelated.
 //
 // Two situations per active levende profile:
-//   (B) its params carry scrob_server_url/scrob_api_key - applied directly,
-//       the accsdb config is the source of truth, nothing to back up/restore
-//       (re-applied fresh from params on every 'changed' event for it).
+//   (B) its params carry scrob_server_url/scrob_api_key - credentials applied
+//       directly, the accsdb config is the source of truth, nothing to back
+//       up/restore for THOSE (re-applied fresh from params on every 'changed'
+//       event for it). Our own plugin SETTINGS (SETTINGS_FIELDS below, e.g.
+//       which Favorite lists to prefetch) still get backed up/restored per
+//       profile even here - unlike credentials, they have no accsdb-provided
+//       source of truth to re-apply fresh from.
 //   (C) it has no Scrob params at all - the user can still sign in manually
 //       (API key / login+password / QR) same as without levende, but we back
 //       up/restore OUR OWN "regular account" fields ourselves, keyed by the
@@ -64,6 +68,24 @@ var BACKUP_FIELDS = [
     KEYS.ACTIVE_API_KEY, KEYS.ACTIVE_PROFILE_ID,
     KEYS.DEVICE_ACCESS_TOKEN, KEYS.DEVICE_REFRESH_TOKEN, KEYS.DEVICE_EXPIRES_AT
 ]
+
+// Per-profile PLUGIN SETTINGS (not credentials, SYNC-ARCHITECTURE-PLAN.md
+// §5.2.7) - backed up/restored for BOTH situations B and C, unlike
+// BACKUP_FIELDS above. Situation B's credentials come from accsdb, never a
+// backup - but which Lampa.Favorite lists are worth prefetching depends on
+// the individual account's own library size/habits (a big "Закладки" list
+// on one real person's Scrob account shouldn't force prefetch off for a
+// sibling levende profile with a small one, or vice versa), not on where
+// its credentials come from. Boolean defaults mirror main.js's own
+// SettingsApi trigger declarations for these same keys - kept in sync
+// manually, there's no single shared source for a trigger's default
+// between the two files.
+var SETTINGS_FIELDS = [KEYS.PREFETCH_HISTORY, KEYS.PREFETCH_BOOK, KEYS.PREFETCH_LIKE, KEYS.PREFETCH_WATH]
+var SETTINGS_DEFAULTS = {}
+SETTINGS_DEFAULTS[KEYS.PREFETCH_HISTORY] = true
+SETTINGS_DEFAULTS[KEYS.PREFETCH_BOOK] = false
+SETTINGS_DEFAULTS[KEYS.PREFETCH_LIKE] = false
+SETTINGS_DEFAULTS[KEYS.PREFETCH_WATH] = false
 
 // Staged by stageProfile() on 'profile'/'changed', consumed by whichever
 // fires first: the real 'state:changed' signal (applyPendingProfile(), called
@@ -148,11 +170,31 @@ function getBackupStore() {
 function backupProfile(profileId) {
     var store = getBackupStore()
     var snapshot = {}
-    BACKUP_FIELDS.forEach(function (field) {
+    BACKUP_FIELDS.concat(SETTINGS_FIELDS).forEach(function (field) {
         snapshot[field] = Lampa.Storage.get(field, '')
     })
     store[profileId] = snapshot
     Lampa.Storage.set(BACKUP_STORE_KEY, store)
+}
+
+// Restores just the SETTINGS_FIELDS subset of profileId's own backed-up
+// snapshot, falling back to each field's own proper default (not '') when
+// there is no snapshot yet, or the snapshotted value isn't really a saved
+// boolean - backupProfile() always writes SOMETHING for every field it
+// iterates (Lampa.Storage.get(field, '') falls through to '' for a field
+// that plain never existed anywhere on this device yet), so a bare
+// `field in snapshot` check would wrongly treat that filler '' as "really
+// set to falsy" instead of "never set" and never apply the true default.
+// Shared by restoreProfile() below (situation C, alongside credentials)
+// and situation B's own branch in doApplyUnsafe() (settings only -
+// credentials there come from accsdb, not a backup, so BACKUP_FIELDS
+// itself is never restored for B).
+function restoreSettingsFields(profileId) {
+    var snapshot = getBackupStore()[profileId] || {}
+    SETTINGS_FIELDS.forEach(function (field) {
+        var saved = snapshot[field]
+        Lampa.Storage.set(field, typeof saved === 'boolean' ? saved : SETTINGS_DEFAULTS[field])
+    })
 }
 
 // Restores profileId's own backed-up snapshot, or resets every field to
@@ -164,6 +206,7 @@ function restoreProfile(profileId) {
     BACKUP_FIELDS.forEach(function (field) {
         Lampa.Storage.set(field, snapshot[field] || '')
     })
+    restoreSettingsFields(profileId)
 }
 
 // Actually switches credentials for `profile` (an object shaped like what
@@ -271,6 +314,10 @@ function doApplyUnsafe(profile) {
         // own mirror/map storage (utils/sync/mirror.js, mapstore.js both key
         // off ACTIVE_PROFILE_ID already).
         Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId)
+        // Credentials come from accsdb, not a backup - but the prefetch
+        // candidate-list settings still need their own per-profile restore
+        // (see SETTINGS_FIELDS above).
+        restoreSettingsFields(profile.profileId)
     } else {
         restoreProfile(profile.profileId)
     }
