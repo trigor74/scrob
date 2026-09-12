@@ -42,7 +42,7 @@ function capitalize(str) {
 
 // Get Scrob list name for a Lampa favorite key.
 // Canonical keys get static names; unknown keys use universal rule.
-// Returns null for excluded keys (card, viewed).
+// Returns null for excluded keys (card).
 export function listNameForKey(key) {
     if (EXCLUDED[key]) return null
     if (CANONICAL[key]) return CANONICAL[key]
