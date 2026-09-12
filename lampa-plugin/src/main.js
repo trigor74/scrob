@@ -484,6 +484,7 @@ var CAT_LABELS = {
     continued: 'title_continued',
     thrown: 'title_thrown',
     look: 'title_look',
+    history: 'title_history',
     viewed: 'title_viewed'
 }
 
@@ -570,7 +571,7 @@ function showCategorySelect(selectedList, returnController) {
         try { favorite = JSON.parse(favorite) } catch (e) { favorite = {} }
     }
 
-    var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look']
+    var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look', 'history']
     var existingMap = sync.getMap()
     var catItems = []
 
@@ -599,7 +600,7 @@ function showCategorySelect(selectedList, returnController) {
     }
 
     // Custom keys from favorite (not standard, not excluded)
-    var excluded = { card: true, history: true, viewed: true }
+    var excluded = { card: true, viewed: true }
     for (var k in favorite) {
         if (excluded[k] || standardKeys.indexOf(k) !== -1 || !Array.isArray(favorite[k])) continue
         var customLabel = k.charAt(0).toUpperCase() + k.slice(1)

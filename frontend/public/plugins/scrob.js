@@ -1598,7 +1598,7 @@
 
     // Get Scrob list name for a Lampa favorite key.
     // Canonical keys get static names; unknown keys use universal rule.
-    // Returns null for excluded keys (card, history, viewed).
+    // Returns null for excluded keys (card, viewed).
     function listNameForKey(key) {
       if (EXCLUDED[key]) return null;
       if (CANONICAL[key]) return CANONICAL[key];
@@ -5351,6 +5351,7 @@
       continued: 'title_continued',
       thrown: 'title_thrown',
       look: 'title_look',
+      history: 'title_history',
       viewed: 'title_viewed'
     };
     function catLabel(key) {
@@ -5433,7 +5434,7 @@
           favorite = {};
         }
       }
-      var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look'];
+      var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look', 'history'];
       var existingMap = getMap();
       var catItems = [];
 
@@ -5462,7 +5463,6 @@
       // Custom keys from favorite (not standard, not excluded)
       var excluded = {
         card: true,
-        history: true,
         viewed: true
       };
       for (var k in favorite) {
