@@ -1186,6 +1186,16 @@ var PREFETCH_CHUNK_SIZE = 100
 // none of a persisted TTL's staleness window.
 var prefetched = false
 var prefetchInFlight = false
+// Bumped on stop()/resetPrefetch()/forcePrefetch() - any chunk response still
+// in flight from an earlier run (e.g. a profile switch landed mid-batch)
+// captures the generation it started under and compares against this on
+// arrival; a mismatch means "some later run has already reset/superseded
+// this one" and the response is dropped silently, touching neither
+// `prefetched`/`prefetchInFlight` (already whatever the newer run set them
+// to) nor Timeline (would otherwise write the PREVIOUS profile's watch
+// state into whatever profile is active by the time this lands). Same
+// pattern as session.gen above, for the same reason.
+var prefetchGeneration = 0
 
 function prefetchCandidateKeys() {
     var keys = []
@@ -1228,7 +1238,9 @@ function collectPrefetchCandidates() {
 // causes server-side bounded to one batch query at a time, same spirit as
 // the external-player push's own "don't hammer a weak Android TV box's
 // network" reasoning (§5.1.1 point 5).
-function runPrefetchChunks(chunks, index) {
+function runPrefetchChunks(chunks, index, gen) {
+    if (gen !== prefetchGeneration) return // superseded mid-flight - see prefetchGeneration above
+
     if (index >= chunks.length) {
         prefetched = true
         prefetchInFlight = false
@@ -1241,9 +1253,11 @@ function runPrefetchChunks(chunks, index) {
         return
     }
     api.getBatchWatchStatus(chunks[index], function (items) {
+        if (gen !== prefetchGeneration) return // ditto - a stale response landed after the check above too
         for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i])
-        runPrefetchChunks(chunks, index + 1)
+        runPrefetchChunks(chunks, index + 1, gen)
     }, function (err) {
+        if (gen !== prefetchGeneration) return
         // All-or-nothing (SYNC-ARCHITECTURE-PLAN.md §9 п.6): deliberately NOT
         // queued through enqueueRetry (§5.1's retry queue is for mutations;
         // this is a read-only snapshot) - `prefetched` just stays false, so
@@ -1258,15 +1272,23 @@ function runPrefetchChunks(chunks, index) {
 function runPrefetch() {
     if (!running || prefetched || prefetchInFlight) return
     var candidates = collectPrefetchCandidates()
-    if (!candidates.length) { prefetched = true; return }
+    // Deliberately NOT `prefetched = true` here - an empty pool right now
+    // (e.g. Favorite/Bookmarks data hasn't finished loading yet at plugin
+    // start) would otherwise permanently block any future retry this
+    // session, even once the same list genuinely has candidates a moment
+    // later. A bare return costs nothing (no network call happened) and
+    // leaves every later trigger (next `main` visit, forcePrefetch(), ...)
+    // free to try again.
+    if (!candidates.length) return
 
     prefetchInFlight = true
+    var gen = prefetchGeneration
     var chunks = []
     for (var i = 0; i < candidates.length; i += PREFETCH_CHUNK_SIZE) {
         chunks.push(candidates.slice(i, i + PREFETCH_CHUNK_SIZE))
     }
     console.log('ScrobTimeline', 'prefetch starting,', candidates.length, 'candidate(s),', chunks.length, 'chunk(s)')
-    runPrefetchChunks(chunks, 0)
+    runPrefetchChunks(chunks, 0, gen)
 }
 
 // Separate 'activity' listener from onActivityStart() above (that one only
@@ -1281,15 +1303,20 @@ function onMainScreenActivity(e) {
 
 // Candidate-list settings changed (main.js's prefetch toggles) - re-run
 // against the new pool on the next `main` visit rather than mid-navigation.
+// Bumps the generation too - a chunk sequence already in flight against the
+// OLD pool must not keep writing into Timeline nor mark this new intent
+// `prefetched` once it (coincidentally) finishes.
 export function resetPrefetch() {
     prefetched = false
+    prefetchInFlight = false
+    prefetchGeneration++
 }
 
 // "Синхронізувати зараз" button (main.js) - resets AND re-runs immediately,
 // matching forceSync()'s own immediate-effect expectation instead of
 // waiting for the next `main` visit.
 export function forcePrefetch() {
-    prefetched = false
+    resetPrefetch()
     runPrefetch()
 }
 
@@ -1379,8 +1406,12 @@ export function stop() {
     // exactly this stop()/start() cycle (setupProfileListener() above), and
     // so does logout/sync-disable - the next start() (if any) re-collects
     // the pool from scratch rather than trusting a previous profile's result.
+    // The generation bump is the important part here: a chunk request still
+    // in flight for the PROFILE BEING LEFT must not land its data into the
+    // next profile's Timeline once its response arrives after this point.
     prefetched = false
     prefetchInFlight = false
+    prefetchGeneration++
 
     resetSessionState()
     resetExternalContext()

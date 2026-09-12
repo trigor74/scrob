@@ -4582,6 +4582,16 @@
     // none of a persisted TTL's staleness window.
     var prefetched = false;
     var prefetchInFlight = false;
+    // Bumped on stop()/resetPrefetch()/forcePrefetch() - any chunk response still
+    // in flight from an earlier run (e.g. a profile switch landed mid-batch)
+    // captures the generation it started under and compares against this on
+    // arrival; a mismatch means "some later run has already reset/superseded
+    // this one" and the response is dropped silently, touching neither
+    // `prefetched`/`prefetchInFlight` (already whatever the newer run set them
+    // to) nor Timeline (would otherwise write the PREVIOUS profile's watch
+    // state into whatever profile is active by the time this lands). Same
+    // pattern as session.gen above, for the same reason.
+    var prefetchGeneration = 0;
     function prefetchCandidateKeys() {
       var keys = [];
       if (Lampa.Storage.get(KEYS.PREFETCH_HISTORY, true)) keys.push('history');
@@ -4628,7 +4638,9 @@
     // causes server-side bounded to one batch query at a time, same spirit as
     // the external-player push's own "don't hammer a weak Android TV box's
     // network" reasoning (§5.1.1 point 5).
-    function runPrefetchChunks(chunks, index) {
+    function runPrefetchChunks(chunks, index, gen) {
+      if (gen !== prefetchGeneration) return; // superseded mid-flight - see prefetchGeneration above
+
       if (index >= chunks.length) {
         prefetched = true;
         prefetchInFlight = false;
@@ -4644,9 +4656,11 @@
         return;
       }
       getBatchWatchStatus(chunks[index], function (items) {
+        if (gen !== prefetchGeneration) return; // ditto - a stale response landed after the check above too
         for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i]);
-        runPrefetchChunks(chunks, index + 1);
+        runPrefetchChunks(chunks, index + 1, gen);
       }, function (err) {
+        if (gen !== prefetchGeneration) return;
         // All-or-nothing (SYNC-ARCHITECTURE-PLAN.md §9 п.6): deliberately NOT
         // queued through enqueueRetry (§5.1's retry queue is for mutations;
         // this is a read-only snapshot) - `prefetched` just stays false, so
@@ -4660,17 +4674,22 @@
     function runPrefetch() {
       if (!running || prefetched || prefetchInFlight) return;
       var candidates = collectPrefetchCandidates();
-      if (!candidates.length) {
-        prefetched = true;
-        return;
-      }
+      // Deliberately NOT `prefetched = true` here - an empty pool right now
+      // (e.g. Favorite/Bookmarks data hasn't finished loading yet at plugin
+      // start) would otherwise permanently block any future retry this
+      // session, even once the same list genuinely has candidates a moment
+      // later. A bare return costs nothing (no network call happened) and
+      // leaves every later trigger (next `main` visit, forcePrefetch(), ...)
+      // free to try again.
+      if (!candidates.length) return;
       prefetchInFlight = true;
+      var gen = prefetchGeneration;
       var chunks = [];
       for (var i = 0; i < candidates.length; i += PREFETCH_CHUNK_SIZE) {
         chunks.push(candidates.slice(i, i + PREFETCH_CHUNK_SIZE));
       }
       console.log('ScrobTimeline', 'prefetch starting,', candidates.length, 'candidate(s),', chunks.length, 'chunk(s)');
-      runPrefetchChunks(chunks, 0);
+      runPrefetchChunks(chunks, 0, gen);
     }
 
     // Separate 'activity' listener from onActivityStart() above (that one only
@@ -4685,15 +4704,20 @@
 
     // Candidate-list settings changed (main.js's prefetch toggles) - re-run
     // against the new pool on the next `main` visit rather than mid-navigation.
+    // Bumps the generation too - a chunk sequence already in flight against the
+    // OLD pool must not keep writing into Timeline nor mark this new intent
+    // `prefetched` once it (coincidentally) finishes.
     function resetPrefetch() {
       prefetched = false;
+      prefetchInFlight = false;
+      prefetchGeneration++;
     }
 
     // "Синхронізувати зараз" button (main.js) - resets AND re-runs immediately,
     // matching forceSync()'s own immediate-effect expectation instead of
     // waiting for the next `main` visit.
     function forcePrefetch() {
-      prefetched = false;
+      resetPrefetch();
       runPrefetch();
     }
 
@@ -4778,8 +4802,12 @@
       // exactly this stop()/start() cycle (setupProfileListener() above), and
       // so does logout/sync-disable - the next start() (if any) re-collects
       // the pool from scratch rather than trusting a previous profile's result.
+      // The generation bump is the important part here: a chunk request still
+      // in flight for the PROFILE BEING LEFT must not land its data into the
+      // next profile's Timeline once its response arrives after this point.
       prefetched = false;
       prefetchInFlight = false;
+      prefetchGeneration++;
       resetSessionState();
       resetExternalContext();
     }
@@ -6094,6 +6122,25 @@
         }
       });
 
+      // ── Prefetch nested page button (right after list sync) ──
+      Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: {
+          name: 'scrob_open_prefetch',
+          type: 'button'
+        },
+        field: {
+          name: Lampa.Lang.translate('scrob_prefetch_title')
+        },
+        onChange: function onChange() {
+          Lampa.Settings.create('scrob_prefetch_page', {
+            onBack: function onBack() {
+              Lampa.Settings.create('scrob');
+            }
+          });
+        }
+      });
+
       // ══════════════════════════════════════════════════════
       //  NESTED PAGE: List sync settings
       // ══════════════════════════════════════════════════════
@@ -6140,56 +6187,6 @@
           forcePrefetch();
           Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_now') + '…');
         }
-      });
-
-      // ── Prefetch candidate pool (§5.2.7) ─────────────────
-      // Which Favorite lists feed the batch watch-status prefetch that fills
-      // Timeline up front for continue_watch's own ongoing-show filter.
-      // `history` defaults on (needed for that filter to work at all); the
-      // rest default off to save traffic/startup time on large collections.
-      Lampa.SettingsApi.addParam({
-        component: 'scrob_sync_page',
-        param: {
-          type: 'title'
-        },
-        field: {
-          name: Lampa.Lang.translate('scrob_prefetch_title')
-        }
-      });
-      [{
-        key: KEYS.PREFETCH_HISTORY,
-        name: 'scrob_prefetch_history',
-        def: true
-      }, {
-        key: KEYS.PREFETCH_BOOK,
-        name: 'scrob_prefetch_book',
-        def: false
-      }, {
-        key: KEYS.PREFETCH_LIKE,
-        name: 'scrob_prefetch_like',
-        def: false
-      }, {
-        key: KEYS.PREFETCH_WATH,
-        name: 'scrob_prefetch_wath',
-        def: false
-      }].forEach(function (row) {
-        Lampa.SettingsApi.addParam({
-          component: 'scrob_sync_page',
-          param: {
-            name: row.key,
-            type: 'trigger',
-            default: row.def
-          },
-          field: {
-            name: Lampa.Lang.translate(row.name)
-          },
-          onChange: function onChange(value) {
-            Lampa.Storage.set(row.key, value);
-            // The pool changed - re-collect it on the next `main` visit
-            // rather than mid-navigation through the settings screen.
-            resetPrefetch();
-          }
-        });
       });
 
       // ── List mapping button ─────────────────────────────
@@ -6267,6 +6264,50 @@
           }
           nameEl.text(text);
         }
+      })
+
+      // ══════════════════════════════════════════════════════
+      //  NESTED PAGE: Timeline prefetch settings (§5.2.7)
+      // ══════════════════════════════════════════════════════
+      // Which Favorite lists feed the batch watch-status prefetch that fills
+      // Timeline up front for continue_watch's own ongoing-show filter.
+      // `history` defaults on (needed for that filter to work at all); the
+      // rest default off to save traffic/startup time on large collections.
+    ;
+      [{
+        key: KEYS.PREFETCH_HISTORY,
+        name: 'scrob_prefetch_history',
+        def: true
+      }, {
+        key: KEYS.PREFETCH_BOOK,
+        name: 'scrob_prefetch_book',
+        def: false
+      }, {
+        key: KEYS.PREFETCH_LIKE,
+        name: 'scrob_prefetch_like',
+        def: false
+      }, {
+        key: KEYS.PREFETCH_WATH,
+        name: 'scrob_prefetch_wath',
+        def: false
+      }].forEach(function (row) {
+        Lampa.SettingsApi.addParam({
+          component: 'scrob_prefetch_page',
+          param: {
+            name: row.key,
+            type: 'trigger',
+            default: row.def
+          },
+          field: {
+            name: Lampa.Lang.translate(row.name)
+          },
+          onChange: function onChange(value) {
+            Lampa.Storage.set(row.key, value);
+            // The pool changed - re-collect it on the next `main` visit
+            // rather than mid-navigation through the settings screen.
+            resetPrefetch();
+          }
+        });
       });
 
       // Show/hide rows depending on authorization state (pattern: kinobaza settings.js)
@@ -6280,11 +6321,18 @@
             body.find('[data-name="scrob_logout_btn"]').remove();
             body.find('[data-name="' + KEYS.SYNC_ENABLED + '"]').remove();
             body.find('[data-name="scrob_open_sync"]').remove();
+            body.find('[data-name="scrob_open_prefetch"]').remove();
           }
         }
 
         // Hide sync controls if no session
         if (e.name === 'scrob_sync_page' && !hasSession()) {
+          e.body.find('.scroll__body > div').html('');
+          return;
+        }
+
+        // Hide prefetch controls if no session (same pattern as scrob_sync_page above)
+        if (e.name === 'scrob_prefetch_page' && !hasSession()) {
           e.body.find('.scroll__body > div').html('');
           return;
         }
@@ -6398,8 +6446,9 @@
       Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
-      // Nested page template for sync settings
+      // Nested page templates
       Lampa.Template.add('settings_scrob_sync_page', '<div></div>');
+      Lampa.Template.add('settings_scrob_prefetch_page', '<div></div>');
 
       // Register custom category viewer component
       Lampa.Component.add('scrob_category', component);

@@ -1283,6 +1283,18 @@ function initSettings() {
         }
     })
 
+    // ── Prefetch nested page button (right after list sync) ──
+    Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: { name: 'scrob_open_prefetch', type: 'button' },
+        field: { name: Lampa.Lang.translate('scrob_prefetch_title') },
+        onChange: function () {
+            Lampa.Settings.create('scrob_prefetch_page', {
+                onBack: function () { Lampa.Settings.create('scrob') }
+            })
+        }
+    })
+
     // ══════════════════════════════════════════════════════
     //  NESTED PAGE: List sync settings
     // ══════════════════════════════════════════════════════
@@ -1325,36 +1337,6 @@ function initSettings() {
             timelineSync.forcePrefetch()
             Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_now') + '…')
         }
-    })
-
-    // ── Prefetch candidate pool (§5.2.7) ─────────────────
-    // Which Favorite lists feed the batch watch-status prefetch that fills
-    // Timeline up front for continue_watch's own ongoing-show filter.
-    // `history` defaults on (needed for that filter to work at all); the
-    // rest default off to save traffic/startup time on large collections.
-    Lampa.SettingsApi.addParam({
-        component: 'scrob_sync_page',
-        param: { type: 'title' },
-        field: { name: Lampa.Lang.translate('scrob_prefetch_title') }
-    })
-
-    ;[
-        { key: KEYS.PREFETCH_HISTORY, name: 'scrob_prefetch_history', def: true },
-        { key: KEYS.PREFETCH_BOOK, name: 'scrob_prefetch_book', def: false },
-        { key: KEYS.PREFETCH_LIKE, name: 'scrob_prefetch_like', def: false },
-        { key: KEYS.PREFETCH_WATH, name: 'scrob_prefetch_wath', def: false }
-    ].forEach(function (row) {
-        Lampa.SettingsApi.addParam({
-            component: 'scrob_sync_page',
-            param: { name: row.key, type: 'trigger', default: row.def },
-            field: { name: Lampa.Lang.translate(row.name) },
-            onChange: function (value) {
-                Lampa.Storage.set(row.key, value)
-                // The pool changed - re-collect it on the next `main` visit
-                // rather than mid-navigation through the settings screen.
-                timelineSync.resetPrefetch()
-            }
-        })
     })
 
     // ── List mapping button ─────────────────────────────
@@ -1425,6 +1407,32 @@ function initSettings() {
         }
     })
 
+    // ══════════════════════════════════════════════════════
+    //  NESTED PAGE: Timeline prefetch settings (§5.2.7)
+    // ══════════════════════════════════════════════════════
+    // Which Favorite lists feed the batch watch-status prefetch that fills
+    // Timeline up front for continue_watch's own ongoing-show filter.
+    // `history` defaults on (needed for that filter to work at all); the
+    // rest default off to save traffic/startup time on large collections.
+    ;[
+        { key: KEYS.PREFETCH_HISTORY, name: 'scrob_prefetch_history', def: true },
+        { key: KEYS.PREFETCH_BOOK, name: 'scrob_prefetch_book', def: false },
+        { key: KEYS.PREFETCH_LIKE, name: 'scrob_prefetch_like', def: false },
+        { key: KEYS.PREFETCH_WATH, name: 'scrob_prefetch_wath', def: false }
+    ].forEach(function (row) {
+        Lampa.SettingsApi.addParam({
+            component: 'scrob_prefetch_page',
+            param: { name: row.key, type: 'trigger', default: row.def },
+            field: { name: Lampa.Lang.translate(row.name) },
+            onChange: function (value) {
+                Lampa.Storage.set(row.key, value)
+                // The pool changed - re-collect it on the next `main` visit
+                // rather than mid-navigation through the settings screen.
+                timelineSync.resetPrefetch()
+            }
+        })
+    })
+
     // Show/hide rows depending on authorization state (pattern: kinobaza settings.js)
     settingsListener = function (e) {
         if (e.name === 'scrob') {
@@ -1437,11 +1445,18 @@ function initSettings() {
                 body.find('[data-name="scrob_logout_btn"]').remove()
                 body.find('[data-name="' + KEYS.SYNC_ENABLED + '"]').remove()
                 body.find('[data-name="scrob_open_sync"]').remove()
+                body.find('[data-name="scrob_open_prefetch"]').remove()
             }
         }
 
         // Hide sync controls if no session
         if (e.name === 'scrob_sync_page' && !hasSession()) {
+            e.body.find('.scroll__body > div').html('')
+            return
+        }
+
+        // Hide prefetch controls if no session (same pattern as scrob_sync_page above)
+        if (e.name === 'scrob_prefetch_page' && !hasSession()) {
             e.body.find('.scroll__body > div').html('')
             return
         }
@@ -1563,8 +1578,9 @@ function startPlugin() {
     Lampa.Template.add('scrob_style', '<style>@@include("./css/style.scss")</style>')
     $('body').append(Lampa.Template.get('scrob_style', {}, true))
 
-    // Nested page template for sync settings
+    // Nested page templates
     Lampa.Template.add('settings_scrob_sync_page', '<div></div>')
+    Lampa.Template.add('settings_scrob_prefetch_page', '<div></div>')
 
     // Register custom category viewer component
     Lampa.Component.add('scrob_category', CategoryComponent)
