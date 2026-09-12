@@ -944,6 +944,28 @@ class WatchStatusBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(by_ep.keys()), {(1, 1)})
         self.assertTrue(by_ep[(1, 1)]["watched"])
 
+    async def test_batch_unknown_titles_make_no_extra_queries(self):
+        # When unknown movie/show tmdb_ids are requested, only initial Media
+        # and Show lookups run. No redundant WatchEvent/progress/session
+        # queries with empty IN () should be performed.
+        db = _FakeSession([
+            [],  # media_q (movie not found)
+            [],  # show_q (show not found)
+        ])
+
+        body = WatchStatusBatchRequest(items=[
+            WatchStatusBatchItem(tmdb_id=9999, type="movie"),
+            WatchStatusBatchItem(tmdb_id=8888, type="tv"),
+        ])
+        result = await history.get_watch_status_batch(body, db, self.user)
+        self.assertEqual(result, {"statuses": []})
+
+    async def test_batch_empty_items_make_no_queries(self):
+        db = _FakeSession([])
+        body = WatchStatusBatchRequest(items=[])
+        result = await history.get_watch_status_batch(body, db, self.user)
+        self.assertEqual(result, {"statuses": []})
+
 
 if __name__ == "__main__":
     unittest.main()
