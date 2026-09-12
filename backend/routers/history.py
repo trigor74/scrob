@@ -23,7 +23,7 @@ from models.rewatch import ShowRewatch, RewatchProgress
 from models.ratings import Rating
 from routers.media import enrich_with_state, get_user_tmdb_key, check_tmdb_key, _attach_episode_order_fields
 from core.translations import get_user_metadata_language, get_media_translations, apply_media_translations
-from core.rewatch import get_active_rewatch, record_rewatch_progress, get_already_watched_for_bulk_mark, capped_season_episode_counts
+from core.rewatch import get_active_rewatch, get_active_rewatches_for_shows, record_rewatch_progress, get_already_watched_for_bulk_mark, capped_season_episode_counts
 from core.enrichment import create_media_safely
 from core.episode_order import get_episode_orders_for_series, get_tmdb_to_tvdb_positions
 
@@ -3777,6 +3777,138 @@ async def get_watch_status(
             continue
         items.append(_watch_status_episode_item(ep, show, watched, watched_at_map.get(ep.id), prog, session))
     return items
+
+
+@router.post("/watch-status/batch")
+async def get_watch_status_batch(
+    body: schemas.WatchStatusBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_or_api_key),
+):
+    """Batch variant of GET /history/watch-status for a whole pool of
+    candidate titles at once (Lampa-plugin prefetch, SYNC-ARCHITECTURE-PLAN.md
+    §5.2.7) - same per-item shape and same underlying watched/rewatch logic
+    (_watch_status_movie_item/_watch_status_episode_item,
+    get_active_rewatches_for_shows), batched into a handful of `IN (...)`
+    queries instead of one round-trip per title. Unknown/not-yet-seen titles
+    are simply omitted from the response, same as a [] from the single-item
+    endpoint.
+    """
+    movie_tmdb_ids = {i.tmdb_id for i in body.items if i.type not in ("tv", "series")}
+    show_tmdb_ids = {i.tmdb_id for i in body.items if i.type in ("tv", "series")}
+
+    items: list[dict] = []
+
+    if movie_tmdb_ids:
+        media_q = await db.execute(
+            select(Media).where(Media.tmdb_id.in_(movie_tmdb_ids), Media.media_type == MediaType.movie)
+        )
+        movies = media_q.scalars().all()
+        movie_media_ids = [m.id for m in movies]
+
+        we_q = await db.execute(
+            select(WatchEvent.media_id, func.max(WatchEvent.watched_at), func.max(WatchEvent.created_at))
+            .where(
+                WatchEvent.user_id == current_user.id,
+                WatchEvent.media_id.in_(movie_media_ids),
+                WatchEvent.completed == True,
+            )
+            .group_by(WatchEvent.media_id)
+        )
+        watched_at_map = {media_id: (watched_at or created_at) for media_id, watched_at, created_at in we_q.all()}
+
+        progress_q = await db.execute(
+            select(PlaybackProgress).where(
+                PlaybackProgress.user_id == current_user.id, PlaybackProgress.media_id.in_(movie_media_ids)
+            )
+        )
+        progress_map = {p.media_id: p for p in progress_q.scalars().all()}
+
+        session_q = await db.execute(
+            select(PlaybackSession)
+            .where(PlaybackSession.user_id == current_user.id, PlaybackSession.media_id.in_(movie_media_ids))
+            .order_by(desc(PlaybackSession.updated_at))
+        )
+        session_map: dict[int, PlaybackSession] = {}
+        for s in session_q.scalars().all():
+            session_map.setdefault(s.media_id, s)
+
+        for media in movies:
+            watched = media.id in watched_at_map
+            prog = progress_map.get(media.id)
+            session = session_map.get(media.id)
+            if not watched and not prog and not (session and session.progress_seconds):
+                continue
+            items.append(_watch_status_movie_item(media, watched, watched_at_map.get(media.id), prog, session))
+
+    if show_tmdb_ids:
+        show_q = await db.execute(select(Show).where(Show.tmdb_id.in_(show_tmdb_ids)))
+        shows = show_q.scalars().all()
+        show_ids = [s.id for s in shows]
+
+        episodes_q = await db.execute(
+            select(Media).where(Media.show_id.in_(show_ids), Media.media_type == MediaType.episode)
+        )
+        episodes = episodes_q.scalars().all()
+        episode_ids = [ep.id for ep in episodes]
+
+        active_rewatches_by_show_id = await get_active_rewatches_for_shows(db, current_user.id, show_ids)
+        rewatching_episode_ids = [ep.id for ep in episodes if ep.show_id in active_rewatches_by_show_id]
+        non_rewatching_episode_ids = [ep.id for ep in episodes if ep.show_id not in active_rewatches_by_show_id]
+
+        watched_at_map: dict[int, Any] = {}
+        rewatch_media_ids: set[int] = set()
+        if non_rewatching_episode_ids:
+            we_q = await db.execute(
+                select(WatchEvent.media_id, func.max(WatchEvent.watched_at), func.max(WatchEvent.created_at))
+                .where(
+                    WatchEvent.user_id == current_user.id,
+                    WatchEvent.media_id.in_(non_rewatching_episode_ids),
+                    WatchEvent.completed == True,
+                )
+                .group_by(WatchEvent.media_id)
+            )
+            for media_id, watched_at, created_at in we_q.all():
+                watched_at_map[media_id] = watched_at or created_at
+        if rewatching_episode_ids:
+            rp_q = await db.execute(
+                select(RewatchProgress.media_id, WatchEvent.watched_at, WatchEvent.created_at)
+                .join(WatchEvent, WatchEvent.id == RewatchProgress.watch_event_id)
+                .where(RewatchProgress.rewatch_id.in_([r.id for r in active_rewatches_by_show_id.values()]))
+            )
+            for media_id, watched_at, created_at in rp_q.all():
+                rewatch_media_ids.add(media_id)
+                watched_at_map[media_id] = watched_at or created_at
+
+        progress_q = await db.execute(
+            select(PlaybackProgress).where(
+                PlaybackProgress.user_id == current_user.id, PlaybackProgress.media_id.in_(episode_ids)
+            )
+        )
+        progress_map = {p.media_id: p for p in progress_q.scalars().all()}
+
+        session_q = await db.execute(
+            select(PlaybackSession)
+            .where(PlaybackSession.user_id == current_user.id, PlaybackSession.media_id.in_(episode_ids))
+            .order_by(desc(PlaybackSession.updated_at))
+        )
+        session_map = {}
+        for s in session_q.scalars().all():
+            session_map.setdefault(s.media_id, s)
+
+        show_by_id = {s.id: s for s in shows}
+        for ep in episodes:
+            is_rewatching = ep.show_id in active_rewatches_by_show_id
+            watched = ep.id in (rewatch_media_ids if is_rewatching else watched_at_map)
+            prog = progress_map.get(ep.id)
+            session = session_map.get(ep.id)
+            if not watched and not prog and not (session and session.progress_seconds):
+                continue
+            items.append(
+                _watch_status_episode_item(ep, show_by_id[ep.show_id], watched, watched_at_map.get(ep.id), prog, session)
+            )
+
+    return {"statuses": items}
 
 
 @router.put("/session/{tmdb_id}")
