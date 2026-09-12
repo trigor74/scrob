@@ -1193,6 +1193,66 @@
       });
     }
 
+    // POST /history/drop/show|movie — mark a title "dropped" (SYNC-ARCHITECTURE-
+    // PLAN.md §5.3.2): a first-class server-side status, excluded from
+    // continue-watching/next-up/discover server-side, NOT a /lists entry.
+    // `isSeries` picks the endpoint; body only ever carries tmdb_id (never
+    // show_id/media_id - this plugin never has a local Scrob id to send).
+    function dropMedia(tmdbId, isSeries, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/drop/' + (isSeries ? 'show' : 'movie'), function (data) {
+        network.clear();
+        onDone(parse$1(data));
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, JSON.stringify({
+        tmdb_id: tmdbId
+      }), {
+        headers: Object.assign({
+          'Content-Type': 'application/json'
+        }, authHeaders())
+      });
+    }
+
+    // DELETE /history/drop/show|movie — undo a drop.
+    function undropMedia(tmdbId, isSeries, onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/drop/' + (isSeries ? 'show' : 'movie') + '?tmdb_id=' + tmdbId, function (data) {
+        network.clear();
+        onDone(parse$1(data));
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, '{}', {
+        headers: Object.assign({
+          'X-HTTP-Method-Override': 'DELETE'
+        }, authHeaders()),
+        type: 'DELETE'
+      });
+    }
+
+    // GET /history/dropped — every currently-dropped show/movie, for the bulk
+    // pull direction (§5.3.2). Response shape: { shows: [...], movies: [...] },
+    // items carry tmdb_id/title/poster_path but no `type` field of their own -
+    // the caller knows which array it came from.
+    function getDropped(onDone, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(base() + '/history/dropped', function (data) {
+        network.clear();
+        var json = parse$1(data);
+        if (json && Array.isArray(json.shows) && Array.isArray(json.movies)) onDone(json);else onFail();
+      }, function (a, c) {
+        network.clear();
+        onFail(network.errorDecode(a, c));
+      }, false, {
+        headers: authHeaders()
+      });
+    }
+
     // ─── QR device pairing (OAuth 2.0 Device Authorization Grant, /auth/device/*) ───
     // These three requests are genuinely anonymous by design (RFC 8628) — the Astro
     // gate explicitly exempts them (middleware.ts PUBLIC_PREFIXES), no X-Api-Key/
@@ -1470,6 +1530,14 @@
     // PLAN.md §5.1.1/§5.4, Гілка 9), not the engine's own list convergence.
     var playbackPullFn = null;
 
+    // Registered dropped-status callback from engine.js (set via bindDropSync).
+    // Also separate from updateFn: a show.dropped/movie.dropped event needs the
+    // actual payload (tmdb_id/title) to update ONE local Favorite('thrown')
+    // entry directly (§5.3.2) - re-running the whole list convergence for this
+    // would be both the wrong mechanism (thrown isn't a /lists entry any more)
+    // and unnecessary work.
+    var dropSyncFn = null;
+
     // Named handlers: stable references so off() actually unregisters (unlike
     // anonymous closures, which silently leak and double-fire after restarts).
     function onItemAdded(payload) {
@@ -1502,6 +1570,18 @@
     function onPlaybackPaused(payload) {
       requestPlaybackPull();
     }
+    function onShowDropped(payload) {
+      requestDropSync('show', 'dropped', payload);
+    }
+    function onShowUndropped(payload) {
+      requestDropSync('show', 'undropped', payload);
+    }
+    function onMovieDropped(payload) {
+      requestDropSync('movie', 'dropped', payload);
+    }
+    function onMovieUndropped(payload) {
+      requestDropSync('movie', 'undropped', payload);
+    }
 
     // Bind the engine update() entry point. Called once from engine.start().
     function bindUpdate(fn) {
@@ -1511,6 +1591,11 @@
     // Bind the playback-pull entry point. Called once from timelineSync.start().
     function bindPlaybackUpdate(fn) {
       playbackPullFn = fn;
+    }
+
+    // Bind the dropped-status entry point. Called once from engine.start().
+    function bindDropSync(fn) {
+      dropSyncFn = fn;
     }
 
     // Single notification path: ask the engine to refetch and converge.
@@ -1524,6 +1609,14 @@
     // regardless of which title the event was actually about).
     function requestPlaybackPull() {
       if (typeof playbackPullFn === 'function') playbackPullFn();
+    }
+
+    // Notify engine.js that a show/movie was dropped or undropped somewhere for
+    // this account. `mediaType` ('show'|'movie') + `action` ('dropped'|'undropped')
+    // let one callback cover all four events; `payload` is passed through as-is
+    // ({ show_id|media_id, tmdb_id, title } - see backend socket emit).
+    function requestDropSync(mediaType, action, payload) {
+      if (typeof dropSyncFn === 'function') dropSyncFn(mediaType, action, payload);
     }
 
     // ─── Public API ───────────────────────────────────────────
@@ -1541,6 +1634,10 @@
       socket.on('playback_session.started', onPlaybackStarted);
       socket.on('playback_session.playing', onPlaybackPlaying);
       socket.on('playback_session.paused', onPlaybackPaused);
+      socket.on('show.dropped', onShowDropped);
+      socket.on('show.undropped', onShowUndropped);
+      socket.on('movie.dropped', onMovieDropped);
+      socket.on('movie.undropped', onMovieUndropped);
     }
 
     // Unregister invalidation handlers from the socket.
@@ -1555,12 +1652,16 @@
       socket.off('playback_session.started', onPlaybackStarted);
       socket.off('playback_session.playing', onPlaybackPlaying);
       socket.off('playback_session.paused', onPlaybackPaused);
+      socket.off('show.dropped', onShowDropped);
+      socket.off('show.undropped', onShowUndropped);
+      socket.off('movie.dropped', onMovieDropped);
+      socket.off('movie.undropped', onMovieUndropped);
     }
 
     // Scrob sync — category mapping between Lampa favorite keys and Scrob list names.
     // Canonical list names are static English, never translated.
     // Universal rule: any other array key → '[Lampa] ' + Capitalized(key).
-    // Excluded from iteration: card.
+    // Excluded from iteration: card, thrown (§5.3.2 - separate mechanism, below).
     //
     // `history` (SYNC-ARCHITECTURE-PLAN.md §5.3.1) is Lampa's own recently-
     // opened-cards playlist (Favorite.add('history', card, 100), capped
@@ -1573,6 +1674,14 @@
     // same as those four already are) - NOT Lampa.Timeline's per-episode
     // watched marks (§5.2.6/§5.2), a different mechanism entirely; syncing it
     // here never touches Timeline/WatchEvent.
+    //
+    // `thrown` (§5.3.2) is EXCLUDED here on purpose, unlike the other four
+    // MARK_KEYS - "Кинуто" maps to Scrob's own first-class dropped_shows/
+    // dropped_movies state (POST/DELETE /history/drop/show|movie), not a
+    // generic named list, so continue-watching filtering and the native
+    // "Покинуті" page on the server both already know about it. engine.js
+    // intercepts `where === 'thrown'` in its own Favorite.listener hooks
+    // instead of routing it through this file's generic list-sync pipeline.
 
     // Canonical mapping: Lampa key → Scrob list name
     var CANONICAL = {
@@ -1581,7 +1690,6 @@
       wath: '[Lampa] Later',
       scheduled: '[Lampa] Scheduled',
       continued: '[Lampa] To be continued',
-      thrown: '[Lampa] Thrown',
       look: '[Lampa] Look',
       history: '[Lampa] History',
       viewed: '[Lampa] Viewed'
@@ -1589,7 +1697,8 @@
 
     // Keys excluded from sync iteration
     var EXCLUDED = {
-      card: true
+      card: true,
+      thrown: true
     };
 
     // Mark categories — mutually exclusive statuses (section 13, point 3)
@@ -2189,6 +2298,12 @@
     function onFavoriteAdd(e) {
       if (!running$1 || received) return;
       if (!e || !e.where || !e.card || !e.card.id) return;
+      // 'thrown' (§5.3.2) never goes through the generic /lists queue below -
+      // it maps to Scrob's own first-class dropped-state endpoints instead.
+      if (e.where === 'thrown') {
+        pushDrop('add', e.card);
+        return;
+      }
       push('add', e.where, e.card);
     }
     function onFavoriteRemove(e) {
@@ -2196,7 +2311,90 @@
       if (!e || !e.where || !e.card) return;
       if (e.method && e.method !== 'id') return;
       if (!e.card.id) return;
+      if (e.where === 'thrown') {
+        pushDrop('remove', e.card);
+        return;
+      }
       push('remove', e.where, e.card);
+    }
+
+    // ─── Dropped status ("Кинуто") — SYNC-ARCHITECTURE-PLAN.md §5.3.2 ─────────
+    // A first-class Scrob server state (dropped_shows/dropped_movies), not a
+    // /lists entry - excluded from the generic list-sync above (mapping.js's
+    // EXCLUDED), pushed/pulled here directly against POST/DELETE
+    // /history/drop/show|movie and GET /history/dropped instead.
+
+    function pushDrop(action, card) {
+      var tmdbId = parseInt(card.id, 10);
+      if (!tmdbId) return;
+      var isSeries = detectMediaType(card) === 'series';
+      var call = action === 'add' ? dropMedia : undropMedia;
+      call(tmdbId, isSeries, function () {}, function (err) {
+        if (isAuthError(err)) {
+          pauseSync('Authentication expired');
+          return;
+        }
+        enqueueRetry({
+          type: 'custom',
+          run: function run(done, fail) {
+            call(tmdbId, isSeries, done, fail);
+          }
+        });
+      });
+    }
+
+    // Builds the {tmdb_id, type, title} shape cardFromScrobMedia() expects out
+    // of a source that only ever gives a bare tmdb_id/title with no `type`
+    // field of its own (both GET /history/dropped's per-array items and the
+    // show.*/movie.* socket payloads are like this - see §5.3.2).
+    function dropMediaShape(mediaType, source) {
+      return {
+        tmdb_id: source.tmdb_id,
+        type: mediaType === 'show' ? 'series' : 'movie',
+        title: source.title,
+        poster_path: source.poster_path
+      };
+    }
+
+    // One-shot bulk pull at start()/profile-switch, same spirit as timeline.js's
+    // pullContinueWatching() - idempotent (only touches titles not already
+    // locally marked thrown), so safe to call unconditionally every start().
+    function pullDropped() {
+      getDropped(function (result) {
+        var favorite = readFavorite();
+        var localThrown = Array.isArray(favorite.thrown) ? favorite.thrown : [];
+        var changed = false;
+        function addMissing(mediaType, items) {
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (!item.tmdb_id || localThrown.indexOf(item.tmdb_id) !== -1) continue;
+            applyRemoteAdd(favorite, 'thrown', item.tmdb_id, dropMediaShape(mediaType, item));
+            changed = true;
+          }
+        }
+        addMissing('show', result.shows);
+        addMissing('movie', result.movies);
+        if (changed) writeFavorite(favorite);
+      }, function (err) {
+        console.warn('ScrobSync', 'dropped pull failed', err);
+      });
+    }
+
+    // Inbound socket event (handler.js's bindDropSync) - a show/movie was
+    // dropped or undropped on ANY device tied to this account. `payload` is
+    // whatever the server's socket emit carries ({ show_id|media_id, tmdb_id,
+    // title }, see history.py) - enough to build a minimal card via
+    // cardFromScrobMedia(), same fallback shape a fresh remote /lists addition
+    // already gets elsewhere in this file.
+    function applyRemoteDropEvent(mediaType, action, payload) {
+      if (!running$1 || !payload || !payload.tmdb_id) return;
+      var favorite = readFavorite();
+      if (action === 'dropped') {
+        applyRemoteAdd(favorite, 'thrown', payload.tmdb_id, dropMediaShape(mediaType, payload));
+      } else {
+        applyRemoteRemove(favorite, 'thrown', payload.tmdb_id);
+      }
+      writeFavorite(favorite);
     }
 
     // Custom categories bypass core Favorite (see main.js toggleCustomCategory) and
@@ -2971,6 +3169,7 @@
     function bindSocketHandlers() {
       if (!activeSocket || handlersBound) return;
       bindUpdate(invalidate);
+      bindDropSync(applyRemoteDropEvent);
       registerHandlers(activeSocket);
       if (activeSocket.onLifecycle) {
         activeSocket.onLifecycle('open', onSocketOpen);
@@ -2990,6 +3189,7 @@
       }
       handlersBound = false;
       bindUpdate(null);
+      bindDropSync(null);
     }
 
     // ─── Mapping merge (section 14.3) ─────────────────────────
@@ -3166,6 +3366,12 @@
       } else if (isStale(getPollInterval())) {
         update('start-stale');
       }
+
+      // Dropped-status bulk pull (§5.3.2) - independent of the /lists mirror
+      // above (dropped_shows/dropped_movies aren't a list), idempotent, so
+      // safe to run unconditionally on every start() (login, sync toggle,
+      // profile switch) same as timeline.js's own pullContinueWatching().
+      pullDropped();
       console.log('ScrobSync', 'started', {
         mirrorLists: Object.keys(get().lists).length
       });
@@ -5443,7 +5649,7 @@
           favorite = {};
         }
       }
-      var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look', 'history', 'viewed'];
+      var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'look', 'history', 'viewed'];
       var existingMap = getMap();
       var catItems = [];
 
@@ -5470,8 +5676,14 @@
       }
 
       // Custom keys from favorite (not standard, not excluded)
+      // 'thrown' is excluded here too - it maps to Scrob's native dropped-state
+      // endpoints (§5.3.2), never to a /lists mapping, so offering it in this
+      // "map to a Scrob list" picker (as a standard OR a custom key) would be
+      // misleading - see mapping.js's own EXCLUDED for the sync-side half of
+      // this same exclusion.
       var excluded = {
-        card: true
+        card: true,
+        thrown: true
       };
       for (var k in favorite) {
         if (excluded[k] || standardKeys.indexOf(k) !== -1 || !Array.isArray(favorite[k])) continue;

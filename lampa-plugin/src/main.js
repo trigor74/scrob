@@ -571,7 +571,7 @@ function showCategorySelect(selectedList, returnController) {
         try { favorite = JSON.parse(favorite) } catch (e) { favorite = {} }
     }
 
-    var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'thrown', 'look', 'history', 'viewed']
+    var standardKeys = ['book', 'like', 'wath', 'scheduled', 'continued', 'look', 'history', 'viewed']
     var existingMap = sync.getMap()
     var catItems = []
 
@@ -600,7 +600,12 @@ function showCategorySelect(selectedList, returnController) {
     }
 
     // Custom keys from favorite (not standard, not excluded)
-    var excluded = { card: true }
+    // 'thrown' is excluded here too - it maps to Scrob's native dropped-state
+    // endpoints (§5.3.2), never to a /lists mapping, so offering it in this
+    // "map to a Scrob list" picker (as a standard OR a custom key) would be
+    // misleading - see mapping.js's own EXCLUDED for the sync-side half of
+    // this same exclusion.
+    var excluded = { card: true, thrown: true }
     for (var k in favorite) {
         if (excluded[k] || standardKeys.indexOf(k) !== -1 || !Array.isArray(favorite[k])) continue
         var customLabel = k.charAt(0).toUpperCase() + k.slice(1)

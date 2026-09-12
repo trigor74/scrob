@@ -1,7 +1,7 @@
 // Scrob sync — category mapping between Lampa favorite keys and Scrob list names.
 // Canonical list names are static English, never translated.
 // Universal rule: any other array key → '[Lampa] ' + Capitalized(key).
-// Excluded from iteration: card.
+// Excluded from iteration: card, thrown (§5.3.2 - separate mechanism, below).
 //
 // `history` (SYNC-ARCHITECTURE-PLAN.md §5.3.1) is Lampa's own recently-
 // opened-cards playlist (Favorite.add('history', card, 100), capped
@@ -14,6 +14,14 @@
 // same as those four already are) - NOT Lampa.Timeline's per-episode
 // watched marks (§5.2.6/§5.2), a different mechanism entirely; syncing it
 // here never touches Timeline/WatchEvent.
+//
+// `thrown` (§5.3.2) is EXCLUDED here on purpose, unlike the other four
+// MARK_KEYS - "Кинуто" maps to Scrob's own first-class dropped_shows/
+// dropped_movies state (POST/DELETE /history/drop/show|movie), not a
+// generic named list, so continue-watching filtering and the native
+// "Покинуті" page on the server both already know about it. engine.js
+// intercepts `where === 'thrown'` in its own Favorite.listener hooks
+// instead of routing it through this file's generic list-sync pipeline.
 
 // Canonical mapping: Lampa key → Scrob list name
 var CANONICAL = {
@@ -22,14 +30,13 @@ var CANONICAL = {
     wath:      '[Lampa] Later',
     scheduled: '[Lampa] Scheduled',
     continued: '[Lampa] To be continued',
-    thrown:    '[Lampa] Thrown',
     look:      '[Lampa] Look',
     history:   '[Lampa] History',
     viewed:    '[Lampa] Viewed'
 }
 
 // Keys excluded from sync iteration
-var EXCLUDED = { card: true }
+var EXCLUDED = { card: true, thrown: true }
 
 // Mark categories — mutually exclusive statuses (section 13, point 3)
 var MARK_KEYS = ['scheduled', 'continued', 'thrown', 'look', 'viewed']
