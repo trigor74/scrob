@@ -44,10 +44,14 @@
 //   own "Просмотрено" menu action marks a file watched, not a Favorite('viewed')
 //   toggle — that's a different, whole-card status, see §5.2.4/§5.3).
 //
-// Deliberately NOT ported (out of scope for this module):
-// - Manual watched-mark clicks outside the player (Lampa.Timeline updates
-//   with no active session) — that is the "viewed" Favorite-mark sync,
-//   a separate later phase (SYNC-ARCHITECTURE-PLAN.md §5.3).
+// Deliberately NOT in this module (handled elsewhere):
+// - Favorite('viewed') — the whole-card "переглянуто" status (mutually
+//   exclusive with look/scheduled/continued/thrown, §5.3/Гілка 8) is a
+//   completely separate mechanism, synced generically through
+//   mapping.js/engine.js's own list-sync, never touching Lampa.Timeline/
+//   WatchEvent at all. NOT to be confused with the manual per-episode
+//   Timeline marks (season-episode__viewed clicks outside the player)
+//   THIS module does handle, further below (§5.2.6, Гілка 6).
 // - Grace-period undo window and a persisted offline queue — failed
 //   heartbeat/complete calls are retried via this plugin's own list-sync
 //   retry queue (engine.js's enqueueRetry) instead of a second, separate
