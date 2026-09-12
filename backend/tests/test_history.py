@@ -18,7 +18,7 @@ from models.playback_session import PlaybackSession
 from models.rewatch import ShowRewatch
 from models.show import Show
 from routers import history
-from schemas import WatchEventCreate
+from schemas import WatchEventCreate, WatchStatusBatchItem, WatchStatusBatchRequest
 
 
 class _Scalars:
@@ -858,6 +858,113 @@ class ManualSessionEpisodeShowLinkTests(unittest.IsolatedAsyncioTestCase):
         find_or_create.assert_not_awaited()
         self.assertIsNone(create_media.await_args.kwargs["show_id"])
         self.assertIsNone(media.show_id)
+
+
+class WatchStatusBatchTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.user = SimpleNamespace(id=7)
+
+    async def test_movies_omit_untouched_and_unknown_titles(self):
+        # Requested: 100 (watched via WatchEvent), 200 (mid-progress),
+        # 300 (a real Media row that's simply untouched), 999 (no Media
+        # row at all - never seen by Scrob). Only 100 and 200 should
+        # survive into the response.
+        watched_movie = Media(id=1, tmdb_id=100, media_type=MediaType.movie, title="A", original_title="A", runtime=120)
+        progress_movie = Media(id=2, tmdb_id=200, media_type=MediaType.movie, title="B", original_title="B", runtime=90)
+        untouched_movie = Media(id=3, tmdb_id=300, media_type=MediaType.movie, title="C", original_title="C", runtime=100)
+        progress = PlaybackProgress(media_id=2, progress_percent=0.35, progress_seconds=1890, updated_at=datetime(2026, 9, 1))
+
+        db = _FakeSession([
+            [watched_movie, progress_movie, untouched_movie],  # media_q
+            [(1, datetime(2026, 8, 30), datetime(2026, 8, 30))],  # we_q (grouped)
+            [progress],  # progress_q
+            [],  # session_q
+        ])
+
+        body = WatchStatusBatchRequest(items=[
+            WatchStatusBatchItem(tmdb_id=100, type="movie"),
+            WatchStatusBatchItem(tmdb_id=200, type="movie"),
+            WatchStatusBatchItem(tmdb_id=300, type="movie"),
+            WatchStatusBatchItem(tmdb_id=999, type="movie"),
+        ])
+        result = await history.get_watch_status_batch(body, db, self.user)
+
+        by_tmdb = {item["tmdb_id"]: item for item in result["statuses"]}
+        self.assertEqual(set(by_tmdb.keys()), {100, 200})
+        self.assertTrue(by_tmdb[100]["watched"])
+        self.assertFalse(by_tmdb[200]["watched"])
+        self.assertEqual(by_tmdb[200]["percent"], 35.0)
+
+    async def test_show_without_active_rewatch_uses_watch_event_history(self):
+        show = Show(id=10, tmdb_id=500, title="X", original_title="X")
+        ep_watched = Media(id=21, tmdb_id=None, media_type=MediaType.episode, title="E1", show_id=10, season_number=1, episode_number=1, runtime=45)
+        ep_in_progress = Media(id=22, tmdb_id=None, media_type=MediaType.episode, title="E2", show_id=10, season_number=1, episode_number=2, runtime=45)
+        progress = PlaybackProgress(media_id=22, progress_percent=0.5, progress_seconds=1350, updated_at=datetime(2026, 9, 1))
+
+        db = _FakeSession([
+            [show],                     # show_q
+            [ep_watched, ep_in_progress],  # episodes_q
+            [],                         # get_active_rewatches_for_shows internal query
+            [(21, datetime(2026, 8, 30), datetime(2026, 8, 30))],  # we_q (non-rewatching)
+            [progress],                 # progress_q
+            [],                         # session_q
+        ])
+
+        body = WatchStatusBatchRequest(items=[WatchStatusBatchItem(tmdb_id=500, type="tv")])
+        result = await history.get_watch_status_batch(body, db, self.user)
+
+        by_ep = {(i["season_number"], i["episode_number"]): i for i in result["statuses"]}
+        self.assertEqual(set(by_ep.keys()), {(1, 1), (1, 2)})
+        self.assertTrue(by_ep[(1, 1)]["watched"])
+        self.assertEqual(by_ep[(1, 1)]["series_tmdb_id"], 500)
+        self.assertFalse(by_ep[(1, 2)]["watched"])
+        self.assertEqual(by_ep[(1, 2)]["percent"], 50.0)
+
+    async def test_show_with_active_rewatch_uses_rewatch_progress_not_full_history(self):
+        show = Show(id=30, tmdb_id=600, title="Y", original_title="Y")
+        ep_done_this_cycle = Media(id=41, tmdb_id=None, media_type=MediaType.episode, title="E1", show_id=30, season_number=1, episode_number=1, runtime=45)
+        ep_not_yet_this_cycle = Media(id=42, tmdb_id=None, media_type=MediaType.episode, title="E2", show_id=30, season_number=1, episode_number=2, runtime=45)
+        active_rewatch = SimpleNamespace(id=99, show_id=30)
+
+        db = _FakeSession([
+            [show],                     # show_q
+            [ep_done_this_cycle, ep_not_yet_this_cycle],  # episodes_q
+            [active_rewatch],           # get_active_rewatches_for_shows internal query
+            [(41, datetime(2026, 9, 2), datetime(2026, 9, 2))],  # rp_q (this cycle's own progress)
+            [],                         # progress_q
+            [],                         # session_q
+        ])
+
+        body = WatchStatusBatchRequest(items=[WatchStatusBatchItem(tmdb_id=600, type="series")])
+        result = await history.get_watch_status_batch(body, db, self.user)
+
+        # Episode 42 has no rewatch progress, no bookmark, no session -
+        # correctly omitted rather than falsely "watched" from old history.
+        by_ep = {(i["season_number"], i["episode_number"]): i for i in result["statuses"]}
+        self.assertEqual(set(by_ep.keys()), {(1, 1)})
+        self.assertTrue(by_ep[(1, 1)]["watched"])
+
+    async def test_batch_unknown_titles_make_no_extra_queries(self):
+        # When unknown movie/show tmdb_ids are requested, only initial Media
+        # and Show lookups run. No redundant WatchEvent/progress/session
+        # queries with empty IN () should be performed.
+        db = _FakeSession([
+            [],  # media_q (movie not found)
+            [],  # show_q (show not found)
+        ])
+
+        body = WatchStatusBatchRequest(items=[
+            WatchStatusBatchItem(tmdb_id=9999, type="movie"),
+            WatchStatusBatchItem(tmdb_id=8888, type="tv"),
+        ])
+        result = await history.get_watch_status_batch(body, db, self.user)
+        self.assertEqual(result, {"statuses": []})
+
+    async def test_batch_empty_items_make_no_queries(self):
+        db = _FakeSession([])
+        body = WatchStatusBatchRequest(items=[])
+        result = await history.get_watch_status_batch(body, db, self.user)
+        self.assertEqual(result, {"statuses": []})
 
 
 if __name__ == "__main__":

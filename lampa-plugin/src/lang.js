@@ -434,6 +434,38 @@ export default function addLang() {
             ru: 'Удалить всю историю',
             en: 'Delete all history',
             be: 'Выдаліць усю гісторыю'
+        },
+
+        // ─── Timeline prefetch candidate pool (§5.2.7) ──────
+        scrob_prefetch_title: {
+            uk: 'Автопідвантаження таймлайну',
+            ru: 'Автоподгрузка таймлайна',
+            en: 'Timeline prefetch',
+            be: 'Аўтападгрузка таймлайна'
+        },
+        scrob_prefetch_history: {
+            uk: 'Історія переглядів',
+            ru: 'История просмотров',
+            en: 'Watch history',
+            be: 'Гісторыя праглядаў'
+        },
+        scrob_prefetch_book: {
+            uk: 'Закладки',
+            ru: 'Закладки',
+            en: 'Bookmarks',
+            be: 'Закладкі'
+        },
+        scrob_prefetch_like: {
+            uk: 'Подобається',
+            ru: 'Нравится',
+            en: 'Liked',
+            be: 'Падабаецца'
+        },
+        scrob_prefetch_wath: {
+            uk: 'Пізніше',
+            ru: 'Позже',
+            en: 'Watch later',
+            be: 'Пазней'
         }
     })
 }

@@ -13,6 +13,15 @@ export var KEYS = {
     ACTIVE_API_KEY: 'scrob_active_api_key',
     SYNC_ENABLED: 'scrob_sync_enabled',
     SYNC_INTERVAL: 'scrob_sync_interval',
+    // Timeline prefetch candidate pool (SYNC-ARCHITECTURE-PLAN.md §5.2.7) —
+    // which Lampa.Favorite lists feed the batch watch-status prefetch.
+    // 'history' defaults on (needed for the continue_watch ongoing-show
+    // filter itself); the rest default off to save traffic/startup time on
+    // large collections.
+    PREFETCH_HISTORY: 'scrob_prefetch_history',
+    PREFETCH_BOOK: 'scrob_prefetch_book',
+    PREFETCH_LIKE: 'scrob_prefetch_like',
+    PREFETCH_WATH: 'scrob_prefetch_wath',
     // QR-пейринг (OAuth 2.0 Device Authorization Grant, /auth/device/*) — Bearer,
     // не api_key: за дизайном сервера device-скоупований токен не має доступу
     // до /auth/me, тож так постійний api_key отримати неможливо в принципі.

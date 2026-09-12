@@ -28,7 +28,10 @@
 // GET /history/watch-status, written into Timeline via pullWriteTimeline().
 // Bulk (continue-watching, at login/profile-switch/start) is a separate,
 // later addition reusing the same pullWriteTimeline()/buildHash()/
-// resolveDuration() helpers.
+// resolveDuration() helpers. Prefetch (§5.2.7, further below) is a third,
+// wider bulk pull over the user's own configurable Favorite lists (not just
+// continue-watching) - fills in Timeline for ongoing-show detection
+// (continue_watch's own filter) before the user opens any card by hand.
 // - LWW against the local Timeline entry's own `updated` timestamp — never
 //   blindly overwrites a possibly-newer local value (§5.2.3).
 // - `syncingFromServer` guards onTimelineUpdate() against mistaking a pull's
@@ -54,6 +57,7 @@ import * as api from '../api'
 import { enqueueRetry } from './engine'
 import { bindPlaybackUpdate } from './handler'
 import { KEYS, hasSession } from '../storage'
+import { detectMediaType } from './mapping'
 
 var WATCHED_THRESHOLD_PERCENT = 90
 var HEARTBEAT_THROTTLE_MS = 15000   // periodic heartbeat driven by Timeline updates
@@ -1162,6 +1166,160 @@ function pullActiveCard() {
     })
 }
 
+// ─── Prefetch (SYNC-ARCHITECTURE-PLAN.md §5.2.7) ───────────
+// Lampa's own "Продовжити перегляд" row (continue_watch) hides an ongoing
+// show once its next-to-air episode's PREVIOUS one reads >=90% watched in
+// the local Timeline (file_view) - but on-demand pull (onActivityStart
+// above) only ever fills that in once the user opens the show's own full
+// card. On a fresh app start file_view is empty for everything, so every
+// caught-up ongoing show wrongly stays in the row until opened once by
+// hand. Batches every enabled Favorite-list candidate's watch-status up
+// front instead, so the row's own filter already has real data on first
+// paint.
+var PREFETCH_CHUNK_SIZE = 100
+// True once a prefetch run has completed successfully THIS session (app
+// launch to reload/close) - every trigger below (start(), profile switch,
+// each `main` visit) shares this one flag, so only the very first one that
+// actually succeeds does real work; the rest are a single boolean check.
+// Deliberately NOT persisted to Lampa.Storage: an in-memory flag already
+// means "at most once per page load, always fresh again on reload", with
+// none of a persisted TTL's staleness window.
+var prefetched = false
+var prefetchInFlight = false
+// Bumped on stop()/resetPrefetch()/forcePrefetch() - any chunk response still
+// in flight from an earlier run (e.g. a profile switch landed mid-batch)
+// captures the generation it started under and compares against this on
+// arrival; a mismatch means "some later run has already reset/superseded
+// this one" and the response is dropped silently, touching neither
+// `prefetched`/`prefetchInFlight` (already whatever the newer run set them
+// to) nor Timeline (would otherwise write the PREVIOUS profile's watch
+// state into whatever profile is active by the time this lands). Same
+// pattern as session.gen above, for the same reason.
+var prefetchGeneration = 0
+
+function prefetchCandidateKeys() {
+    var keys = []
+    if (Lampa.Storage.get(KEYS.PREFETCH_HISTORY, true)) keys.push('history')
+    if (Lampa.Storage.get(KEYS.PREFETCH_BOOK, false)) keys.push('book')
+    if (Lampa.Storage.get(KEYS.PREFETCH_LIKE, false)) keys.push('like')
+    if (Lampa.Storage.get(KEYS.PREFETCH_WATH, false)) keys.push('wath')
+    return keys
+}
+
+// Unique {tmdbId, type} pool across every enabled candidate list - the same
+// card can legitimately sit in more than one list (e.g. both history and
+// book), and detectMediaType() filters out person cards (a Favorite list is
+// a card pool, not guaranteed movie/show-only). `type` uses the same 'tv'/
+// 'movie' convention this file's other API calls already use (onActivityStart/
+// pullActiveCard above), not mapping.js's 'series' (a different, list-sync-
+// specific convention).
+function collectPrefetchCandidates() {
+    var seen = {}
+    var items = []
+    var keys = prefetchCandidateKeys()
+    for (var k = 0; k < keys.length; k++) {
+        var cards = Lampa.Favorite.get({ type: keys[k] }) || []
+        for (var i = 0; i < cards.length; i++) {
+            var card = cards[i]
+            if (!card || !card.id) continue
+            var mediaType = detectMediaType(card)
+            if (mediaType === 'person') continue
+            var type = mediaType === 'series' ? 'tv' : 'movie'
+            var dedupeKey = type + ':' + card.id
+            if (seen[dedupeKey]) continue
+            seen[dedupeKey] = true
+            items.push({ tmdbId: card.id, type: type })
+        }
+    }
+    return items
+}
+
+// One chunk at a time, not all in parallel — keeps the burst of DB work this
+// causes server-side bounded to one batch query at a time, same spirit as
+// the external-player push's own "don't hammer a weak Android TV box's
+// network" reasoning (§5.1.1 point 5).
+function runPrefetchChunks(chunks, index, gen) {
+    if (gen !== prefetchGeneration) return // superseded mid-flight - see prefetchGeneration above
+
+    if (index >= chunks.length) {
+        prefetched = true
+        prefetchInFlight = false
+        // Same signal continue_watch's own render already reacts to (used
+        // by the on-demand/bulk pulls above too) - makes the just-filled
+        // file_view data take effect on the CURRENT main screen immediately,
+        // not only on the next navigation to it.
+        Lampa.Listener.send('state:changed', { target: 'favorite', reason: 'read' })
+        console.log('ScrobTimeline', 'prefetch complete,', chunks.length, 'chunk(s)')
+        return
+    }
+    api.getBatchWatchStatus(chunks[index], function (items) {
+        if (gen !== prefetchGeneration) return // ditto - a stale response landed after the check above too
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i])
+        runPrefetchChunks(chunks, index + 1, gen)
+    }, function (err) {
+        if (gen !== prefetchGeneration) return
+        // All-or-nothing (SYNC-ARCHITECTURE-PLAN.md §9 п.6): deliberately NOT
+        // queued through enqueueRetry (§5.1's retry queue is for mutations;
+        // this is a read-only snapshot) - `prefetched` just stays false, so
+        // the next `main` visit retries the WHOLE pool from scratch. Chunks
+        // already applied before this failure are harmless to redo
+        // (applyWatchStatusItem()/pullWriteTimeline() is idempotent, LWW-guarded).
+        prefetchInFlight = false
+        console.warn('ScrobTimeline', 'batch watch-status prefetch failed', err)
+    })
+}
+
+function runPrefetch() {
+    if (!running || prefetched || prefetchInFlight) return
+    var candidates = collectPrefetchCandidates()
+    // Deliberately NOT `prefetched = true` here - an empty pool right now
+    // (e.g. Favorite/Bookmarks data hasn't finished loading yet at plugin
+    // start) would otherwise permanently block any future retry this
+    // session, even once the same list genuinely has candidates a moment
+    // later. A bare return costs nothing (no network call happened) and
+    // leaves every later trigger (next `main` visit, forcePrefetch(), ...)
+    // free to try again.
+    if (!candidates.length) return
+
+    prefetchInFlight = true
+    var gen = prefetchGeneration
+    var chunks = []
+    for (var i = 0; i < candidates.length; i += PREFETCH_CHUNK_SIZE) {
+        chunks.push(candidates.slice(i, i + PREFETCH_CHUNK_SIZE))
+    }
+    console.log('ScrobTimeline', 'prefetch starting,', candidates.length, 'candidate(s),', chunks.length, 'chunk(s)')
+    runPrefetchChunks(chunks, 0, gen)
+}
+
+// Separate 'activity' listener from onActivityStart() above (that one only
+// cares about component 'full') - the home screen is Lampa's own 'main'
+// component (confirmed against app.min.js's own Activity.push({component:
+// 'main', ...}) call sites). A no-op past the first successful run this
+// session, or while one is already in flight - see `prefetched` above.
+function onMainScreenActivity(e) {
+    if (!e || e.type !== 'start' || e.component !== 'main') return
+    runPrefetch()
+}
+
+// Candidate-list settings changed (main.js's prefetch toggles) - re-run
+// against the new pool on the next `main` visit rather than mid-navigation.
+// Bumps the generation too - a chunk sequence already in flight against the
+// OLD pool must not keep writing into Timeline nor mark this new intent
+// `prefetched` once it (coincidentally) finishes.
+export function resetPrefetch() {
+    prefetched = false
+    prefetchInFlight = false
+    prefetchGeneration++
+}
+
+// "Синхронізувати зараз" button (main.js) - resets AND re-runs immediately,
+// matching forceSync()'s own immediate-effect expectation instead of
+// waiting for the next `main` visit.
+export function forcePrefetch() {
+    resetPrefetch()
+    runPrefetch()
+}
+
 // ─── Profile switch ─────────────────────────────────────────
 // switchProfile() (utils/profiles.js) never calls start()/stop() directly —
 // it (like engine.js's own list-sync) just sets KEYS.ACTIVE_PROFILE_ID and
@@ -1207,6 +1365,7 @@ export function start() {
         Lampa.Player.listener.follow('external', onExternalPlayerStart)
         Lampa.Timeline.listener.follow('update', onTimelineUpdate)
         Lampa.Listener.follow('activity', onActivityStart)
+        Lampa.Listener.follow('activity', onMainScreenActivity)
         document.addEventListener('pause', onNativeVideoPause, true)
         document.addEventListener('playing', onNativeVideoPlaying, true)
         document.addEventListener('seeked', onNativeVideoSeeked, true)
@@ -1227,6 +1386,7 @@ export function start() {
     // setupProfileListener() above), without needing a separate hook at
     // each call site.
     pullContinueWatching()
+    runPrefetch()
 }
 
 export function stop() {
@@ -1241,6 +1401,17 @@ export function stop() {
         Lampa.Storage.listener.remove('change', profileListener)
         profileListener = null
     }
+
+    // Reset conditions 1+2 (§5.2.7 point 4): a profile switch goes through
+    // exactly this stop()/start() cycle (setupProfileListener() above), and
+    // so does logout/sync-disable - the next start() (if any) re-collects
+    // the pool from scratch rather than trusting a previous profile's result.
+    // The generation bump is the important part here: a chunk request still
+    // in flight for the PROFILE BEING LEFT must not land its data into the
+    // next profile's Timeline once its response arrives after this point.
+    prefetched = false
+    prefetchInFlight = false
+    prefetchGeneration++
 
     resetSessionState()
     resetExternalContext()

@@ -377,6 +377,15 @@ class WatchEventCreate(BaseModel):
     episode_number: Optional[int] = None
 
 
+class WatchStatusBatchItem(BaseModel):
+    tmdb_id: int
+    type: str  # "movie" | "tv" | "series" - same loose typing as GET /history/watch-status
+
+
+class WatchStatusBatchRequest(BaseModel):
+    items: list[WatchStatusBatchItem]
+
+
 class ManualSessionStart(BaseModel):
     tmdb_id: Optional[int] = None
     media_id: Optional[int] = None      # local DB id, preferred over tmdb_id for TVDB-only episodes

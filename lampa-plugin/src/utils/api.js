@@ -531,6 +531,38 @@ export function getWatchStatus(tmdbId, type, onDone, onFail) {
     )
 }
 
+// POST /history/watch-status/batch — same per-item shape as getWatchStatus()
+// above, for a whole pool of candidate titles at once (prefetch, §5.2.7).
+// `items` is [{tmdbId, type}, ...] ('type' same loose 'movie'/'tv'/'series'
+// convention as getWatchStatus()). Unknown/untouched titles are simply
+// omitted from the response, same as [] from the single-item endpoint.
+export function getBatchWatchStatus(items, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(20000)
+
+    var body = {
+        items: items.map(function (i) {
+            return { tmdb_id: i.tmdbId, type: i.type }
+        })
+    }
+
+    network.native(
+        base() + '/history/watch-status/batch',
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && Array.isArray(json.statuses)) onDone(json.statuses)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        JSON.stringify(body),
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
+    )
+}
+
 // GET /history/continue-watching — everything currently in progress, for the
 // bulk pull direction (login/profile switch/app start).
 export function getContinueWatching(onDone, onFail) {
