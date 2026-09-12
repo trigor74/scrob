@@ -1322,8 +1322,39 @@ function initSettings() {
             }
 
             sync.forceSync()
+            timelineSync.forcePrefetch()
             Lampa.Noty.show(Lampa.Lang.translate('scrob_sync_now') + '…')
         }
+    })
+
+    // ── Prefetch candidate pool (§5.2.7) ─────────────────
+    // Which Favorite lists feed the batch watch-status prefetch that fills
+    // Timeline up front for continue_watch's own ongoing-show filter.
+    // `history` defaults on (needed for that filter to work at all); the
+    // rest default off to save traffic/startup time on large collections.
+    Lampa.SettingsApi.addParam({
+        component: 'scrob_sync_page',
+        param: { type: 'title' },
+        field: { name: Lampa.Lang.translate('scrob_prefetch_title') }
+    })
+
+    ;[
+        { key: KEYS.PREFETCH_HISTORY, name: 'scrob_prefetch_history', def: true },
+        { key: KEYS.PREFETCH_BOOK, name: 'scrob_prefetch_book', def: false },
+        { key: KEYS.PREFETCH_LIKE, name: 'scrob_prefetch_like', def: false },
+        { key: KEYS.PREFETCH_WATH, name: 'scrob_prefetch_wath', def: false }
+    ].forEach(function (row) {
+        Lampa.SettingsApi.addParam({
+            component: 'scrob_sync_page',
+            param: { name: row.key, type: 'trigger', default: row.def },
+            field: { name: Lampa.Lang.translate(row.name) },
+            onChange: function (value) {
+                Lampa.Storage.set(row.key, value)
+                // The pool changed - re-collect it on the next `main` visit
+                // rather than mid-navigation through the settings screen.
+                timelineSync.resetPrefetch()
+            }
+        })
     })
 
     // ── List mapping button ─────────────────────────────
