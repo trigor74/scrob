@@ -667,6 +667,75 @@ export function deleteHistoryItem(mediaId, mediaType, onDone, onFail) {
     )
 }
 
+// POST /history/drop/show|movie — mark a title "dropped" (SYNC-ARCHITECTURE-
+// PLAN.md §5.3.2): a first-class server-side status, excluded from
+// continue-watching/next-up/discover server-side, NOT a /lists entry.
+// `isSeries` picks the endpoint; body only ever carries tmdb_id (never
+// show_id/media_id - this plugin never has a local Scrob id to send).
+export function dropMedia(tmdbId, isSeries, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/drop/' + (isSeries ? 'show' : 'movie'),
+        function (data) {
+            network.clear()
+            onDone(parse(data))
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        JSON.stringify({ tmdb_id: tmdbId }),
+        { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
+    )
+}
+
+// DELETE /history/drop/show|movie — undo a drop.
+export function undropMedia(tmdbId, isSeries, onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/drop/' + (isSeries ? 'show' : 'movie') + '?tmdb_id=' + tmdbId,
+        function (data) {
+            network.clear()
+            onDone(parse(data))
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        '{}',
+        { headers: Object.assign({ 'X-HTTP-Method-Override': 'DELETE' }, authHeaders()), type: 'DELETE' }
+    )
+}
+
+// GET /history/dropped — every currently-dropped show/movie, for the bulk
+// pull direction (§5.3.2). Response shape: { shows: [...], movies: [...] },
+// items carry tmdb_id/title/poster_path but no `type` field of their own -
+// the caller knows which array it came from.
+export function getDropped(onDone, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(15000)
+
+    network.native(
+        base() + '/history/dropped',
+        function (data) {
+            network.clear()
+            var json = parse(data)
+            if (json && Array.isArray(json.shows) && Array.isArray(json.movies)) onDone(json)
+            else onFail()
+        },
+        function (a, c) {
+            network.clear()
+            onFail(network.errorDecode(a, c))
+        },
+        false,
+        { headers: authHeaders() }
+    )
+}
+
 // GET /history — fetch watch history with optional pagination and type filter
 export function getHistory(page, pageSize, mediaType, onDone, onFail) {
     var network = new Lampa.Reguest()

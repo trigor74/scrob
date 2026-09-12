@@ -13,6 +13,14 @@ var updateFn = null
 // PLAN.md §5.1.1/§5.4, Гілка 9), not the engine's own list convergence.
 var playbackPullFn = null
 
+// Registered dropped-status callback from engine.js (set via bindDropSync).
+// Also separate from updateFn: a show.dropped/movie.dropped event needs the
+// actual payload (tmdb_id/title) to update ONE local Favorite('thrown')
+// entry directly (§5.3.2) - re-running the whole list convergence for this
+// would be both the wrong mechanism (thrown isn't a /lists entry any more)
+// and unnecessary work.
+var dropSyncFn = null
+
 // Named handlers: stable references so off() actually unregisters (unlike
 // anonymous closures, which silently leak and double-fire after restarts).
 function onItemAdded(payload) { requestUpdate('list.item_added') }
@@ -25,6 +33,10 @@ function onPlaybackCompleted(payload) { requestUpdate('playback_session.complete
 function onPlaybackStarted(payload) { requestPlaybackPull() }
 function onPlaybackPlaying(payload) { requestPlaybackPull() }
 function onPlaybackPaused(payload) { requestPlaybackPull() }
+function onShowDropped(payload) { requestDropSync('show', 'dropped', payload) }
+function onShowUndropped(payload) { requestDropSync('show', 'undropped', payload) }
+function onMovieDropped(payload) { requestDropSync('movie', 'dropped', payload) }
+function onMovieUndropped(payload) { requestDropSync('movie', 'undropped', payload) }
 
 // Bind the engine update() entry point. Called once from engine.start().
 export function bindUpdate(fn) {
@@ -34,6 +46,11 @@ export function bindUpdate(fn) {
 // Bind the playback-pull entry point. Called once from timelineSync.start().
 export function bindPlaybackUpdate(fn) {
     playbackPullFn = fn
+}
+
+// Bind the dropped-status entry point. Called once from engine.start().
+export function bindDropSync(fn) {
+    dropSyncFn = fn
 }
 
 // Single notification path: ask the engine to refetch and converge.
@@ -47,6 +64,14 @@ export function requestUpdate(reason) {
 // regardless of which title the event was actually about).
 function requestPlaybackPull() {
     if (typeof playbackPullFn === 'function') playbackPullFn()
+}
+
+// Notify engine.js that a show/movie was dropped or undropped somewhere for
+// this account. `mediaType` ('show'|'movie') + `action` ('dropped'|'undropped')
+// let one callback cover all four events; `payload` is passed through as-is
+// ({ show_id|media_id, tmdb_id, title } - see backend socket emit).
+function requestDropSync(mediaType, action, payload) {
+    if (typeof dropSyncFn === 'function') dropSyncFn(mediaType, action, payload)
 }
 
 // ─── Public API ───────────────────────────────────────────
@@ -64,6 +89,10 @@ export function registerHandlers(socket) {
     socket.on('playback_session.started', onPlaybackStarted)
     socket.on('playback_session.playing', onPlaybackPlaying)
     socket.on('playback_session.paused', onPlaybackPaused)
+    socket.on('show.dropped', onShowDropped)
+    socket.on('show.undropped', onShowUndropped)
+    socket.on('movie.dropped', onMovieDropped)
+    socket.on('movie.undropped', onMovieUndropped)
 }
 
 // Unregister invalidation handlers from the socket.
@@ -78,4 +107,8 @@ export function unregisterHandlers(socket) {
     socket.off('playback_session.started', onPlaybackStarted)
     socket.off('playback_session.playing', onPlaybackPlaying)
     socket.off('playback_session.paused', onPlaybackPaused)
+    socket.off('show.dropped', onShowDropped)
+    socket.off('show.undropped', onShowUndropped)
+    socket.off('movie.dropped', onMovieDropped)
+    socket.off('movie.undropped', onMovieUndropped)
 }

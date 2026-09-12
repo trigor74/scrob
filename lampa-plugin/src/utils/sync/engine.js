@@ -10,14 +10,14 @@
 //   deletes always use a resolved item_id. received flag guards echo.
 
 import * as api from '../api'
-import { registerHandlers, unregisterHandlers, bindUpdate } from './handler'
+import { registerHandlers, unregisterHandlers, bindUpdate, bindDropSync } from './handler'
 import { KEYS, hasSession } from '../storage'
 import {
     listNameForKey, syncableKeys, detectMediaType,
     elementKey, parseElementKey,
     resolveKeyForListId,
     localElementSet, scrobElementSet,
-    applyRemoteAdd, applyRemoteRemove
+    applyRemoteAdd, applyRemoteRemove, cardFromScrobMedia
 } from './mapping'
 import * as mirror from './mirror'
 import * as mapstore from './mapstore'
@@ -116,6 +116,9 @@ function writeFavorite(favorite) {
 function onFavoriteAdd(e) {
     if (!running || received) return
     if (!e || !e.where || !e.card || !e.card.id) return
+    // 'thrown' (§5.3.2) never goes through the generic /lists queue below -
+    // it maps to Scrob's own first-class dropped-state endpoints instead.
+    if (e.where === 'thrown') { pushDrop('add', e.card); return }
     push('add', e.where, e.card)
 }
 
@@ -124,7 +127,85 @@ function onFavoriteRemove(e) {
     if (!e || !e.where || !e.card) return
     if (e.method && e.method !== 'id') return
     if (!e.card.id) return
+    if (e.where === 'thrown') { pushDrop('remove', e.card); return }
     push('remove', e.where, e.card)
+}
+
+// ─── Dropped status ("Кинуто") — SYNC-ARCHITECTURE-PLAN.md §5.3.2 ─────────
+// A first-class Scrob server state (dropped_shows/dropped_movies), not a
+// /lists entry - excluded from the generic list-sync above (mapping.js's
+// EXCLUDED), pushed/pulled here directly against POST/DELETE
+// /history/drop/show|movie and GET /history/dropped instead.
+
+function pushDrop(action, card) {
+    var tmdbId = parseInt(card.id, 10)
+    if (!tmdbId) return
+    var isSeries = detectMediaType(card) === 'series'
+    var call = action === 'add' ? api.dropMedia : api.undropMedia
+
+    call(tmdbId, isSeries, function () {}, function (err) {
+        if (isAuthError(err)) { pauseSync('Authentication expired'); return }
+        enqueueRetry({
+            type: 'custom',
+            run: function (done, fail) { call(tmdbId, isSeries, done, fail) }
+        })
+    })
+}
+
+// Builds the {tmdb_id, type, title} shape cardFromScrobMedia() expects out
+// of a source that only ever gives a bare tmdb_id/title with no `type`
+// field of its own (both GET /history/dropped's per-array items and the
+// show.*/movie.* socket payloads are like this - see §5.3.2).
+function dropMediaShape(mediaType, source) {
+    return {
+        tmdb_id: source.tmdb_id,
+        type: mediaType === 'show' ? 'series' : 'movie',
+        title: source.title,
+        poster_path: source.poster_path
+    }
+}
+
+// One-shot bulk pull at start()/profile-switch, same spirit as timeline.js's
+// pullContinueWatching() - idempotent (only touches titles not already
+// locally marked thrown), so safe to call unconditionally every start().
+function pullDropped() {
+    api.getDropped(function (result) {
+        var favorite = readFavorite()
+        var localThrown = Array.isArray(favorite.thrown) ? favorite.thrown : []
+        var changed = false
+
+        function addMissing(mediaType, items) {
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i]
+                if (!item.tmdb_id || localThrown.indexOf(item.tmdb_id) !== -1) continue
+                applyRemoteAdd(favorite, 'thrown', item.tmdb_id, dropMediaShape(mediaType, item))
+                changed = true
+            }
+        }
+        addMissing('show', result.shows)
+        addMissing('movie', result.movies)
+
+        if (changed) writeFavorite(favorite)
+    }, function (err) {
+        console.warn('ScrobSync', 'dropped pull failed', err)
+    })
+}
+
+// Inbound socket event (handler.js's bindDropSync) - a show/movie was
+// dropped or undropped on ANY device tied to this account. `payload` is
+// whatever the server's socket emit carries ({ show_id|media_id, tmdb_id,
+// title }, see history.py) - enough to build a minimal card via
+// cardFromScrobMedia(), same fallback shape a fresh remote /lists addition
+// already gets elsewhere in this file.
+function applyRemoteDropEvent(mediaType, action, payload) {
+    if (!running || !payload || !payload.tmdb_id) return
+    var favorite = readFavorite()
+    if (action === 'dropped') {
+        applyRemoteAdd(favorite, 'thrown', payload.tmdb_id, dropMediaShape(mediaType, payload))
+    } else {
+        applyRemoteRemove(favorite, 'thrown', payload.tmdb_id)
+    }
+    writeFavorite(favorite)
 }
 
 // Custom categories bypass core Favorite (see main.js toggleCustomCategory) and
@@ -825,6 +906,7 @@ function onSocketClose() {
 function bindSocketHandlers() {
     if (!activeSocket || handlersBound) return
     bindUpdate(invalidate)
+    bindDropSync(applyRemoteDropEvent)
     registerHandlers(activeSocket)
     if (activeSocket.onLifecycle) {
         activeSocket.onLifecycle('open', onSocketOpen)
@@ -845,6 +927,7 @@ function unbindSocketHandlers() {
     }
     handlersBound = false
     bindUpdate(null)
+    bindDropSync(null)
 }
 
 // ─── Mapping merge (section 14.3) ─────────────────────────
@@ -1024,6 +1107,12 @@ export function start() {
     } else if (mirror.isStale(getPollInterval())) {
         update('start-stale')
     }
+
+    // Dropped-status bulk pull (§5.3.2) - independent of the /lists mirror
+    // above (dropped_shows/dropped_movies aren't a list), idempotent, so
+    // safe to run unconditionally on every start() (login, sync toggle,
+    // profile switch) same as timeline.js's own pullContinueWatching().
+    pullDropped()
 
     console.log('ScrobSync', 'started', { mirrorLists: Object.keys(mirror.get().lists).length })
 }
