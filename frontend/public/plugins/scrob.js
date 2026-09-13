@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-12
+ * Build: 2026-09-13
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -4206,6 +4206,17 @@
     // a full start→update→complete cycle. Deliberately doesn't carry runtime
     // (WatchEventCreate has no such field) - accepted tradeoff for the common
     // "batch of finished playlist episodes" case, see §5.1.1 point 5.
+    //
+    // Bug found live 2026-09-13 (same class as §5.2.6's manual-mark session-
+    // reconcile fix): a title partially watched externally earlier (exited at
+    // e.g. 30%, §5.1.1 point 3's full start→update cycle - a real, still-open
+    // PlaybackSession left paused server-side) and then finished in a LATER
+    // external-player viewing landed here with a bare POST /history - creating
+    // a completed WatchEvent while leaving that first session dangling in
+    // "paused" forever (in_progress AND watched at once). completeSession() on
+    // a found session clears both PlaybackSession and PlaybackProgress
+    // atomically, exactly like a real exit would - only fall back to the plain
+    // POST when no session is open for this title at all.
     function pushExternalWatchedMark(identity) {
       var tmdbId = identity.isSeries ? identity.seriesTmdbId : identity.tmdbId;
       var mediaType = identity.isSeries ? 'episode' : 'movie';
@@ -4214,6 +4225,37 @@
         season: identity.season,
         episode: identity.episode
       } : null;
+      resolveActiveSession(identity, function (sessionKey) {
+        if (!sessionKey) {
+          sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity);
+          return;
+        }
+        completeSession(sessionKey, function () {
+          console.log('ScrobTimeline', 'external watched mark: completed active session', sessionKey);
+        }, function (err, status) {
+          if (status === 404) {
+            console.log('ScrobTimeline', 'external watched mark: session already gone (404), falling back to plain mark', sessionKey);
+            sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity);
+            return;
+          }
+          console.warn('ScrobTimeline', 'external watched mark: completeSession failed, queued for retry', err);
+          enqueueRetry({
+            type: 'custom',
+            run: function run(done, fail) {
+              completeSession(sessionKey, done, function (e2, s2) {
+                if (s2 === 404) {
+                  done();
+                  sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity);
+                  return;
+                }
+                fail();
+              });
+            }
+          });
+        });
+      });
+    }
+    function sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity) {
       addHistoryEvent(tmdbId, mediaType, true, episode, function () {
         console.log('ScrobTimeline', 'external watched mark sent', identity);
       }, function (err) {
@@ -4311,7 +4353,7 @@
       if (percent >= WATCHED_THRESHOLD_PERCENT) pushManualWatchedMark(identity);else handleManualUnmark(identity);
     }
 
-    // Finds a still-active PlaybackSession for this exact episode, if any
+    // Finds a still-active PlaybackSession for this exact title, if any
     // (GET /history/now-playing, include_hidden — a reconciliation lookup for
     // one specific title, not the homepage's own dropped-aware display list).
     // Bug found by live test 2026-09-13: a session left paused server-side
@@ -4320,11 +4362,19 @@
     // dangling ("watched" in history AND still "in progress" in now-playing),
     // and unchecking has nothing to reconcile against at all if no WatchEvent
     // ever existed. Callback receives the session_key, or null when none found.
+    //
+    // `identity` is either the episode shape ({seriesTmdbId, season, episode},
+    // §5.2.6 manual marks — `isSeries` absent there entirely, movies are out of
+    // scope for that flow) or the external-player shape ({isSeries, tmdbId} for
+    // a movie / {isSeries, seriesTmdbId, season, episode} for an episode, §5.1.1)
+    // — `isSeries === false` is checked explicitly (not falsy) so the absent-
+    // field manual-mark identity still always falls into the episode branch.
     function resolveActiveSession(identity, callback) {
       getNowPlaying(true, function (sessions) {
         for (var i = 0; i < sessions.length; i++) {
           var media = sessions[i].media || {};
-          if (media.type === 'episode' && String(media.show_tmdb_id) === String(identity.seriesTmdbId) && String(media.season_number) === String(identity.season) && String(media.episode_number) === String(identity.episode)) {
+          var matches = identity.isSeries === false ? media.type === 'movie' && String(media.tmdb_id) === String(identity.tmdbId) : media.type === 'episode' && String(media.show_tmdb_id) === String(identity.seriesTmdbId) && String(media.season_number) === String(identity.season) && String(media.episode_number) === String(identity.episode);
+          if (matches) {
             callback(sessions[i].session_key);
             return;
           }
