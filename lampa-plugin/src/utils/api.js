@@ -339,7 +339,12 @@ export function adminSettings(onDone, onFail) {
 }
 
 // POST /history — mark a media as watched. episode fields optional (movie: omit all three).
-export function addHistoryEvent(tmdbId, mediaType, completed, episode, onDone, onFail) {
+// `watchedAt` optional (Date object or timestamp) - omitted means the server
+// stamps "now" on receipt (WatchEventCreate.watched_at, unset-vs-null
+// distinction preserved server-side); passed explicitly by the external-
+// player batch backdating path (§5.1.1) so a batch of several episodes gets
+// a real, ordered spread instead of racing each other for "now".
+export function addHistoryEvent(tmdbId, mediaType, completed, episode, watchedAt, onDone, onFail) {
     var network = new Lampa.Reguest()
     network.timeout(15000)
 
@@ -353,6 +358,7 @@ export function addHistoryEvent(tmdbId, mediaType, completed, episode, onDone, o
         payload.season_number = episode.season
         payload.episode_number = episode.episode
     }
+    if (watchedAt) payload.watched_at = new Date(watchedAt).toISOString()
 
     network.native(
         base() + '/history',

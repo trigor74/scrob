@@ -916,7 +916,12 @@
     }
 
     // POST /history — mark a media as watched. episode fields optional (movie: omit all three).
-    function addHistoryEvent(tmdbId, mediaType, completed, episode, onDone, onFail) {
+    // `watchedAt` optional (Date object or timestamp) - omitted means the server
+    // stamps "now" on receipt (WatchEventCreate.watched_at, unset-vs-null
+    // distinction preserved server-side); passed explicitly by the external-
+    // player batch backdating path (§5.1.1) so a batch of several episodes gets
+    // a real, ordered spread instead of racing each other for "now".
+    function addHistoryEvent(tmdbId, mediaType, completed, episode, watchedAt, onDone, onFail) {
       var network = new Lampa.Reguest();
       network.timeout(15000);
       var payload = {
@@ -929,6 +934,7 @@
         payload.season_number = episode.season;
         payload.episode_number = episode.episode;
       }
+      if (watchedAt) payload.watched_at = new Date(watchedAt).toISOString();
       network.native(base() + '/history', function (data) {
         network.clear();
         var json = parse$1(data);
@@ -3869,13 +3875,18 @@
     // session). An external playback burst can touch MANY different episodes'
     // hashes in one go (playlist auto-next, already resolved on the Android
     // side - see module header) and never has a session to keep open; each
-    // Timeline.update is pushed as its own self-contained snapshot instead.
+    // Timeline.update is buffered as its own self-contained snapshot instead
+    // (pendingItems - processed as one batch once the whole burst settles,
+    // §5.1.1 backdating design, not fired individually as they arrive).
     var externalContext = {
       active: false,
       isSeries: false,
       originalName: null,
       card: null,
-      handledHashes: {}
+      handledHashes: {},
+      startedAt: null,
+      // Date.now() at 'external' launch — hard lower bound for backdated watched_at (see flushExternalBatch())
+      pendingItems: [] // buffered {identity, percent, time, runtimeMinutes} - processed as one batch at burst-end, not fired per-event
     };
     var externalResetTimer = null;
     function resetExternalContext() {
@@ -3886,6 +3897,53 @@
       externalContext.originalName = null;
       externalContext.card = null;
       externalContext.handledHashes = {};
+      externalContext.startedAt = null;
+      externalContext.pendingItems = [];
+    }
+
+    // Flush-then-reset - the only ways a burst legitimately ends: the debounce
+    // timer settling (no more updates arrived), the 6h safety timeout, or a real
+    // internal player start winning over a stale external context (§5.1.1 point
+    // 6). All three used to just discard via resetExternalContext() directly -
+    // discarding here would silently drop real, already-confirmed watched
+    // episodes sitting in pendingItems. NOT used by stop() (profile switch/
+    // logout/sync-disable) - that stays a bare discard, since firing async
+    // requests while credentials may be mid-swap risks sending under the wrong
+    // profile.
+    function flushAndResetExternalContext() {
+      flushExternalBatch();
+      resetExternalContext();
+    }
+
+    // Processes the whole buffered burst at once (§5.1.1, backdating design):
+    // items arrive in true chronological viewing order, so pendingItems[0] is
+    // the earliest. A lone watched episode (k<=1) is sent as-is (no explicit
+    // watched_at - a real exit is "now" regardless of the last mile of network
+    // latency). k>1 is a real playlist batch - split it evenly across
+    // [externalContext.startedAt, now] rather than guessing from each episode's
+    // own duration (rejected: playback speed/seeking make duration an unreliable
+    // clock - see live discussion 2026-09-14), which has a hard floor at the
+    // real player-launch time so it can never backdate into the past before
+    // viewing even started.
+    function flushExternalBatch() {
+      var items = externalContext.pendingItems;
+      if (!items || !items.length) return;
+      var watched = [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].percent >= WATCHED_THRESHOLD_PERCENT) watched.push(items[i]);else pushExternalProgressSnapshot(items[i].identity, items[i].runtimeMinutes, items[i].time);
+      }
+      var k = watched.length;
+      if (k === 0) return;
+      if (k === 1) {
+        pushExternalWatchedMark(watched[0].identity);
+        return;
+      }
+      var startedAt = externalContext.startedAt || Date.now();
+      var elapsed = Math.max(0, Date.now() - startedAt);
+      for (var w = 0; w < k; w++) {
+        var watchedAt = startedAt + (w + 1) / k * elapsed;
+        pushExternalWatchedMark(watched[w].identity, watchedAt);
+      }
     }
     function resetSessionState() {
       session.key = null;
@@ -4050,8 +4108,11 @@
       // Guard against a stale external-player context outliving a real internal
       // session that starts AND finishes inside the debounce window (§5.1.1,
       // point 6) - unconditional, every internal start wins over any pending
-      // external context regardless of its own state.
-      resetExternalContext();
+      // external context regardless of its own state. Flush first (not a bare
+      // reset) - any already-confirmed watched episodes buffered in
+      // pendingItems are real and must not be silently dropped just because
+      // the internal player happened to start before the debounce window closed.
+      flushAndResetExternalContext();
       var card = data && data.card || Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie);
       if (!card) {
         console.warn('ScrobTimeline', 'player start: no card found, skipping', data);
@@ -4112,8 +4173,10 @@
       externalContext.originalName = originalName || null;
       externalContext.card = card;
       externalContext.handledHashes = {};
+      externalContext.startedAt = Date.now();
+      externalContext.pendingItems = [];
       if (externalResetTimer) clearTimeout(externalResetTimer);
-      externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS);
+      externalResetTimer = setTimeout(flushAndResetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS);
       console.log('ScrobTimeline', 'external player start', {
         id: card.id,
         isSeries: isSeries,
@@ -4188,6 +4251,11 @@
     // here instead of the internal-player branch above. Each call is a
     // self-contained snapshot (no start→heartbeat→destroy lifecycle - there is
     // no 'destroy'-equivalent for an external player at all).
+    // Buffers into externalContext.pendingItems instead of firing immediately -
+    // how many items belong to this burst (and thus whether any backdating is
+    // even needed) is only knowable once it settles (§5.1.1, live discussion
+    // 2026-09-14). Actual network calls happen in flushExternalBatch(), once,
+    // when the debounce window below finally closes.
     function handleExternalTimelineUpdate(e) {
       var hash = e.data.hash;
       if (!hash || externalContext.handledHashes[hash]) return; // point 7: dedupe within one burst
@@ -4198,7 +4266,7 @@
       externalContext.handledHashes[hash] = true;
       // Still mid-burst (or a fresh one) — extend the debounce window (point 4).
       if (externalResetTimer) clearTimeout(externalResetTimer);
-      externalResetTimer = setTimeout(resetExternalContext, EXTERNAL_CONTEXT_RESET_MS);
+      externalResetTimer = setTimeout(flushAndResetExternalContext, EXTERNAL_CONTEXT_RESET_MS);
       var road = e.data.road || {};
       var percent = parseFloat(road.percent || 0);
       var time = parseFloat(road.time || 0);
@@ -4212,12 +4280,12 @@
       });
       if (percent < 1.5) return; // nothing meaningful watched, same threshold as onPlayerDestroy()
 
-      if (percent >= WATCHED_THRESHOLD_PERCENT) {
-        pushExternalWatchedMark(identity);
-      } else {
-        var runtimeMinutes = duration > 0 ? Math.round(duration / 60) : null;
-        pushExternalProgressSnapshot(identity, runtimeMinutes, time);
-      }
+      externalContext.pendingItems.push({
+        identity: identity,
+        percent: percent,
+        time: time,
+        runtimeMinutes: duration > 0 ? Math.round(duration / 60) : null
+      });
     }
 
     // Fully watched (§5.1.1, point 5) — one lightweight POST /history instead of
@@ -4235,7 +4303,17 @@
     // a found session clears both PlaybackSession and PlaybackProgress
     // atomically, exactly like a real exit would - only fall back to the plain
     // POST when no session is open for this title at all.
-    function pushExternalWatchedMark(identity) {
+    // `watchedAt` optional (Date/timestamp) - set by flushExternalBatch() when
+    // this episode was part of a real multi-episode batch (backdated, evenly
+    // spread from player-launch time); omitted for a lone watched episode
+    // (server stamps "now", same as before this batch-backdating design).
+    // NOT honored by the completeSession() branch below - that endpoint always
+    // stamps its own "now" server-side, no override accepted (§5.1.1 live
+    // discussion 2026-09-14) - an accepted, rare-case gap: only hit when a
+    // dangling PlaybackSession from an EARLIER, separate viewing needs
+    // reconciling, not the common "several fully-watched episodes in one batch"
+    // case, which always takes the plain sendPlainExternalWatchedMark() path.
+    function pushExternalWatchedMark(identity, watchedAt) {
       var tmdbId = identity.isSeries ? identity.seriesTmdbId : identity.tmdbId;
       var mediaType = identity.isSeries ? 'episode' : 'movie';
       var episode = identity.isSeries ? {
@@ -4245,7 +4323,7 @@
       } : null;
       resolveActiveSession(identity, function (sessionKey) {
         if (!sessionKey) {
-          sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity);
+          sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
           return;
         }
         completeSession(sessionKey, function () {
@@ -4253,7 +4331,7 @@
         }, function (err, status) {
           if (status === 404) {
             console.log('ScrobTimeline', 'external watched mark: session already gone (404), falling back to plain mark', sessionKey);
-            sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity);
+            sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
             return;
           }
           console.warn('ScrobTimeline', 'external watched mark: completeSession failed, queued for retry', err);
@@ -4263,7 +4341,7 @@
               completeSession(sessionKey, done, function (e2, s2) {
                 if (s2 === 404) {
                   done();
-                  sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity);
+                  sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
                   return;
                 }
                 fail();
@@ -4273,15 +4351,15 @@
         });
       });
     }
-    function sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity) {
-      addHistoryEvent(tmdbId, mediaType, true, episode, function () {
-        console.log('ScrobTimeline', 'external watched mark sent', identity);
+    function sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt) {
+      addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, function () {
+        console.log('ScrobTimeline', 'external watched mark sent', identity, watchedAt ? 'watchedAt=' + new Date(watchedAt).toISOString() : '');
       }, function (err) {
         console.warn('ScrobTimeline', 'failed to send external watched mark, queued for retry', err);
         enqueueRetry({
           type: 'custom',
           run: function run(done, fail) {
-            addHistoryEvent(tmdbId, mediaType, true, episode, done, fail);
+            addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, done, fail);
           }
         });
       });
@@ -4450,14 +4528,14 @@
         season: identity.season,
         episode: identity.episode
       };
-      addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, function () {
+      addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, function () {
         console.log('ScrobTimeline', 'manual watched mark sent', identity);
       }, function (err) {
         console.warn('ScrobTimeline', 'failed to send manual watched mark, queued for retry', err);
         enqueueRetry({
           type: 'custom',
           run: function run(done, fail) {
-            addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, done, fail);
+            addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, done, fail);
           }
         });
       });
