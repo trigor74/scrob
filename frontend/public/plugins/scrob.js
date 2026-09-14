@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-13
+ * Build: 2026-09-14
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -2294,14 +2294,32 @@
     // makes (all 9 categories, not just thrown - found via §5.3.2's dropped-
     // status review) landed correctly in Storage but stayed invisible in the
     // live UI (mark buttons, badges) until something ELSE happened to call
-    // Favorite.read() (a profile switch, a page reload). Favorite.read() itself
-    // fires Lampa.Listener.send('state:changed', {target:'favorite', reason:
-    // 'read'}) - the same signal timeline.js's own prefetch (Гілка 13) already
-    // relies on elsewhere to make a fresh pull show up immediately.
+    // Favorite.read() (a profile switch, a page reload).
+    //
+    // Calls it with nolisten=true (found by live test 2026-09-14, regression
+    // from the very fix above) - a plain, no-arg Favorite.read() ALSO fires
+    // Lampa.Listener.send('state:changed', {target:'favorite', reason:'read'}),
+    // which core's OWN Lampa.Activity module reacts to by calling refresh(true)
+    // (app.min.js, Activity's init$G()) - a 1s-debounced .refresh() on EVERY
+    // cached activity in the whole navigation stack (up to pages_save_total,
+    // default 5), not just the current screen. Wired into writeFavorite() -
+    // the shared write path for all 9 categories, hit by the regular list-sync
+    // poll cycle (history changes on every card the user opens) and the
+    // dropped-status poll/activity pulls (§5.3.2) - this fired constantly
+    // during normal viewing, rebuilding every cached screen's content
+    // repeatedly (confirmed live on Android: other plugins relying on
+    // DOM/in-memory state scoped to a screen's lifecycle lost it on each
+    // rebuild). nolisten=true still refreshes data$1 (data$1 = Storage.get(...)
+    // happens unconditionally in Favorite's own read$1() before the nolisten
+    // check) - Favorite.check()/get() see fresh data on the next real render -
+    // it just skips the broadcast, so nothing forces an immediate in-place
+    // refresh of an already-visible badge/icon anymore. Acceptable: the
+    // original bug was about correctness on the NEXT open of a screen/card,
+    // not a live update while already staring at an unchanged one.
     function writeFavorite(favorite) {
       received = true;
       Lampa.Storage.set('favorite', favorite);
-      if (Lampa.Favorite && typeof Lampa.Favorite.read === 'function') Lampa.Favorite.read();
+      if (Lampa.Favorite && typeof Lampa.Favorite.read === 'function') Lampa.Favorite.read(true);
       received = false;
     }
 
