@@ -438,6 +438,14 @@ function onPlayerStart(data) {
 function onExternalPlayerStart(data) {
     if (!running) return
 
+    // Flush first (not a bare reset) - mirrors the same guard onPlayerStart()
+    // already has above. If 'external' fires again before the previous
+    // context's debounce/safety timer settled (re-entering the external
+    // player, picking a different title while one was still pending, etc.),
+    // overwriting externalContext's fields directly would silently drop any
+    // already-confirmed watched episodes still sitting in pendingItems.
+    flushAndResetExternalContext()
+
     var card = (data && data.card) ||
         (Lampa.Activity.active() && (Lampa.Activity.active().card_data || Lampa.Activity.active().card || Lampa.Activity.active().movie))
     if (!card) {
