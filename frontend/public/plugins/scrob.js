@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-14
+ * Build: 2026-09-15
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -3934,15 +3934,32 @@
       }
       var k = watched.length;
       if (k === 0) return;
+
+      // One shared now-playing snapshot for the whole batch (live discussion
+      // 2026-09-15) instead of a separate GET /history/now-playing per watched
+      // episode - pushExternalWatchedMark() below matches each item against
+      // this same snapshot locally (findActiveSessionKey()) rather than
+      // re-resolving it itself. A lookup failure degrades to "no sessions"
+      // (matches resolveActiveSession()'s own error handling elsewhere) rather
+      // than dropping the whole batch.
+      getNowPlaying(true, function (sessions) {
+        sendWatchedBatch(watched, sessions);
+      }, function (err) {
+        console.warn('ScrobTimeline', 'now-playing lookup failed for batch reconciliation, proceeding without it', err);
+        sendWatchedBatch(watched, []);
+      });
+    }
+    function sendWatchedBatch(watched, sessions) {
+      var k = watched.length;
       if (k === 1) {
-        pushExternalWatchedMark(watched[0].identity);
+        pushExternalWatchedMark(watched[0].identity, undefined, findActiveSessionKey(sessions, watched[0].identity));
         return;
       }
       var startedAt = externalContext.startedAt || Date.now();
       var elapsed = Math.max(0, Date.now() - startedAt);
       for (var w = 0; w < k; w++) {
         var watchedAt = startedAt + (w + 1) / k * elapsed;
-        pushExternalWatchedMark(watched[w].identity, watchedAt);
+        pushExternalWatchedMark(watched[w].identity, watchedAt, findActiveSessionKey(sessions, watched[w].identity));
       }
     }
     function resetSessionState() {
@@ -4299,21 +4316,36 @@
     // PlaybackSession left paused server-side) and then finished in a LATER
     // external-player viewing landed here with a bare POST /history - creating
     // a completed WatchEvent while leaving that first session dangling in
-    // "paused" forever (in_progress AND watched at once). completeSession() on
-    // a found session clears both PlaybackSession and PlaybackProgress
-    // atomically, exactly like a real exit would - only fall back to the plain
-    // POST when no session is open for this title at all.
+    // "paused" forever (in_progress AND watched at once). A found session's
+    // PlaybackSession+PlaybackProgress must be cleared, exactly like a real exit
+    // would - only fall back to the plain POST when no session is open for this
+    // title at all.
     // `watchedAt` optional (Date/timestamp) - set by flushExternalBatch() when
     // this episode was part of a real multi-episode batch (backdated, evenly
     // spread from player-launch time); omitted for a lone watched episode
     // (server stamps "now", same as before this batch-backdating design).
-    // NOT honored by the completeSession() branch below - that endpoint always
-    // stamps its own "now" server-side, no override accepted (§5.1.1 live
-    // discussion 2026-09-14) - an accepted, rare-case gap: only hit when a
-    // dangling PlaybackSession from an EARLIER, separate viewing needs
-    // reconciling, not the common "several fully-watched episodes in one batch"
-    // case, which always takes the plain sendPlainExternalWatchedMark() path.
-    function pushExternalWatchedMark(identity, watchedAt) {
+    //
+    // Live discussion 2026-09-15: this used to call completeSession() on a found
+    // session, but that endpoint always stamps its own "now" server-side with no
+    // override accepted - exactly the case that made the reconciled episode of a
+    // batch land with the WRONG (latest, not backdated) watched_at and sort out
+    // of order (live-tested bug, episode 401 of show 122612). Fixed client-side,
+    // no backend change: deleteSession() ALREADY clears both PlaybackSession and
+    // PlaybackProgress for this title (backend/routers/history.py
+    // stop_manual_session() - verified against source), and addHistoryEvent()
+    // (POST /history) ALREADY does everything completeSession() did (WatchEvent
+    // creation, rewatch bookkeeping, external-tracker push) plus honors
+    // `watchedAt` and additionally emits watch_event.created (completeSession()
+    // doesn't). So: delete the stale session/progress first, THEN send the plain
+    // mark with the correct watchedAt - same net server state, two existing,
+    // unmodified endpoints, strictly sequential (delete before post, not
+    // parallel) so the stale progress is never left behind. A delete failure
+    // (including 404 - already gone) is NOT fatal to this: the history write is
+    // what actually matters, so it proceeds regardless of how the delete went.
+    // `sessionKey` is pre-resolved by the caller (sendWatchedBatch(), against
+    // the one shared getNowPlaying() snapshot taken for the whole batch - see
+    // flushExternalBatch()) rather than looked up here per-call.
+    function pushExternalWatchedMark(identity, watchedAt, sessionKey) {
       var tmdbId = identity.isSeries ? identity.seriesTmdbId : identity.tmdbId;
       var mediaType = identity.isSeries ? 'episode' : 'movie';
       var episode = identity.isSeries ? {
@@ -4321,34 +4353,34 @@
         season: identity.season,
         episode: identity.episode
       } : null;
-      resolveActiveSession(identity, function (sessionKey) {
-        if (!sessionKey) {
-          sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
-          return;
-        }
-        completeSession(sessionKey, function () {
-          console.log('ScrobTimeline', 'external watched mark: completed active session', sessionKey);
-        }, function (err, status) {
-          if (status === 404) {
-            console.log('ScrobTimeline', 'external watched mark: session already gone (404), falling back to plain mark', sessionKey);
-            sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
-            return;
-          }
-          console.warn('ScrobTimeline', 'external watched mark: completeSession failed, queued for retry', err);
+      if (!sessionKey) {
+        sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
+        return;
+      }
+      deleteSession(sessionKey, function () {
+        console.log('ScrobTimeline', 'external watched mark: discarded stale active session', sessionKey);
+        sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
+      }, function (err, status) {
+        if (status === 404) {
+          console.log('ScrobTimeline', 'external watched mark: session already gone (404)', sessionKey);
+        } else {
+          console.warn('ScrobTimeline', 'external watched mark: failed to discard stale session, queued for retry', err);
           enqueueRetry({
             type: 'custom',
             run: function run(done, fail) {
-              completeSession(sessionKey, done, function (e2, s2) {
+              deleteSession(sessionKey, done, function (e2, s2) {
                 if (s2 === 404) {
                   done();
-                  sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
                   return;
                 }
                 fail();
               });
             }
           });
-        });
+        }
+        // The stale session/progress cleanup is best-effort - the history
+        // write below is what actually matters and must go out either way.
+        sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt);
       });
     }
     function sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt) {
@@ -4449,6 +4481,17 @@
       if (percent >= WATCHED_THRESHOLD_PERCENT) pushManualWatchedMark(identity);else handleManualUnmark(identity);
     }
 
+    // `identity` is either the episode shape ({seriesTmdbId, season, episode},
+    // §5.2.6 manual marks — `isSeries` absent there entirely, movies are out of
+    // scope for that flow) or the external-player shape ({isSeries, tmdbId} for
+    // a movie / {isSeries, seriesTmdbId, season, episode} for an episode, §5.1.1)
+    // — `isSeries === false` is checked explicitly (not falsy) so the absent-
+    // field manual-mark identity still always falls into the episode branch.
+    function sessionMatchesIdentity(sessionEntry, identity) {
+      var media = sessionEntry.media || {};
+      return identity.isSeries === false ? media.type === 'movie' && String(media.tmdb_id) === String(identity.tmdbId) : media.type === 'episode' && String(media.show_tmdb_id) === String(identity.seriesTmdbId) && String(media.season_number) === String(identity.season) && String(media.episode_number) === String(identity.episode);
+    }
+
     // Finds a still-active PlaybackSession for this exact title, if any
     // (GET /history/now-playing, include_hidden — a reconciliation lookup for
     // one specific title, not the homepage's own dropped-aware display list).
@@ -4458,28 +4501,23 @@
     // dangling ("watched" in history AND still "in progress" in now-playing),
     // and unchecking has nothing to reconcile against at all if no WatchEvent
     // ever existed. Callback receives the session_key, or null when none found.
-    //
-    // `identity` is either the episode shape ({seriesTmdbId, season, episode},
-    // §5.2.6 manual marks — `isSeries` absent there entirely, movies are out of
-    // scope for that flow) or the external-player shape ({isSeries, tmdbId} for
-    // a movie / {isSeries, seriesTmdbId, season, episode} for an episode, §5.1.1)
-    // — `isSeries === false` is checked explicitly (not falsy) so the absent-
-    // field manual-mark identity still always falls into the episode branch.
     function resolveActiveSession(identity, callback) {
       getNowPlaying(true, function (sessions) {
-        for (var i = 0; i < sessions.length; i++) {
-          var media = sessions[i].media || {};
-          var matches = identity.isSeries === false ? media.type === 'movie' && String(media.tmdb_id) === String(identity.tmdbId) : media.type === 'episode' && String(media.show_tmdb_id) === String(identity.seriesTmdbId) && String(media.season_number) === String(identity.season) && String(media.episode_number) === String(identity.episode);
-          if (matches) {
-            callback(sessions[i].session_key);
-            return;
-          }
-        }
-        callback(null);
+        callback(findActiveSessionKey(sessions, identity));
       }, function (err) {
         console.warn('ScrobTimeline', 'now-playing lookup failed', err);
         callback(null);
       });
+    }
+
+    // Same matching, against an already-fetched snapshot — used by
+    // sendWatchedBatch() so a whole external-player batch shares ONE
+    // getNowPlaying() call instead of one per item (see flushExternalBatch()).
+    function findActiveSessionKey(sessions, identity) {
+      for (var i = 0; i < sessions.length; i++) {
+        if (sessionMatchesIdentity(sessions[i], identity)) return sessions[i].session_key;
+      }
+      return null;
     }
 
     // "Positive" direction. When a PlaybackSession is still active for this
