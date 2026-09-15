@@ -507,6 +507,7 @@ class GetNowPlayingEpisodeOrderTests(unittest.IsolatedAsyncioTestCase):
             started_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
         )
         db = _FakeSession([
+            None,                 # UserSettings (dropped movies/shows) - no row for this user
             [(session, media)],  # main PlaybackSession+Media query
             show,                # per-session Show lookup
             None,                # get_user_metadata_language - none set
