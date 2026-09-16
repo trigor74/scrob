@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-15
+ * Build: 2026-09-16
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -3935,6 +3935,18 @@
       var k = watched.length;
       if (k === 0) return;
 
+      // Captured NOW, synchronously, BEFORE the async now-playing lookup below -
+      // flushAndResetExternalContext() runs resetExternalContext() (which nulls
+      // externalContext.startedAt) immediately after this function returns, not
+      // after getNowPlaying()'s response. Reading externalContext.startedAt
+      // later, inside the async callback, would race that reset and fall back
+      // to Date.now() evaluated AT RESPONSE TIME - making elapsed (below) ~0 and
+      // every episode in the batch land on the same timestamp (live-tested
+      // regression 2026-09-16, introduced together with the getNowPlaying
+      // consolidation this same lookup is part of).
+      var startedAt = externalContext.startedAt || Date.now();
+      var now = Date.now();
+
       // One shared now-playing snapshot for the whole batch (live discussion
       // 2026-09-15) instead of a separate GET /history/now-playing per watched
       // episode - pushExternalWatchedMark() below matches each item against
@@ -3943,20 +3955,19 @@
       // (matches resolveActiveSession()'s own error handling elsewhere) rather
       // than dropping the whole batch.
       getNowPlaying(true, function (sessions) {
-        sendWatchedBatch(watched, sessions);
+        sendWatchedBatch(watched, sessions, startedAt, now);
       }, function (err) {
         console.warn('ScrobTimeline', 'now-playing lookup failed for batch reconciliation, proceeding without it', err);
-        sendWatchedBatch(watched, []);
+        sendWatchedBatch(watched, [], startedAt, now);
       });
     }
-    function sendWatchedBatch(watched, sessions) {
+    function sendWatchedBatch(watched, sessions, startedAt, now) {
       var k = watched.length;
       if (k === 1) {
         pushExternalWatchedMark(watched[0].identity, undefined, findActiveSessionKey(sessions, watched[0].identity));
         return;
       }
-      var startedAt = externalContext.startedAt || Date.now();
-      var elapsed = Math.max(0, Date.now() - startedAt);
+      var elapsed = Math.max(0, now - startedAt);
       for (var w = 0; w < k; w++) {
         var watchedAt = startedAt + (w + 1) / k * elapsed;
         pushExternalWatchedMark(watched[w].identity, watchedAt, findActiveSessionKey(sessions, watched[w].identity));
