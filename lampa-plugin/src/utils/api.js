@@ -344,6 +344,13 @@ export function adminSettings(onDone, onFail) {
 // distinction preserved server-side); passed explicitly by the external-
 // player batch backdating path (§5.1.1) so a batch of several episodes gets
 // a real, ordered spread instead of racing each other for "now".
+// `onFail` receives the HTTP status as its 2nd arg (upstream #390, live audit
+// 2026-09-18) - `completed:true` without `force:true` now 409s as
+// "duplicate_watch" when a WatchEvent already exists for this title within
+// the server's dedup window (min. 5 minutes, user-configurable) instead of
+// silently succeeding. Callers treat 409 as "already recorded" (a real
+// success), not a failure to retry - see sendPlainExternalWatchedMark()/
+// sendPlainManualWatchedMark() (timeline.js) and pushWatched() (lampac-export.js).
 export function addHistoryEvent(tmdbId, mediaType, completed, episode, watchedAt, onDone, onFail) {
     var network = new Lampa.Reguest()
     network.timeout(15000)
@@ -370,7 +377,8 @@ export function addHistoryEvent(tmdbId, mediaType, completed, episode, watchedAt
         },
         function (a, c) {
             network.clear()
-            onFail(network.errorDecode(a, c))
+            var status = a && a.status
+            onFail(network.errorDecode(a, c), status)
         },
         JSON.stringify(payload),
         { headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) }
