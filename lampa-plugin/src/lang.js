@@ -237,6 +237,30 @@ export default function addLang() {
             en: 'Sync blocked: CUB synchronization is active',
             be: 'Сінхранізацыя заблакіравана: актыўная сінхранізацыя CUB'
         },
+        scrob_lampac_export: {
+            uk: 'Експортувати дані з lampac у Scrob',
+            ru: 'Экспортировать данные из lampac в Scrob',
+            en: 'Export data from lampac to Scrob',
+            be: 'Экспартаваць даныя з lampac у Scrob'
+        },
+        scrob_lampac_export_need_session: {
+            uk: 'Спершу авторизуйтесь на сервері Scrob',
+            ru: 'Сначала авторизуйтесь на сервере Scrob',
+            en: 'Sign in to the Scrob server first',
+            be: 'Спачатку аўтарызуйцеся на серверы Scrob'
+        },
+        scrob_lampac_export_need_sync: {
+            uk: 'Спершу увімкніть синхронізацію Scrob',
+            ru: 'Сначала включите синхронизацию Scrob',
+            en: 'Turn on Scrob synchronization first',
+            be: 'Спачатку ўключыце сінхранізацыю Scrob'
+        },
+        scrob_lampac_export_done: {
+            uk: 'Експорт з lampac завершено. Переглянуто: %watched%, прогрес: %progress%, пропущено (вже є): %skipped%, кинуто: %thrown%',
+            ru: 'Экспорт из lampac завершён. Просмотрено: %watched%, прогресс: %progress%, пропущено (уже есть): %skipped%, брошено: %thrown%',
+            en: 'lampac export done. Watched: %watched%, in progress: %progress%, skipped (already in Scrob): %skipped%, dropped: %thrown%',
+            be: 'Экспарт з lampac завершаны. Прагледжана: %watched%, прагрэс: %progress%, прапушчана (ужо ёсць): %skipped%, кінута: %thrown%'
+        },
         scrob_sync_conflict_gramsync: {
             uk: 'Увімкнений GramSync — можливі конфлікти',
             ru: 'Включён GramSync — возможны конфликты',
