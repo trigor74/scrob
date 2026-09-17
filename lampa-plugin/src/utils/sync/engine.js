@@ -358,9 +358,14 @@ function push(method, lampaKey, card) {
 }
 
 // Serial outbound drain: one REST write at a time, then mirror + invalidate.
+// `outboundTimer` is a plain setTimeout, not a Lampa listener re-evaluated
+// against the CURRENT `running` on every call - stop() clears both the timer
+// and pushQueue, but only if it runs to completion before this fires. Checked
+// directly here too (found live 2026-09-18: Favorite/list writes kept
+// reaching the server for a short window after toggling sync off).
 function processQueue() {
     outboundTimer = null
-    if (pushRunning || pushQueue.length === 0) return
+    if (!running || pushRunning || pushQueue.length === 0) return
     pushRunning = true
 
     var op = pushQueue.shift()
@@ -767,8 +772,16 @@ function convergeOneList(listName, listId, lampaKey, favorite, callback) {
     })
 }
 
-// Sequential REST push with 150ms pause between writes.
+// Sequential REST push with 150ms pause between writes. Each step re-arms
+// itself via setTimeout - same gap as processQueue() above (a stray timer
+// tick doesn't re-evaluate `running` on its own) - checked directly so
+// toggling sync off mid-drain doesn't keep pushing the rest of a large
+// batch (e.g. a freshly-triggered forceSync() after lampac-export) for
+// several more seconds. Still calls `callback()` on the way out so the
+// caller's own convergeOneList()/convergeAll() chain settles normally
+// instead of leaving `updateRunning` stuck.
 function pushRestItems(listId, listName, items, index, callback) {
+    if (!running) { callback(); return }
     if (index >= items.length) { callback(); return }
     var parts = parseElementKey(items[index])
     var tmdbId = parseInt(parts.tmdbId, 10)

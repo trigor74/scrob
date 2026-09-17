@@ -2579,9 +2579,14 @@
     }
 
     // Serial outbound drain: one REST write at a time, then mirror + invalidate.
+    // `outboundTimer` is a plain setTimeout, not a Lampa listener re-evaluated
+    // against the CURRENT `running` on every call - stop() clears both the timer
+    // and pushQueue, but only if it runs to completion before this fires. Checked
+    // directly here too (found live 2026-09-18: Favorite/list writes kept
+    // reaching the server for a short window after toggling sync off).
     function processQueue() {
       outboundTimer = null;
-      if (pushRunning || pushQueue.length === 0) return;
+      if (!running$2 || pushRunning || pushQueue.length === 0) return;
       pushRunning = true;
       var op = pushQueue.shift();
       writeOne(op, function () {
@@ -3039,8 +3044,19 @@
       });
     }
 
-    // Sequential REST push with 150ms pause between writes.
+    // Sequential REST push with 150ms pause between writes. Each step re-arms
+    // itself via setTimeout - same gap as processQueue() above (a stray timer
+    // tick doesn't re-evaluate `running` on its own) - checked directly so
+    // toggling sync off mid-drain doesn't keep pushing the rest of a large
+    // batch (e.g. a freshly-triggered forceSync() after lampac-export) for
+    // several more seconds. Still calls `callback()` on the way out so the
+    // caller's own convergeOneList()/convergeAll() chain settles normally
+    // instead of leaving `updateRunning` stuck.
     function pushRestItems(listId, listName, items, index, callback) {
+      if (!running$2) {
+        callback();
+        return;
+      }
       if (index >= items.length) {
         callback();
         return;
@@ -3950,6 +3966,17 @@
     // real player-launch time so it can never backdate into the past before
     // viewing even started.
     function flushExternalBatch() {
+      // Reached via externalResetTimer's plain setTimeout (debounce or the 6h
+      // safety net), not a Lampa listener re-evaluated against the CURRENT
+      // `running` on every call - stop()'s own resetExternalContext() clears
+      // that timer, but only if stop() runs to completion before it fires.
+      // Checked directly here too (found live 2026-09-18: external-player
+      // progress/watched marks kept reaching the server for a short window
+      // after toggling sync off, mid-playlist).
+      if (!running$1) {
+        externalContext.pendingItems = [];
+        return;
+      }
       var items = externalContext.pendingItems;
       if (!items || !items.length) return;
       var watched = [];
@@ -5275,6 +5302,7 @@
     // 'main', ...}) call sites). A no-op past the first successful run this
     // session, or while one is already in flight - see `prefetched` above.
     function onMainScreenActivity(e) {
+      if (!running$1) return;
       if (!e || e.type !== 'start' || e.component !== 'main') return;
       runPrefetch();
     }

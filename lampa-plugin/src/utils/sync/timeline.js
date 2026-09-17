@@ -186,6 +186,14 @@ function flushAndResetExternalContext() {
 // real player-launch time so it can never backdate into the past before
 // viewing even started.
 function flushExternalBatch() {
+    // Reached via externalResetTimer's plain setTimeout (debounce or the 6h
+    // safety net), not a Lampa listener re-evaluated against the CURRENT
+    // `running` on every call - stop()'s own resetExternalContext() clears
+    // that timer, but only if stop() runs to completion before it fires.
+    // Checked directly here too (found live 2026-09-18: external-player
+    // progress/watched marks kept reaching the server for a short window
+    // after toggling sync off, mid-playlist).
+    if (!running) { externalContext.pendingItems = []; return }
     var items = externalContext.pendingItems
     if (!items || !items.length) return
 
@@ -1481,6 +1489,7 @@ function runPrefetch() {
 // 'main', ...}) call sites). A no-op past the first successful run this
 // session, or while one is already in flight - see `prefetched` above.
 function onMainScreenActivity(e) {
+    if (!running) return
     if (!e || e.type !== 'start' || e.component !== 'main') return
     runPrefetch()
 }
