@@ -29,6 +29,33 @@
     font-size: 1em;
 }
 
+/* Status dot overlaid on levende's OWN header profile icon
+   (.open--profile.levende - third-party markup, not ours). Red when the
+   ACTIVE profile has no working Scrob session, green when it does -
+   plain red/green rather than this plugin's own purple/pink branding,
+   as requested: a quick at-a-glance signal distinct from the picker's own
+   recolored-logo badge below. position:relative scoped to this one
+   selector so it can't affect anything else sharing .head__action. */
+.open--profile.levende {
+    position: relative;
+}
+
+.scrob-levende-header-dot {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 0.55em;
+    height: 0.55em;
+    border-radius: 50%;
+    background: #E05252;
+    box-shadow: 0 0 0 0.12em rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+}
+
+.scrob-levende-header-dot--ok {
+    background: #4CAF50;
+}
+
 /* Scrob logo prepended to a levende profile's name in ITS OWN picker
    (levende-bridge.js) - gradient colors swap to red when the bridge
    considers that profile not authorized (misconfigured accsdb pair, or
