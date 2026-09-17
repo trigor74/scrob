@@ -276,7 +276,7 @@ function extractSeasonEpisode(obj) {
 // never guess the formula itself. Same technique the old scrob.js and the
 // third-party TraktTV plugin both independently arrived at (see
 // LAMPA-TRACKING-REFERENCE.md §4.1.3/§4.2.3).
-function resolveSeasonEpisode(hash, originalName) {
+export function resolveSeasonEpisode(hash, originalName) {
     if (!hash || !originalName) return {}
     for (var s = 1; s <= 40; s++) {
         var sep = s > 10 ? ':' : ''

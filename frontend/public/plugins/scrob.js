@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-16
+ * Build: 2026-09-17
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -243,6 +243,30 @@
           ru: 'Синхронизация заблокирована: активна синхронизация CUB',
           en: 'Sync blocked: CUB synchronization is active',
           be: 'Сінхранізацыя заблакіравана: актыўная сінхранізацыя CUB'
+        },
+        scrob_lampac_export: {
+          uk: 'Експортувати дані з lampac у Scrob',
+          ru: 'Экспортировать данные из lampac в Scrob',
+          en: 'Export data from lampac to Scrob',
+          be: 'Экспартаваць даныя з lampac у Scrob'
+        },
+        scrob_lampac_export_need_session: {
+          uk: 'Спершу авторизуйтесь на сервері Scrob',
+          ru: 'Сначала авторизуйтесь на сервере Scrob',
+          en: 'Sign in to the Scrob server first',
+          be: 'Спачатку аўтарызуйцеся на серверы Scrob'
+        },
+        scrob_lampac_export_need_sync: {
+          uk: 'Спершу увімкніть синхронізацію Scrob',
+          ru: 'Сначала включите синхронизацию Scrob',
+          en: 'Turn on Scrob synchronization first',
+          be: 'Спачатку ўключыце сінхранізацыю Scrob'
+        },
+        scrob_lampac_export_done: {
+          uk: 'Експорт з lampac завершено. Переглянуто: %watched%, прогрес: %progress%, пропущено (вже є): %skipped%, кинуто: %thrown%',
+          ru: 'Экспорт из lampac завершён. Просмотрено: %watched%, прогресс: %progress%, пропущено (уже есть): %skipped%, брошено: %thrown%',
+          en: 'lampac export done. Watched: %watched%, in progress: %progress%, skipped (already in Scrob): %skipped%, dropped: %thrown%',
+          be: 'Экспарт з lampac завершаны. Прагледжана: %watched%, прагрэс: %progress%, прапушчана (ужо ёсць): %skipped%, кінута: %thrown%'
         },
         scrob_sync_conflict_gramsync: {
           uk: 'Увімкнений GramSync — можливі конфлікти',
@@ -2219,7 +2243,7 @@
     var pollTimer = null; // Polling interval timer
     var retryQueue = []; // Failed REST operations for retry
     var retryTimer = null; // Retry interval timer
-    var running$1 = false; // Engine active flag
+    var running$2 = false; // Engine active flag
     var profileListener$1 = null; // Profile change listener reference
     var brokenMappings = []; // Keys whose mapped list was deleted on server
     var healing = false; // Self-heal guard: prevent re-entrant missing-key resolution
@@ -2265,7 +2289,7 @@
       // Rebinding: drop handlers from the previous socket before switching.
       if (activeSocket && activeSocket !== socketInstance) unbindSocketHandlers();
       activeSocket = socketInstance;
-      if (running$1) {
+      if (running$2) {
         bindSocketHandlers();
         if (isSocketActive()) stopPolling();else startPolling();
       }
@@ -2333,7 +2357,7 @@
     // Core pattern: Favorite.listener.follow('add,added'/'remove') in bookmarks.js init().
 
     function onFavoriteAdd(e) {
-      if (!running$1 || received) return;
+      if (!running$2 || received) return;
       if (!e || !e.where || !e.card || !e.card.id) return;
       // 'thrown' (§5.3.2) never goes through the generic /lists queue below -
       // it maps to Scrob's own first-class dropped-state endpoints instead.
@@ -2344,7 +2368,7 @@
       push('add', e.where, e.card);
     }
     function onFavoriteRemove(e) {
-      if (!running$1 || received) return;
+      if (!running$2 || received) return;
       if (!e || !e.where || !e.card) return;
       if (e.method && e.method !== 'id') return;
       if (!e.card.id) return;
@@ -2501,7 +2525,7 @@
     // pullDropped()'s own guard above, not a session-once flag - see the
     // rejected-alternative note there for why.
     function onDropSyncActivity(e) {
-      if (!running$1) return;
+      if (!running$2) return;
       if (!e || e.type !== 'start') return;
       if (e.component !== 'main' && e.component !== 'full') return;
       pullDropped();
@@ -2514,7 +2538,7 @@
     // cardFromScrobMedia(), same fallback shape a fresh remote /lists addition
     // already gets elsewhere in this file.
     function applyRemoteDropEvent(mediaType, action, payload) {
-      if (!running$1 || !payload || !payload.tmdb_id) return;
+      if (!running$2 || !payload || !payload.tmdb_id) return;
       var favorite = readFavorite();
       var tmdbId = parseInt(payload.tmdb_id, 10);
       if (!tmdbId) return;
@@ -2532,7 +2556,7 @@
     // only emit state:changed with type=custom key — bridge them into the same queue.
     // Dedupe: core keys already arrived via Favorite.listener; skip if identical op queued.
     function onStateChanged(e) {
-      if (!running$1 || received) return;
+      if (!running$2 || received) return;
       if (!e || e.target !== 'favorite' || e.reason !== 'update') return;
       if (!e.type || !e.card || !e.card.id) return;
       if (e.method !== 'add' && e.method !== 'added' && e.method !== 'remove') return;
@@ -2828,7 +2852,7 @@
     // single favorite write, bump the Tracker stamp.
 
     function update(reason) {
-      if (!running$1 || !hasSession()) return;
+      if (!running$2 || !hasSession()) return;
       if (updateRunning) {
         // Coalesce concurrent invalidations into one trailing run.
         if (updateTimer) clearTimeout(updateTimer);
@@ -2854,7 +2878,7 @@
 
     // Debounced invalidate entry used by the socket hub and the poll timer.
     function invalidate(reason) {
-      if (!running$1 || !hasSession()) return;
+      if (!running$2 || !hasSession()) return;
       if (updateRunning) return;
       if (updateTimer) clearTimeout(updateTimer);
       updateTimer = setTimeout(function () {
@@ -3211,7 +3235,7 @@
     function startRetryLoop() {
       if (retryTimer) return;
       retryTimer = setInterval(function () {
-        if (!running$1 || retryQueue.length === 0) return;
+        if (!running$2 || retryQueue.length === 0) return;
         var batch = retryQueue.splice(0, retryQueue.length);
         for (var i = 0; i < batch.length; i++) {
           processRetryOp(batch[i]);
@@ -3235,7 +3259,7 @@
     function startPolling() {
       if (pollTimer) return;
       pollTimer = setInterval(function () {
-        if (!running$1 || !hasSession()) return;
+        if (!running$2 || !hasSession()) return;
         // Socket-active mode invalidates via WS; polling is the fallback path.
         // Both funnel into the same update() — never two parallel writers.
         invalidate('poll');
@@ -3256,7 +3280,7 @@
       return str.indexOf('401') !== -1 || str.indexOf('403') !== -1;
     }
     function pauseSync(reason) {
-      running$1 = false;
+      running$2 = false;
       stopPolling();
       stopRetryLoop();
       console.warn('ScrobSync', 'paused:', reason);
@@ -3288,14 +3312,14 @@
 
     // Socket open converges on a stale tracker snapshot (core socket open → update).
     function onSocketOpen() {
-      if (!running$1) return;
+      if (!running$2) return;
       stopPolling();
       if (isStale(getPollInterval())) update('socket-open');
     }
 
     // Socket close resumes polling fallback.
     function onSocketClose() {
-      if (!running$1) return;
+      if (!running$2) return;
       startPolling();
     }
 
@@ -3452,7 +3476,7 @@
 
     // Start the sync engine
     function start$1() {
-      if (running$1) return;
+      if (running$2) return;
       if (!hasSession()) {
         console.warn('ScrobSync', 'start skipped: no session');
         return;
@@ -3471,7 +3495,7 @@
           return;
         }
       }
-      running$1 = true;
+      running$2 = true;
 
       // Outbound: Favorite add/remove + state:changed bridge (custom keys), guarded.
       if (Lampa.Favorite && Lampa.Favorite.listener) {
@@ -3519,7 +3543,7 @@
 
     // Stop the sync engine
     function stop$1() {
-      running$1 = false;
+      running$2 = false;
       console.log('ScrobSync', 'stopped');
       unbindSocketHandlers();
       activeSocket = null;
@@ -3564,7 +3588,7 @@
 
     // Force a manual sync (for settings UI "Sync Now" button)
     function forceSync() {
-      if (!running$1) return;
+      if (!running$2) return;
       clearInitialDone();
       initialSync();
       pullDropped(true);
@@ -3580,7 +3604,7 @@
         itemCount += Object.keys(m.lists[names[i]].items).length;
       }
       return {
-        running: running$1,
+        running: running$2,
         listCount: listCount,
         itemCount: itemCount,
         lastSync: m.updated_at,
@@ -3804,7 +3828,7 @@
     //   retry queue (engine.js's enqueueRetry) instead of a second, separate
     //   Lampa.Storage-backed queue.
 
-    var WATCHED_THRESHOLD_PERCENT = 90;
+    var WATCHED_THRESHOLD_PERCENT$1 = 90;
     var HEARTBEAT_THROTTLE_MS = 15000; // periodic heartbeat driven by Timeline updates
     var SAME_STATE_GUARD_MS = 3000; // native pause/playing: ignore immediate repeats
     var SEEK_GUARD_MS = 1500; // native seeked: ignore right after another heartbeat
@@ -3827,7 +3851,7 @@
     // all" - normal exits are covered by the short reset above once updates start
     // arriving, well before this ever fires.
     var EXTERNAL_CONTEXT_SAFETY_MS = 6 * 60 * 60 * 1000;
-    var running = false;
+    var running$1 = false;
     var listenersBound = false;
     var profileListener = null; // Profile change listener reference (engine.js has the same field, same reason)
 
@@ -3930,7 +3954,7 @@
       if (!items || !items.length) return;
       var watched = [];
       for (var i = 0; i < items.length; i++) {
-        if (items[i].percent >= WATCHED_THRESHOLD_PERCENT) watched.push(items[i]);else pushExternalProgressSnapshot(items[i].identity, items[i].runtimeMinutes, items[i].time);
+        if (items[i].percent >= WATCHED_THRESHOLD_PERCENT$1) watched.push(items[i]);else pushExternalProgressSnapshot(items[i].identity, items[i].runtimeMinutes, items[i].time);
       }
       var k = watched.length;
       if (k === 0) return;
@@ -4131,7 +4155,7 @@
     // ─── Player lifecycle ──────────────────────────────────────
 
     function onPlayerStart(data) {
-      if (!running) return;
+      if (!running$1) return;
 
       // Guard against a stale external-player context outliving a real internal
       // session that starts AND finishes inside the debounce window (§5.1.1,
@@ -4187,7 +4211,7 @@
     // device/duration verified only for Android - see §5.1.1 for the source
     // references this was confirmed against).
     function onExternalPlayerStart(data) {
-      if (!running) return;
+      if (!running$1) return;
 
       // Flush first (not a bare reset) - mirrors the same guard onPlayerStart()
       // already has above. If 'external' fires again before the previous
@@ -4220,7 +4244,7 @@
       });
     }
     function onTimelineUpdate(e) {
-      if (!running || syncingFromServer) return;
+      if (!running$1 || syncingFromServer) return;
       if (!e || !e.data) return;
       if (!session.card) {
         // No internal player session — either an external-player result
@@ -4497,7 +4521,7 @@
 
       var road = e.data.road || {};
       var percent = parseFloat(road.percent || 0);
-      if (percent >= WATCHED_THRESHOLD_PERCENT) pushManualWatchedMark(identity);else handleManualUnmark(identity);
+      if (percent >= WATCHED_THRESHOLD_PERCENT$1) pushManualWatchedMark(identity);else handleManualUnmark(identity);
     }
 
     // `identity` is either the episode shape ({seriesTmdbId, season, episode},
@@ -4753,7 +4777,7 @@
       });
     }
     function onPlayerDestroy() {
-      if (!running) return;
+      if (!running$1) return;
       if (!session.card) return;
       if (!hasSession()) {
         resetSessionState();
@@ -4770,7 +4794,7 @@
         return;
       }
       console.log('ScrobTimeline', 'player destroy, final percent: ' + session.lastPercent + '%');
-      if (session.lastPercent >= WATCHED_THRESHOLD_PERCENT) {
+      if (session.lastPercent >= WATCHED_THRESHOLD_PERCENT$1) {
         completeScrobSession();
         resetSessionState();
       } else if (session.lastPercent < 1.5) {
@@ -4791,7 +4815,7 @@
     // third-party TraktTV plugin, LAMPA-TRACKING-REFERENCE.md §4.1.1/§4.2.1).
 
     function onNativeVideoStateChange(e, state) {
-      if (!running) return;
+      if (!running$1) return;
       if (!session.card || !session.key || session.completed) return;
       var target = e && e.target;
       if (!target || target.tagName !== 'VIDEO') return;
@@ -4817,7 +4841,7 @@
       onNativeVideoStateChange(e, 'playing');
     }
     function onNativeVideoSeeked(e) {
-      if (!running) return;
+      if (!running$1) return;
       if (!session.card || !session.key || session.completed) return;
       if (Date.now() - session.lastUpdateTime < SEEK_GUARD_MS) return;
       var target = e && e.target;
@@ -4830,7 +4854,7 @@
       trackNativePositionAndHeartbeat(currentTime, state);
     }
     function onNativeVideoError(e) {
-      if (!running) return;
+      if (!running$1) return;
       var target = e && e.target;
       if (!target || target.tagName !== 'VIDEO') return;
       if (!session.card || !session.key || session.completed) return;
@@ -4838,7 +4862,7 @@
       onNativeVideoStateChange(e, 'paused');
     }
     function onNativeVideoDurationChange(e) {
-      if (!running) return;
+      if (!running$1) return;
       var target = e && e.target;
       if (!target || target.tagName !== 'VIDEO') return;
       if (!session.card || !session.key || session.completed) return;
@@ -5067,7 +5091,7 @@
     // above only fires per-card). Exported for main.js to call alongside its
     // existing Lampa.Timeline.read()/Lampa.Favorite.read() calls.
     function pullContinueWatching() {
-      if (!running) return;
+      if (!running$1) return;
       getContinueWatching(function (items) {
         for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i]);
       }, function (err) {
@@ -5080,7 +5104,7 @@
     // for ALL of those). Exact filter/field path ported from the old scrob.js,
     // already proven against this same event (lines 677-679).
     function onActivityStart(e) {
-      if (!running) return;
+      if (!running$1) return;
       if (!e || e.type !== 'start' || e.component !== 'full') return;
       var card = e.object && (e.object.card || e.object.data && e.object.data.movie || e.object.movie);
       if (!card || !card.id) return;
@@ -5102,7 +5126,7 @@
     // when nothing relevant is open or the event was about a different title
     // entirely (pullWriteTimeline()'s own LWW/active-session guards still apply).
     function pullActiveCard() {
-      if (!running) return;
+      if (!running$1) return;
       var active = Lampa.Activity.active();
       if (!active || active.component !== 'full') return;
       var card = active.card_data || active.card || active.movie;
@@ -5225,7 +5249,7 @@
       });
     }
     function runPrefetch() {
-      if (!running || prefetched || prefetchInFlight) return;
+      if (!running$1 || prefetched || prefetchInFlight) return;
       var candidates = collectPrefetchCandidates();
       // Deliberately NOT `prefetched = true` here - an empty pool right now
       // (e.g. Favorite/Bookmarks data hasn't finished loading yet at plugin
@@ -5299,7 +5323,7 @@
     // ─── Lifecycle ──────────────────────────────────────────────
 
     function start() {
-      if (running) return;
+      if (running$1) return;
       if (!hasSession()) {
         console.warn('ScrobTimeline', 'start skipped: no session');
         return;
@@ -5308,7 +5332,7 @@
         console.warn('ScrobTimeline', 'start skipped: sync disabled');
         return;
       }
-      running = true;
+      running$1 = true;
       if (!listenersBound) {
         Lampa.Player.listener.follow('start', onPlayerStart);
         Lampa.Player.listener.follow('destroy', onPlayerDestroy);
@@ -5339,7 +5363,7 @@
       runPrefetch();
     }
     function stop() {
-      running = false;
+      running$1 = false;
       console.log('ScrobTimeline', 'stopped');
       // Listeners stay bound intentionally: Lampa.Player/Timeline's global
       // listener buses have no targeted unfollow-by-reference API worth
@@ -5363,6 +5387,433 @@
       prefetchGeneration++;
       resetSessionState();
       resetExternalContext();
+    }
+
+    var WATCHED_THRESHOLD_PERCENT = 90;
+    var PROGRESS_FLOOR_PERCENT = 1.5; // same "meaningful progress" floor used elsewhere (timeline.js)
+    var TIMECODE_POOL_SIZE = 5; // concurrent GET /timecode/all requests
+    var PUSH_PAUSE_MS = 50; // pause between sequential Scrob writes (§5.6.3 п.6)
+
+    var running = false; // guards against a second export overlapping the first
+
+    // ─── Host/auth discovery (§5.6.3 п.1, revised) ─────────────
+
+    function findLampacScriptUrl() {
+      var scripts = document.querySelectorAll('script[src]');
+      for (var i = 0; i < scripts.length; i++) {
+        var src = scripts[i].src;
+        if (src && /\/(bookmark|timecode)(\.js|\/js\/)/.test(src)) return src;
+      }
+      return null;
+    }
+    function buildLampacAuth() {
+      var scriptUrl = findLampacScriptUrl();
+      var host = null;
+      var token = '';
+      if (scriptUrl) {
+        try {
+          var parsed = new URL(scriptUrl);
+          host = parsed.origin;
+          var m = parsed.pathname.match(/\/(?:bookmark|timecode)\/js\/([^/]+)/);
+          if (m) token = m[1];
+        } catch (e) {/* malformed src - fall through to origin fallback below */}
+      }
+      if (!host) host = window.location.origin;
+      return {
+        host: host,
+        token: token,
+        uid: Lampa.Storage.get('lampac_unic_id', ''),
+        accountEmail: Lampa.Storage.get('account_email', ''),
+        profileId: Lampa.Storage.get('lampac_profile_id', '')
+      };
+    }
+    function appendParam(url, key, value) {
+      if (!value) return url;
+      return url + (url.indexOf('?') === -1 ? '?' : '&') + key + '=' + encodeURIComponent(value);
+    }
+    function buildTimecodeUrl(auth, cardId) {
+      var url = auth.host + '/timecode/all';
+      url = appendParam(url, 'token', auth.token);
+      url = appendParam(url, 'account_email', auth.accountEmail);
+      url = appendParam(url, 'uid', auth.uid);
+      url = appendParam(url, 'profile_id', auth.profileId);
+      url = appendParam(url, 'card_id', cardId);
+      return url;
+    }
+
+    // ─── Local card pool (§5.6.3 п.2, revised — local only, no remote /bookmark/list) ───
+
+    function readFavoriteRaw() {
+      var favorite = Lampa.Storage.get('favorite', {});
+      if (typeof favorite === 'string') {
+        try {
+          favorite = JSON.parse(favorite);
+        } catch (e) {
+          favorite = {};
+        }
+      }
+      if (!favorite || _typeof(favorite) !== 'object') favorite = {};
+      if (!Array.isArray(favorite.card)) favorite.card = [];
+      return favorite;
+    }
+
+    // ─── Step: dropped titles (`thrown`) — re-fire Favorite.add so engine.js's
+    // own onFavoriteAdd()/pushDrop() (already live, §5.3.2) picks each one up.
+    // See module header for why this is the one category needing an explicit
+    // push instead of just forceSync().
+    function exportThrownList(favorite) {
+      var ids = Array.isArray(favorite.thrown) ? favorite.thrown : [];
+      var pushed = 0;
+      for (var i = 0; i < ids.length; i++) {
+        var card = null;
+        for (var c = 0; c < favorite.card.length; c++) {
+          if (favorite.card[c].id == ids[i]) {
+            card = favorite.card[c];
+            break;
+          }
+        }
+        if (!card) continue;
+        Lampa.Favorite.add('thrown', card);
+        pushed++;
+      }
+      return pushed;
+    }
+
+    // ─── Timecodes (§5.6.3 п.3-4, revised) ─────────────────────
+
+    function parseTimecodeResponse(raw) {
+      var out = {};
+      if (!raw || _typeof(raw) !== 'object') return out;
+      // accsdb marks an access-control rejection body (Core/Middlewares/
+      // Accsdb.cs), not real timecode data - the whole response is invalid,
+      // same as plugin.js's own update() (`if (result.accsdb) return`).
+      if (raw.accsdb) return out;
+      for (var hash in raw) {
+        var entry;
+        try {
+          entry = JSON.parse(raw[hash]);
+        } catch (e) {
+          continue;
+        }
+        if (!entry || _typeof(entry) !== 'object') continue;
+        out[hash] = {
+          duration: parseFloat(entry.duration) || 0,
+          time: parseFloat(entry.time) || 0,
+          percent: parseFloat(entry.percent) || 0
+        };
+      }
+      return out;
+    }
+
+    // One card's timecode fetch → a list of {identity, percent, time, duration}
+    // candidates. `identity` matches pushExternalWatchedMark()'s own shape
+    // (timeline.js) so the same downstream push helpers can be reused untouched.
+    function resolveCardTimecodes(card, raw) {
+      var timecodes = parseTimecodeResponse(raw);
+      var hashes = Object.keys(timecodes);
+      if (!hashes.length) return [];
+      var isSeries = !!card.name;
+      var results = [];
+      if (!isSeries) {
+        // Movie: card_id already scopes the response to this one title - if
+        // several hash variants exist (different encodes), take the one with
+        // the most progress rather than guessing which hash "is" the movie.
+        var best = null;
+        for (var h = 0; h < hashes.length; h++) {
+          var tc = timecodes[hashes[h]];
+          if (!best || tc.percent > best.percent) best = tc;
+        }
+        if (best) results.push({
+          identity: {
+            isSeries: false,
+            tmdbId: card.id
+          },
+          percent: best.percent,
+          time: best.time,
+          duration: best.duration
+        });
+        return results;
+      }
+
+      // Same fallback chain used elsewhere for this exact hash-matching search
+      // (timeline.js's resolveManualIdentity()/onExternalPlayerStart()) - needs
+      // to land on whichever name Lampa itself used when the hash now being
+      // searched for was originally computed.
+      var originalName = card.original_name || card.original_title || card.title || card.name;
+      for (var i = 0; i < hashes.length; i++) {
+        var se = resolveSeasonEpisode(hashes[i], originalName);
+        if (!se.season || !se.episode) continue;
+        var t = timecodes[hashes[i]];
+        results.push({
+          identity: {
+            isSeries: true,
+            seriesTmdbId: card.id,
+            season: se.season,
+            episode: se.episode
+          },
+          percent: t.percent,
+          time: t.time,
+          duration: t.duration
+        });
+      }
+      return results;
+    }
+
+    // Small fixed-size concurrency pool - mirrors the external-player batch's
+    // own "don't hammer the network" reasoning (§5.1.1), here against lampac's
+    // server instead of Scrob's.
+    function runPool(items, size, worker, onDone) {
+      var index = 0;
+      var active = 0;
+      var results = new Array(items.length);
+      function launchNext() {
+        if (index >= items.length) {
+          if (active === 0) onDone(results);
+          return;
+        }
+        var i = index++;
+        active++;
+        worker(items[i], function (result) {
+          results[i] = result;
+          active--;
+          launchNext();
+        });
+      }
+      if (!items.length) {
+        onDone(results);
+        return;
+      }
+      for (var k = 0; k < Math.min(size, items.length); k++) launchNext();
+    }
+    function fetchCardTimecodes(auth, card, callback) {
+      var cardId = card.id + '_' + (card.name ? 'tv' : 'movie');
+      var url = buildTimecodeUrl(auth, cardId);
+      var network = new Lampa.Reguest();
+      network.timeout(15000);
+      network.native(url, function (data) {
+        network.clear();
+        var raw = typeof data === 'string' ? function () {
+          try {
+            return JSON.parse(data);
+          } catch (e) {
+            return null;
+          }
+        }() : data;
+        callback(resolveCardTimecodes(card, raw));
+      }, function () {
+        network.clear();
+        callback([]);
+      }, false, {});
+    }
+
+    // ─── Dedup against Scrob (§5.6.3 п.5) ──────────────────────
+
+    function dedupKey(identity) {
+      return identity.isSeries ? 'episode:' + identity.seriesTmdbId + ':' + identity.season + ':' + identity.episode : 'movie:' + identity.tmdbId;
+    }
+
+    // Batch-status is per SHOW/MOVIE (not per episode) - one request per unique
+    // title covers every episode candidate belonging to it in one response.
+    function buildBatchStatusPool(candidates) {
+      var seen = {};
+      var items = [];
+      for (var i = 0; i < candidates.length; i++) {
+        var id = candidates[i].identity;
+        var tmdbId = id.isSeries ? id.seriesTmdbId : id.tmdbId;
+        var type = id.isSeries ? 'tv' : 'movie';
+        var key = type + ':' + tmdbId;
+        if (seen[key]) continue;
+        seen[key] = true;
+        items.push({
+          tmdbId: tmdbId,
+          type: type
+        });
+      }
+      return items;
+    }
+
+    // Server rows → lookup keyed the same way as dedupKey() above.
+    function buildKnownStatusLookup(rows) {
+      var lookup = {};
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var key;
+        if (row.media_type === 'episode') {
+          key = 'episode:' + row.series_tmdb_id + ':' + row.season_number + ':' + row.episode_number;
+        } else {
+          key = 'movie:' + row.tmdb_id;
+        }
+        lookup[key] = row;
+      }
+      return lookup;
+    }
+    function isAlreadyCovered(row, candidatePercent) {
+      if (!row) return false;
+      if (row.watched) return true;
+      return (row.percent || 0) >= candidatePercent;
+    }
+
+    // ─── Push to Scrob (§5.6.3 п.6) ────────────────────────────
+
+    function pushWatched(identity, callback) {
+      var tmdbId = identity.isSeries ? identity.seriesTmdbId : identity.tmdbId;
+      var mediaType = identity.isSeries ? 'episode' : 'movie';
+      var episode = identity.isSeries ? {
+        seriesTmdbId: identity.seriesTmdbId,
+        season: identity.season,
+        episode: identity.episode
+      } : null;
+      addHistoryEvent(tmdbId, mediaType, true, episode, null, function () {
+        callback(true);
+      }, function () {
+        callback(false);
+      });
+    }
+    function pushProgress(identity, timeSeconds, runtimeMinutes, callback) {
+      var payload = {
+        tmdb_id: identity.isSeries ? null : identity.tmdbId,
+        media_type: identity.isSeries ? 'episode' : 'movie',
+        title: 'lampac import',
+        runtime: runtimeMinutes || null,
+        reset: false
+      };
+      if (identity.isSeries) {
+        payload.show_tmdb_id = identity.seriesTmdbId;
+        payload.season_number = identity.season;
+        payload.episode_number = identity.episode;
+      }
+      startSession(payload, function (res) {
+        if (!res || !res.session_key) {
+          callback(false);
+          return;
+        }
+        updateSession(res.session_key, {
+          progress_seconds: Math.round(timeSeconds),
+          state: 'paused'
+        }, function () {
+          callback(true);
+        }, function () {
+          callback(false);
+        });
+      }, function () {
+        callback(false);
+      });
+    }
+    function pushSequential(items, index, counters, onDone) {
+      if (index >= items.length) {
+        onDone(counters);
+        return;
+      }
+      var item = items[index];
+      var runtimeMinutes = item.duration > 0 ? Math.round(item.duration / 60) : null;
+      function next() {
+        setTimeout(function () {
+          pushSequential(items, index + 1, counters, onDone);
+        }, PUSH_PAUSE_MS);
+      }
+      if (item.percent >= WATCHED_THRESHOLD_PERCENT) {
+        pushWatched(item.identity, function (ok) {
+          if (ok) counters.watched++;
+          next();
+        });
+      } else {
+        pushProgress(item.identity, item.time, runtimeMinutes, function (ok) {
+          if (ok) counters.progress++;
+          next();
+        });
+      }
+    }
+
+    // ─── Orchestrator ───────────────────────────────────────────
+
+    // `onDone(result)` — result: { listsThrown, watched, progress, skipped, cardsScanned, error }
+    // `error` set only when the export couldn't run at all (no session/sync off);
+    // a partial/empty result from real attempts is NOT an error.
+    function run(onDone) {
+      if (running) return;
+      if (!hasSyncRunning()) {
+        onDone({
+          error: 'sync_not_running'
+        });
+        return;
+      }
+      running = true;
+      var favorite = readFavoriteRaw();
+      var listsThrown = exportThrownList(favorite);
+      if (listsThrown > 0) forceSync();
+      var auth = buildLampacAuth();
+      var cards = favorite.card;
+      if (!cards.length) {
+        running = false;
+        onDone({
+          listsThrown: listsThrown,
+          watched: 0,
+          progress: 0,
+          skipped: 0,
+          cardsScanned: 0
+        });
+        return;
+      }
+      runPool(cards, TIMECODE_POOL_SIZE, function (card, done) {
+        fetchCardTimecodes(auth, card, done);
+      }, function (perCardResults) {
+        var candidates = [];
+        for (var i = 0; i < perCardResults.length; i++) {
+          var list = perCardResults[i] || [];
+          for (var j = 0; j < list.length; j++) {
+            if (list[j].percent >= PROGRESS_FLOOR_PERCENT) candidates.push(list[j]);
+          }
+        }
+        if (!candidates.length) {
+          running = false;
+          onDone({
+            listsThrown: listsThrown,
+            watched: 0,
+            progress: 0,
+            skipped: 0,
+            cardsScanned: cards.length
+          });
+          return;
+        }
+        var statusPool = buildBatchStatusPool(candidates);
+        getBatchWatchStatus(statusPool, function (rows) {
+          finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone);
+        }, function () {
+          // Dedup lookup failed - proceed without it rather than dropping
+          // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
+          // apply here: worst case is a few redundant writes, not silence).
+          finishExport(candidates, {}, listsThrown, cards.length, onDone);
+        });
+      });
+    }
+    function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone) {
+      var toPush = [];
+      var skipped = 0;
+      for (var i = 0; i < candidates.length; i++) {
+        var row = knownLookup[dedupKey(candidates[i].identity)];
+        if (isAlreadyCovered(row, candidates[i].percent)) {
+          skipped++;
+          continue;
+        }
+        toPush.push(candidates[i]);
+      }
+      pushSequential(toPush, 0, {
+        watched: 0,
+        progress: 0
+      }, function (counters) {
+        running = false;
+        onDone({
+          listsThrown: listsThrown,
+          watched: counters.watched,
+          progress: counters.progress,
+          skipped: skipped,
+          cardsScanned: cardsScanned
+        });
+      });
+    }
+    function hasSyncRunning() {
+      var status = getStatus();
+      return !!(status && status.running);
     }
 
     /**
@@ -6537,6 +6988,27 @@
       }
     }
 
+    // ─── lampac one-time export (SYNC-ARCHITECTURE-PLAN.md §5.6) ──────────────
+
+    function startLampacExport() {
+      if (!hasSession()) {
+        Lampa.Noty.show(Lampa.Lang.translate('scrob_lampac_export_need_session'));
+        return;
+      }
+      Lampa.Loading.start(function () {
+        Lampa.Loading.stop();
+      });
+      run(function (result) {
+        Lampa.Loading.stop();
+        if (result.error) {
+          Lampa.Noty.show(Lampa.Lang.translate('scrob_lampac_export_need_sync'));
+          return;
+        }
+        var text = Lampa.Lang.translate('scrob_lampac_export_done').replace('%watched%', result.watched).replace('%progress%', result.progress).replace('%skipped%', result.skipped).replace('%thrown%', result.listsThrown);
+        Lampa.Noty.show(text);
+      });
+    }
+
     // ─── Settings section ─────────────────────────────────────
 
     function initSettings() {
@@ -6697,6 +7169,19 @@
             }
           });
         }
+      });
+
+      // ── lampac one-time export button (§5.6) ──
+      Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: {
+          name: 'scrob_lampac_export_btn',
+          type: 'button'
+        },
+        field: {
+          name: Lampa.Lang.translate('scrob_lampac_export')
+        },
+        onChange: startLampacExport
       });
 
       // ══════════════════════════════════════════════════════

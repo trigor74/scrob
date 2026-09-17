@@ -8,6 +8,7 @@ import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serv
 import { avatarHtml, switchProfile, restoreIsolatedData } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import * as timelineSync from './utils/sync/timeline'
+import * as lampacExport from './utils/sync/lampac-export'
 import CategoryComponent from './component/category'
 
 // Settings section icon (gradient ids prefixed scrob- to avoid conflicts)
@@ -1179,6 +1180,32 @@ function patchFullCardBookmark() {
     }
 }
 
+// ─── lampac one-time export (SYNC-ARCHITECTURE-PLAN.md §5.6) ──────────────
+
+function startLampacExport() {
+    if (!hasSession()) {
+        Lampa.Noty.show(Lampa.Lang.translate('scrob_lampac_export_need_session'))
+        return
+    }
+
+    Lampa.Loading.start(function () { Lampa.Loading.stop() })
+    lampacExport.run(function (result) {
+        Lampa.Loading.stop()
+
+        if (result.error) {
+            Lampa.Noty.show(Lampa.Lang.translate('scrob_lampac_export_need_sync'))
+            return
+        }
+
+        var text = Lampa.Lang.translate('scrob_lampac_export_done')
+            .replace('%watched%', result.watched)
+            .replace('%progress%', result.progress)
+            .replace('%skipped%', result.skipped)
+            .replace('%thrown%', result.listsThrown)
+        Lampa.Noty.show(text)
+    })
+}
+
 // ─── Settings section ─────────────────────────────────────
 
 function initSettings() {
@@ -1299,6 +1326,14 @@ function initSettings() {
                 onBack: function () { Lampa.Settings.create('scrob') }
             })
         }
+    })
+
+    // ── lampac one-time export button (§5.6) ──
+    Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: { name: 'scrob_lampac_export_btn', type: 'button' },
+        field: { name: Lampa.Lang.translate('scrob_lampac_export') },
+        onChange: startLampacExport
     })
 
     // ══════════════════════════════════════════════════════
