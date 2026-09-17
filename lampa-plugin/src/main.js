@@ -53,7 +53,35 @@ function authStatusText() {
     return ''
 }
 
+// levende adds its OWN persistent header icon for per-viewer switching
+// (.open--profile.levende, #user_profile_icon inside) - third-party markup
+// this plugin doesn't create and doesn't control the render timing of.
+// Small red/green dot overlaid in its corner - same "is the ACTIVE profile
+// actually connected to Scrob" question hasSession() already answers for
+// this plugin's OWN header button, just surfaced on levende's icon too
+// (which stays visible under levende, unlike our own - see
+// updateHeaderButton() below). Idempotent and cheap to call often: creates
+// the dot once, then just flips its color on every call after.
+function updateLevendeHeaderDot() {
+    var $icon = $('.open--profile.levende')
+
+    if (!levende.isLevendeActive() || !$icon.length) {
+        // Also covers levende getting removed/disabled mid-session
+        // (resetLevendeState()'s own onApplyCallback already calls back
+        // into here via updateHeaderButton()) - nothing left to decorate.
+        $('.scrob-levende-header-dot').remove()
+        return
+    }
+
+    var $dot = $icon.find('.scrob-levende-header-dot')
+    if (!$dot.length) $dot = $('<div class="scrob-levende-header-dot"></div>').appendTo($icon)
+
+    $dot.toggleClass('scrob-levende-header-dot--ok', hasSession())
+}
+
 function updateHeaderButton() {
+    updateLevendeHeaderDot()
+
     if (!hasSession()) {
         removeHeaderButton()
         return
@@ -1657,6 +1685,17 @@ function initLevendeProfilesBridge() {
     // call unconditionally here since it only touches Lampa.Select.show once
     // and no-ops on a repeat call.
     levende.patchProfileSelect()
+
+    // updateLevendeHeaderDot() already re-runs on every real apply
+    // (onApplyCallback above), but that can take up to
+    // APPLY_FALLBACK_DELAY_MS (2s) on a cold load if the real levende
+    // 'state:changed' signal is slow or skipped - and levende's own header
+    // icon needs its own network round-trip (Plugin().start(), ~500ms self-
+    // imposed delay) before it even exists to decorate. Short dedicated
+    // retry so the dot doesn't sit missing for that whole window.
+    ;[500, 1500, 3000].forEach(function (delay) {
+        setTimeout(updateLevendeHeaderDot, delay)
+    })
 
     // If levende was active last session but got removed/disabled since,
     // nothing will ever fire again to correct the persisted flags below -

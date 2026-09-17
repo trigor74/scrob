@@ -6356,7 +6356,31 @@
       if (Lampa.Storage.get(KEYS.OWN_API_KEY, '')) return Lampa.Lang.translate('scrob_auth_status_apikey');
       return '';
     }
+
+    // levende adds its OWN persistent header icon for per-viewer switching
+    // (.open--profile.levende, #user_profile_icon inside) - third-party markup
+    // this plugin doesn't create and doesn't control the render timing of.
+    // Small red/green dot overlaid in its corner - same "is the ACTIVE profile
+    // actually connected to Scrob" question hasSession() already answers for
+    // this plugin's OWN header button, just surfaced on levende's icon too
+    // (which stays visible under levende, unlike our own - see
+    // updateHeaderButton() below). Idempotent and cheap to call often: creates
+    // the dot once, then just flips its color on every call after.
+    function updateLevendeHeaderDot() {
+      var $icon = $('.open--profile.levende');
+      if (!isLevendeActive() || !$icon.length) {
+        // Also covers levende getting removed/disabled mid-session
+        // (resetLevendeState()'s own onApplyCallback already calls back
+        // into here via updateHeaderButton()) - nothing left to decorate.
+        $('.scrob-levende-header-dot').remove();
+        return;
+      }
+      var $dot = $icon.find('.scrob-levende-header-dot');
+      if (!$dot.length) $dot = $('<div class="scrob-levende-header-dot"></div>').appendTo($icon);
+      $dot.toggleClass('scrob-levende-header-dot--ok', hasSession());
+    }
     function updateHeaderButton() {
+      updateLevendeHeaderDot();
       if (!hasSession()) {
         removeHeaderButton();
         return;
@@ -7945,7 +7969,19 @@
       // Badges levende's OWN profile picker rows with a status dot - safe to
       // call unconditionally here since it only touches Lampa.Select.show once
       // and no-ops on a repeat call.
-      patchProfileSelect();
+      patchProfileSelect()
+
+      // updateLevendeHeaderDot() already re-runs on every real apply
+      // (onApplyCallback above), but that can take up to
+      // APPLY_FALLBACK_DELAY_MS (2s) on a cold load if the real levende
+      // 'state:changed' signal is slow or skipped - and levende's own header
+      // icon needs its own network round-trip (Plugin().start(), ~500ms self-
+      // imposed delay) before it even exists to decorate. Short dedicated
+      // retry so the dot doesn't sit missing for that whole window.
+    ;
+      [500, 1500, 3000].forEach(function (delay) {
+        setTimeout(updateLevendeHeaderDot, delay);
+      });
 
       // If levende was active last session but got removed/disabled since,
       // nothing will ever fire again to correct the persisted flags below -
@@ -7971,7 +8007,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Scrob logo prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - gradient colors swap to red when the bridge\n   considers that profile not authorized (misconfigured accsdb pair, or\n   never signed in), the normal purple/pink gradient otherwise. Prepended\n   rather than appended: levende already marks the current profile at the\n   END of the row via a CSS-only "selected" class, no title text involved.\n   No intrinsic width/height on the SVG itself (only viewBox) - without\n   this it falls back to the browser\'s replaced-element default (300x150),\n   dwarfing the row text. */\n.scrob-levende-status-icon {\n  display: inline-block;\n  width: 1em;\n  height: 1.08em;\n  vertical-align: -0.15em;\n  margin-right: 0.35em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* Status dot overlaid on levende\'s OWN header profile icon\n   (.open--profile.levende - third-party markup, not ours). Red when the\n   ACTIVE profile has no working Scrob session, green when it does -\n   plain red/green rather than this plugin\'s own purple/pink branding,\n   as requested: a quick at-a-glance signal distinct from the picker\'s own\n   recolored-logo badge below. position:relative scoped to this one\n   selector so it can\'t affect anything else sharing .head__action. */\n.open--profile.levende {\n  position: relative;\n}\n\n.scrob-levende-header-dot {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 0.55em;\n  height: 0.55em;\n  border-radius: 50%;\n  background: #E05252;\n  box-shadow: 0 0 0 0.12em rgba(0, 0, 0, 0.6);\n  pointer-events: none;\n}\n\n.scrob-levende-header-dot--ok {\n  background: #4CAF50;\n}\n\n/* Scrob logo prepended to a levende profile\'s name in ITS OWN picker\n   (levende-bridge.js) - gradient colors swap to red when the bridge\n   considers that profile not authorized (misconfigured accsdb pair, or\n   never signed in), the normal purple/pink gradient otherwise. Prepended\n   rather than appended: levende already marks the current profile at the\n   END of the row via a CSS-only "selected" class, no title text involved.\n   No intrinsic width/height on the SVG itself (only viewBox) - without\n   this it falls back to the browser\'s replaced-element default (300x150),\n   dwarfing the row text. */\n.scrob-levende-status-icon {\n  display: inline-block;\n  width: 1em;\n  height: 1.08em;\n  vertical-align: -0.15em;\n  margin-right: 0.35em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page templates
