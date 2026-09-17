@@ -666,12 +666,23 @@ function pushExternalWatchedMark(identity, watchedAt, sessionKey) {
 function sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt) {
     api.addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, function () {
         console.log('ScrobTimeline', 'external watched mark sent', identity, watchedAt ? ('watchedAt=' + new Date(watchedAt).toISOString()) : '')
-    }, function (err) {
+    }, function (err, status) {
+        // 409 (upstream dedup, #390) means a WatchEvent already exists for
+        // this title within the server's dedup window - the mark IS recorded,
+        // not lost. Treat like success, not a failure to retry (retrying would
+        // just keep getting the same 409 and end in a false "sync lost" noty).
+        if (status === 409) {
+            console.log('ScrobTimeline', 'external watched mark already recorded (409 dedup)', identity)
+            return
+        }
         console.warn('ScrobTimeline', 'failed to send external watched mark, queued for retry', err)
         enqueueRetry({
             type: 'custom',
             run: function (done, fail) {
-                api.addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, done, fail)
+                api.addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, done, function (e2, s2) {
+                    if (s2 === 409) { done(); return }
+                    fail()
+                })
             }
         })
     })
@@ -835,12 +846,20 @@ function sendPlainManualWatchedMark(identity) {
     var episode = { seriesTmdbId: identity.seriesTmdbId, season: identity.season, episode: identity.episode }
     api.addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, function () {
         console.log('ScrobTimeline', 'manual watched mark sent', identity)
-    }, function (err) {
+    }, function (err, status) {
+        // 409 dedup (upstream #390) - already recorded, not a real failure.
+        if (status === 409) {
+            console.log('ScrobTimeline', 'manual watched mark already recorded (409 dedup)', identity)
+            return
+        }
         console.warn('ScrobTimeline', 'failed to send manual watched mark, queued for retry', err)
         enqueueRetry({
             type: 'custom',
             run: function (done, fail) {
-                api.addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, done, fail)
+                api.addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, done, function (e2, s2) {
+                    if (s2 === 409) { done(); return }
+                    fail()
+                })
             }
         })
     })

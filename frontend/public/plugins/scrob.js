@@ -945,6 +945,13 @@
     // distinction preserved server-side); passed explicitly by the external-
     // player batch backdating path (§5.1.1) so a batch of several episodes gets
     // a real, ordered spread instead of racing each other for "now".
+    // `onFail` receives the HTTP status as its 2nd arg (upstream #390, live audit
+    // 2026-09-18) - `completed:true` without `force:true` now 409s as
+    // "duplicate_watch" when a WatchEvent already exists for this title within
+    // the server's dedup window (min. 5 minutes, user-configurable) instead of
+    // silently succeeding. Callers treat 409 as "already recorded" (a real
+    // success), not a failure to retry - see sendPlainExternalWatchedMark()/
+    // sendPlainManualWatchedMark() (timeline.js) and pushWatched() (lampac-export.js).
     function addHistoryEvent(tmdbId, mediaType, completed, episode, watchedAt, onDone, onFail) {
       var network = new Lampa.Reguest();
       network.timeout(15000);
@@ -965,7 +972,8 @@
         if (json) onDone(json);else onFail();
       }, function (a, c) {
         network.clear();
-        onFail(network.errorDecode(a, c));
+        var status = a && a.status;
+        onFail(network.errorDecode(a, c), status);
       }, JSON.stringify(payload), {
         headers: Object.assign({
           'Content-Type': 'application/json'
@@ -4456,12 +4464,26 @@
     function sendPlainExternalWatchedMark(tmdbId, mediaType, episode, identity, watchedAt) {
       addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, function () {
         console.log('ScrobTimeline', 'external watched mark sent', identity, watchedAt ? 'watchedAt=' + new Date(watchedAt).toISOString() : '');
-      }, function (err) {
+      }, function (err, status) {
+        // 409 (upstream dedup, #390) means a WatchEvent already exists for
+        // this title within the server's dedup window - the mark IS recorded,
+        // not lost. Treat like success, not a failure to retry (retrying would
+        // just keep getting the same 409 and end in a false "sync lost" noty).
+        if (status === 409) {
+          console.log('ScrobTimeline', 'external watched mark already recorded (409 dedup)', identity);
+          return;
+        }
         console.warn('ScrobTimeline', 'failed to send external watched mark, queued for retry', err);
         enqueueRetry({
           type: 'custom',
           run: function run(done, fail) {
-            addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, done, fail);
+            addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, done, function (e2, s2) {
+              if (s2 === 409) {
+                done();
+                return;
+              }
+              fail();
+            });
           }
         });
       });
@@ -4638,12 +4660,23 @@
       };
       addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, function () {
         console.log('ScrobTimeline', 'manual watched mark sent', identity);
-      }, function (err) {
+      }, function (err, status) {
+        // 409 dedup (upstream #390) - already recorded, not a real failure.
+        if (status === 409) {
+          console.log('ScrobTimeline', 'manual watched mark already recorded (409 dedup)', identity);
+          return;
+        }
         console.warn('ScrobTimeline', 'failed to send manual watched mark, queued for retry', err);
         enqueueRetry({
           type: 'custom',
           run: function run(done, fail) {
-            addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, done, fail);
+            addHistoryEvent(identity.seriesTmdbId, 'episode', true, episode, null, done, function (e2, s2) {
+              if (s2 === 409) {
+                done();
+                return;
+              }
+              fail();
+            });
           }
         });
       });
@@ -5691,10 +5724,15 @@
         season: identity.season,
         episode: identity.episode
       } : null;
+      // 409 (upstream dedup, #390) means Scrob already has a WatchEvent for
+      // this title within its own dedup window - our own pre-check above
+      // (getBatchWatchStatus) didn't catch it (a different source's recent
+      // write, or a duplicate within this same import), but the end result is
+      // the same as a normal success: it's marked watched in Scrob either way.
       addHistoryEvent(tmdbId, mediaType, true, episode, null, function () {
         callback(true);
-      }, function () {
-        callback(false);
+      }, function (err, status) {
+        callback(status === 409);
       });
     }
     function pushProgress(identity, timeSeconds, runtimeMinutes, callback) {

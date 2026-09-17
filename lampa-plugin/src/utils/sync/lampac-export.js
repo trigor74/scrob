@@ -301,7 +301,12 @@ function pushWatched(identity, callback) {
     var episode = identity.isSeries
         ? { seriesTmdbId: identity.seriesTmdbId, season: identity.season, episode: identity.episode }
         : null
-    api.addHistoryEvent(tmdbId, mediaType, true, episode, null, function () { callback(true) }, function () { callback(false) })
+    // 409 (upstream dedup, #390) means Scrob already has a WatchEvent for
+    // this title within its own dedup window - our own pre-check above
+    // (getBatchWatchStatus) didn't catch it (a different source's recent
+    // write, or a duplicate within this same import), but the end result is
+    // the same as a normal success: it's marked watched in Scrob either way.
+    api.addHistoryEvent(tmdbId, mediaType, true, episode, null, function () { callback(true) }, function (err, status) { callback(status === 409) })
 }
 
 function pushProgress(identity, timeSeconds, runtimeMinutes, callback) {
