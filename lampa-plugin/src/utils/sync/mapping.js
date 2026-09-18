@@ -1,7 +1,8 @@
 // Scrob sync — category mapping between Lampa favorite keys and Scrob list names.
 // Canonical list names are static English, never translated.
 // Universal rule: any other array key → '[Lampa] ' + Capitalized(key).
-// Excluded from iteration: card, thrown (§5.3.2 - separate mechanism, below).
+// Excluded from iteration: card, thrown (§5.3.2 - separate mechanism, below),
+// watch (see note right below CANONICAL).
 //
 // `history` (SYNC-ARCHITECTURE-PLAN.md §5.3.1) is Lampa's own recently-
 // opened-cards playlist (Favorite.add('history', card, 100), capped
@@ -35,8 +36,19 @@ var CANONICAL = {
     viewed:    '[Lampa] Viewed'
 }
 
+// `watch` (with "ch", distinct from `wath`) is a dead/unused category - the
+// real Lampa client (web/Android) never writes to it, only reads/writes
+// `wath`. lampac's own BookmarkController.cs's EnsureDefaultArrays() force-
+// includes it (an empty array) in EVERY /bookmark/list response regardless,
+// and bookmark.js overwrites local Lampa.Storage 'favorite' wholesale with
+// that response - so `favorite.watch = []` shows up for any lampac user,
+// and the generic list-sync below (syncableKeys()'s "any array key" rule)
+// dutifully mirrored it up as a useless "[Lampa] Watch" list on Scrob (found
+// live 2026-09-19, lists.md). Excluded here so it's silently ignored, same
+// as `card`.
+//
 // Keys excluded from sync iteration
-var EXCLUDED = { card: true, thrown: true }
+var EXCLUDED = { card: true, thrown: true, watch: true }
 
 // Mark categories — mutually exclusive statuses (section 13, point 3)
 var MARK_KEYS = ['scheduled', 'continued', 'thrown', 'look', 'viewed']
