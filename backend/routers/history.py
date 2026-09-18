@@ -2500,6 +2500,56 @@ async def get_item_events(
     }
 
 
+# ---------------------------------------------------------------------------
+# watch_event.created/.deleted socket helpers (SYNC-ARCHITECTURE-PLAN.md §5.7,
+# Фаза 5 design point 2). `mark_as_watched()` above already emits
+# watch_event.created inline (its own Media row is already loaded there) -
+# these two cover every OTHER endpoint that adds/removes a WatchEvent, none
+# of which had a Media row loaded at their own emit point.
+# ---------------------------------------------------------------------------
+
+
+async def _emit_watch_event_item(db: AsyncSession, current_user: User, event_type: str, media_id: int, **extra) -> None:
+    """One event for a single-item action (delete_single_event/unwatch_item/
+    start_rewatch/cancel_rewatch - each touches exactly one show's worth of
+    state at a time, even though cancel/start_rewatch don't create or delete
+    a WatchEvent row themselves - see the design note above each call site).
+    `extra` merges into the payload (e.g. watch_event_id, watched_at, completed)."""
+    media_q = await db.execute(select(Media).where(Media.id == media_id))
+    media = media_q.scalar_one_or_none()
+    if not media:
+        return
+    from core.socket.manager import socket_manager
+    payload = {
+        "media_id": media.id,
+        "media_tmdb_id": media.tmdb_id,
+        "media_type": media.media_type,
+        "media_title": media.title,
+    }
+    payload.update(extra)
+    await socket_manager.emit(username=current_user.username, event_type=event_type, payload=payload)
+
+
+async def _emit_watch_event_bulk(current_user: User, event_type: str, scope: str, count: int | None, **extra) -> None:
+    """One event per ACTION, not one per WatchEvent row, for an endpoint that
+    can touch dozens-hundreds of rows at once (mark/unwatch a whole season or
+    show, clear_history) - avoids a socket-event storm on a large show.
+    `count=None` (start_rewatch/cancel_rewatch - neither creates nor deletes
+    an actual WatchEvent row, just changes which cycle existing ones read
+    against, see the design note at each call site) always emits, since there
+    is no real row count to gate on; `count=0` for the others means nothing
+    actually changed and is skipped. `extra` carries whatever identifies the
+    scope (series_tmdb_id, season_number, ...)."""
+    if count is not None and count <= 0:
+        return
+    from core.socket.manager import socket_manager
+    payload = {"scope": scope}
+    if count is not None:
+        payload["count"] = count
+    payload.update(extra)
+    await socket_manager.emit(username=current_user.username, event_type=event_type, payload=payload)
+
+
 @router.delete("/event/{event_id}")
 async def delete_single_event(
     event_id: int,
@@ -2536,6 +2586,7 @@ async def delete_single_event(
     if remaining.scalar() == 0:
         await _push_watch_state(db, current_user.id, [media_id], watched=False)
 
+    await _emit_watch_event_item(db, current_user, "watch_event.deleted", media_id, watch_event_id=event_id)
     return {"status": "ok"}
 
 
@@ -2550,11 +2601,12 @@ async def clear_history(
     # WatchEvent and would otherwise survive a full clear, stuck at 0
     # progress forever with nothing left to progress it.
     await db.execute(delete(ShowRewatch).where(ShowRewatch.user_id == current_user.id))
-    await db.execute(delete(WatchEvent).where(WatchEvent.user_id == current_user.id))
+    result = await db.execute(delete(WatchEvent).where(WatchEvent.user_id == current_user.id))
     # Continue Watching is sourced from PlaybackProgress, not WatchEvent -
     # without this, in-progress items kept showing up there after a clear.
     await db.execute(delete(PlaybackProgress).where(PlaybackProgress.user_id == current_user.id))
     await db.commit()
+    await _emit_watch_event_bulk(current_user, "watch_event.deleted", "all", result.rowcount)
     return {"status": "ok", "message": "Watch history cleared"}
 
 
@@ -2582,6 +2634,7 @@ async def unwatch_item(
     )
     await db.commit()
     await _push_watch_state(db, current_user.id, [media.id], watched=False)
+    await _emit_watch_event_item(db, current_user, "watch_event.deleted", media.id)
     return {"status": "ok"}
 
 
@@ -2821,6 +2874,10 @@ async def mark_season_watched(
             await record_rewatch_progress(db, current_user.id, event.media_id, event.id)
         await db.commit()
     await _push_watch_state(db, current_user.id, newly_watched, watched=True)
+    await _emit_watch_event_bulk(
+        current_user, "watch_event.created", "season", len(newly_watched),
+        series_tmdb_id=body.series_tmdb_id, season_number=body.season_number,
+    )
     return {"status": "ok", "count": len(newly_watched)}
 
 
@@ -2876,6 +2933,10 @@ async def unwatch_season(
     )
     await db.commit()
     await _push_watch_state(db, current_user.id, episode_ids, watched=False)
+    await _emit_watch_event_bulk(
+        current_user, "watch_event.deleted", "season", result.rowcount,
+        series_tmdb_id=series_tmdb_id, season_number=season_number,
+    )
     return {"status": "ok", "count": result.rowcount}
 
 
@@ -3128,6 +3189,10 @@ async def mark_show_watched(
             await record_rewatch_progress(db, current_user.id, event.media_id, event.id)
         await db.commit()
     await _push_watch_state(db, current_user.id, all_newly_watched_ids, watched=True)
+    await _emit_watch_event_bulk(
+        current_user, "watch_event.created", "show", len(all_newly_watched_ids),
+        series_tmdb_id=body.series_tmdb_id,
+    )
     return {"status": "ok", "count": len(all_newly_watched_ids)}
 
 
@@ -3167,6 +3232,10 @@ async def unwatch_show(
     )
     await db.commit()
     await _push_watch_state(db, current_user.id, episode_ids, watched=False)
+    await _emit_watch_event_bulk(
+        current_user, "watch_event.deleted", "show", result.rowcount,
+        series_tmdb_id=series_tmdb_id,
+    )
     return {"status": "ok", "count": result.rowcount}
 
 
@@ -3208,6 +3277,17 @@ async def start_rewatch(
                 )
             )
         await db.commit()
+        # No WatchEvent row is touched by a rewatch cycle (see the docstring
+        # above) - it just changes which cycle existing rows are read
+        # against, making the targeted season/episode read as unwatched
+        # again. Reusing watch_event.deleted (not .created) reflects that
+        # observable effect, not a literal row deletion (§5.7 design point 2,
+        # corrected 2026-09-18 - the original spec had this and
+        # cancel_rewatch's categorization backwards).
+        await _emit_watch_event_bulk(
+            current_user, "watch_event.deleted", "show", None,
+            series_tmdb_id=series_tmdb_id, season_number=season_number, episode_number=episode_number,
+        )
         return {"status": "ok", "started_at": rewatch.started_at.isoformat(), "updated": True}
 
     if existing:
@@ -3248,6 +3328,12 @@ async def start_rewatch(
 
     await db.commit()
     await db.refresh(rewatch)
+    # Same reasoning as the "updated" branch above - watch_event.deleted
+    # reflects "this scope now reads as unwatched", not a real row delete.
+    await _emit_watch_event_bulk(
+        current_user, "watch_event.deleted", "show", None,
+        series_tmdb_id=series_tmdb_id, season_number=season_number, episode_number=episode_number,
+    )
     return {"status": "ok", "started_at": rewatch.started_at.isoformat()}
 
 
@@ -3271,6 +3357,11 @@ async def cancel_rewatch(
 
     await db.execute(delete(ShowRewatch).where(ShowRewatch.id == existing.id))
     await db.commit()
+    # Opposite of start_rewatch's reasoning above: cancelling makes the show
+    # go back to reading watched status from full history - previously-
+    # "unwatched-for-this-cycle" episodes read as watched again. That's the
+    # watch_event.created side, even though no row is actually created.
+    await _emit_watch_event_bulk(current_user, "watch_event.created", "show", None, series_tmdb_id=series_tmdb_id)
     return {"status": "ok", "cancelled": True}
 
 
@@ -3634,13 +3725,23 @@ async def auto_complete_manual_sessions(db: AsyncSession) -> None:
     """Complete any manual sessions where enough time has elapsed since the last heartbeat."""
     now = datetime.utcnow()
     result = await db.execute(
-        select(PlaybackSession, Media)
+        select(PlaybackSession, Media, User)
         .join(Media, Media.id == PlaybackSession.media_id)
+        # socket_manager.emit() takes a username, not a user_id (manager.py) -
+        # this query previously had no User row at all to get one from
+        # (SYNC-ARCHITECTURE-PLAN.md §5.7, Фаза 5 design point 1).
+        .join(User, User.id == PlaybackSession.user_id)
         .where(PlaybackSession.source == "manual", PlaybackSession.state == "playing")
     )
-    completed: list[tuple[int, int]] = []  # (user_id, media_id)
-    new_events: list[WatchEvent] = []
-    for session, media in result.all():
+    # One entry per session that actually ended here, whichever way (real
+    # WatchEvent, or the dedup branch below finding a recent duplicate) -
+    # `event` is None for the dedup case. Kept as one list (not split, unlike
+    # the two loops below over `completed`/deduped ids) specifically so the
+    # final playback_session.completed emit never has to re-associate a
+    # user/session/event after the fact.
+    ended: list[tuple[User, int, str, WatchEvent | None]] = []  # (user, media_id, session_key, event)
+    any_new_event = False
+    for session, media, user in result.all():
         # Only finalize a session the client itself reported as essentially
         # finished (last heartbeat >= 90%). Never drop a session just because
         # wall-clock time elapsed since the last heartbeat — that wrongly
@@ -3658,6 +3759,7 @@ async def auto_complete_manual_sessions(db: AsyncSession) -> None:
         )
         window_minutes = await get_dedup_window_minutes(db, session.user_id)
         if await find_duplicate_watch_event(db, session.user_id, session.media_id, now, window_minutes) is not None:
+            ended.append((user, session.media_id, session.session_key, None))
             continue
         event = WatchEvent(
             user_id=session.user_id,
@@ -3668,15 +3770,54 @@ async def auto_complete_manual_sessions(db: AsyncSession) -> None:
             progress_percent=1.0,
         )
         db.add(event)
-        new_events.append(event)
-        completed.append((session.user_id, session.media_id))
-    if completed:
+        any_new_event = True
+        ended.append((user, session.media_id, session.session_key, event))
+    if ended:
         await db.commit()
-        for event in new_events:
-            await record_rewatch_progress(db, event.user_id, event.media_id, event.id)
+    if any_new_event:
+        for _user, media_id, _session_key, event in ended:
+            if event is not None:
+                await record_rewatch_progress(db, event.user_id, media_id, event.id)
         await db.commit()
-        for user_id, media_id in completed:
-            await _push_watch_state(db, user_id, [media_id], watched=True)
+        for user, media_id, _session_key, event in ended:
+            if event is not None:
+                await _push_watch_state(db, user.id, [media_id], watched=True)
+    for user, media_id, session_key, event in ended:
+        await _emit_playback_completed(db, user.username, session_key, media_id, event.id if event else None)
+
+
+async def _emit_playback_completed(db: AsyncSession, username: str, session_key: str, media_id: int, watch_event_id: int | None) -> None:
+    """playback_session.completed (SYNC-ARCHITECTURE-PLAN.md §5.7, Фаза 5
+    design point 1) - same payload shape as the already-live
+    playback_session.started (start_manual_session() above). Emitted from
+    BOTH branches that can end a session here - a real completion
+    (watch_event_id set) and the dedup branch (find_duplicate_watch_event()
+    in complete_manual_session()/auto_complete_manual_sessions() - no new
+    WatchEvent, watch_event_id is None) - the PlaybackSession is gone either
+    way, so "not playing anymore" still needs telling to other devices.
+    Neither caller has a loaded Media row at its own emit point, so this
+    always re-fetches one - the small extra query is cheap next to the
+    round-trip this event already causes for every connected device."""
+    media_q = await db.execute(select(Media).where(Media.id == media_id))
+    media = media_q.scalar_one_or_none()
+    if not media:
+        return
+    from core.socket.manager import socket_manager
+    await socket_manager.emit(
+        username=username,
+        event_type="playback_session.completed",
+        payload={
+            "session_key": session_key,
+            "media_id": media.id,
+            "media_tmdb_id": media.tmdb_id,
+            "media_type": media.media_type,
+            "media_title": media.title,
+            "state": "completed",
+            "progress_percent": 1.0,
+            "source": "manual",
+            "watch_event_id": watch_event_id,
+        },
+    )
 
 
 @router.post("/session/{session_key}/complete")
@@ -3709,6 +3850,9 @@ async def complete_manual_session(
     window_minutes = await get_dedup_window_minutes(db, current_user.id)
     if await find_duplicate_watch_event(db, current_user.id, media_id, now, window_minutes) is not None:
         await db.commit()
+        # Session's still gone even though no new WatchEvent was created -
+        # other devices need to know playback ended here regardless.
+        await _emit_playback_completed(db, current_user.username, session_key, media_id, None)
         return {"status": "ok"}
 
     event = WatchEvent(
@@ -3726,6 +3870,7 @@ async def complete_manual_session(
     await db.commit()
 
     await _push_watch_state(db, current_user.id, [media_id], watched=True)
+    await _emit_playback_completed(db, current_user.username, session_key, media_id, event.id)
     return {"status": "ok"}
 
 

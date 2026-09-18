@@ -285,7 +285,7 @@ class StartAndCancelRewatchEndpointTests(unittest.IsolatedAsyncioTestCase):
         show = Show(id=55, tmdb_id=100, title="Test Show")
         existing = ShowRewatch(id=42, user_id=1, show_id=55)
         db = _FakeSession([show, existing])
-        response = await history.cancel_rewatch(series_tmdb_id=100, db=db, current_user=SimpleNamespace(id=1))
+        response = await history.cancel_rewatch(series_tmdb_id=100, db=db, current_user=SimpleNamespace(id=1, username="tester"))
         self.assertEqual(response, {"status": "ok", "cancelled": True})
         self.assertEqual(db._deleted_show_rewatch_ids(), {42})
 

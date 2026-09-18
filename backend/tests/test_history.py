@@ -297,7 +297,7 @@ class MarkSeasonWatchedDateTests(unittest.IsolatedAsyncioTestCase):
             patch("routers.history._push_watch_state", new_callable=AsyncMock),
         ):
             body = history.SeasonWatchRequest(series_tmdb_id=100, season_number=1, **watched_at_kwargs)
-            response = await history.mark_season_watched(body, db, SimpleNamespace(id=7))
+            response = await history.mark_season_watched(body, db, SimpleNamespace(id=7, username="tester"))
         event = next(v for v in db.added if isinstance(v, WatchEvent))
         return response, event
 
@@ -339,7 +339,7 @@ class MarkShowWatchedDateTests(unittest.IsolatedAsyncioTestCase):
             patch("routers.history._push_watch_state", new_callable=AsyncMock),
         ):
             body = history.ShowWatchRequest(series_tmdb_id=100, **watched_at_kwargs)
-            response = await history.mark_show_watched(body, db, SimpleNamespace(id=7))
+            response = await history.mark_show_watched(body, db, SimpleNamespace(id=7, username="tester"))
         event = next(v for v in db.added if isinstance(v, WatchEvent))
         return response, event
 
@@ -604,8 +604,13 @@ class ClearHistoryTests(unittest.IsolatedAsyncioTestCase):
         # a full clear must reset it too, or finished/cleared items keep
         # showing up there as if still in progress.
         db = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock())
+        # SYNC-ARCHITECTURE-PLAN.md §5.7: clear_history() now reads
+        # result.rowcount for the bulk watch_event.deleted emit - a bare
+        # AsyncMock() return value doesn't support the `<= 0` comparison in
+        # _emit_watch_event_bulk.
+        db.execute.return_value.rowcount = 3
 
-        await history.clear_history(db=db, current_user=SimpleNamespace(id=7))
+        await history.clear_history(db=db, current_user=SimpleNamespace(id=7, username="tester"))
 
         tables_deleted = {
             call.args[0].table.name for call in db.execute.call_args_list
