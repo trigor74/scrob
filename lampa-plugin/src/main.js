@@ -1188,7 +1188,11 @@ function startLampacExport() {
         return
     }
 
-    Lampa.Loading.start(function () { Lampa.Loading.stop() })
+    // Lampa.Loading.setText()/setProgress() (real core API, app.min.js's own
+    // Loading module) update the same text line the spinner already shows -
+    // a bare start()/stop() with no text left the user unable to tell a big
+    // library export apart from a stuck spinner (live feedback 2026-09-18).
+    Lampa.Loading.start(function () { Lampa.Loading.stop() }, Lampa.Lang.translate('scrob_lampac_export_progress_start'))
     lampacExport.run(function (result) {
         Lampa.Loading.stop()
 
@@ -1203,6 +1207,10 @@ function startLampacExport() {
             .replace('%skipped%', result.skipped)
             .replace('%thrown%', result.listsThrown)
         Lampa.Noty.show(text)
+    }, function (stage, current, total) {
+        var percent = total ? Math.round(current / total * 100) : 0
+        var label = Lampa.Lang.translate(stage === 'timecodes' ? 'scrob_lampac_export_progress_timecodes' : 'scrob_lampac_export_progress_uploading')
+        Lampa.Loading.setProgress(percent, label + ': ' + current + '/' + total)
     })
 }
 

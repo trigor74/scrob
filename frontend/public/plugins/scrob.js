@@ -268,6 +268,24 @@
           en: 'lampac export done. Watched: %watched%, in progress: %progress%, skipped (already in Scrob): %skipped%, dropped: %thrown%',
           be: 'Экспарт з lampac завершаны. Прагледжана: %watched%, прагрэс: %progress%, прапушчана (ужо ёсць): %skipped%, кінута: %thrown%'
         },
+        scrob_lampac_export_progress_start: {
+          uk: 'Підготовка експорту...',
+          ru: 'Подготовка экспорта...',
+          en: 'Preparing export...',
+          be: 'Падрыхтоўка экспарту...'
+        },
+        scrob_lampac_export_progress_timecodes: {
+          uk: 'Зчитування таймкодів',
+          ru: 'Считывание таймкодов',
+          en: 'Reading timecodes',
+          be: 'Счытванне таймкодаў'
+        },
+        scrob_lampac_export_progress_uploading: {
+          uk: 'Завантаження в Scrob',
+          ru: 'Загрузка в Scrob',
+          en: 'Uploading to Scrob',
+          be: 'Загрузка ў Scrob'
+        },
         scrob_sync_conflict_gramsync: {
           uk: 'Увімкнений GramSync — можливі конфлікти',
           ru: 'Включён GramSync — возможны конфликты',
@@ -5635,10 +5653,14 @@
 
     // Small fixed-size concurrency pool - mirrors the external-player batch's
     // own "don't hammer the network" reasoning (§5.1.1), here against lampac's
-    // server instead of Scrob's.
-    function runPool(items, size, worker, onDone) {
+    // server instead of Scrob's. `onProgress(done, total)` - optional - fires
+    // after each item settles, regardless of order (concurrency 5, so item 3
+    // can finish before item 1) - only the running count is meaningful here,
+    // not which specific item just completed.
+    function runPool(items, size, worker, onDone, onProgress) {
       var index = 0;
       var active = 0;
+      var done = 0;
       var results = new Array(items.length);
       function launchNext() {
         if (index >= items.length) {
@@ -5650,6 +5672,8 @@
         worker(items[i], function (result) {
           results[i] = result;
           active--;
+          done++;
+          if (onProgress) onProgress(done, items.length);
           launchNext();
         });
       }
@@ -5778,7 +5802,7 @@
         callback(false);
       });
     }
-    function pushSequential(items, index, counters, onDone) {
+    function pushSequential(items, index, counters, onDone, onProgress) {
       if (index >= items.length) {
         onDone(counters);
         return;
@@ -5786,8 +5810,9 @@
       var item = items[index];
       var runtimeMinutes = item.duration > 0 ? Math.round(item.duration / 60) : null;
       function next() {
+        if (onProgress) onProgress(index + 1, items.length);
         setTimeout(function () {
-          pushSequential(items, index + 1, counters, onDone);
+          pushSequential(items, index + 1, counters, onDone, onProgress);
         }, PUSH_PAUSE_MS);
       }
       if (item.percent >= WATCHED_THRESHOLD_PERCENT) {
@@ -5808,7 +5833,12 @@
     // `onDone(result)` — result: { listsThrown, watched, progress, skipped, cardsScanned, error }
     // `error` set only when the export couldn't run at all (no session/sync off);
     // a partial/empty result from real attempts is NOT an error.
-    function run(onDone) {
+    // `onProgress(stage, current, total)` — optional, `stage` is 'timecodes'
+    // (runPool over the local card pool) or 'uploading' (pushSequential over the
+    // deduped batch) - the only two multi-step, genuinely slow parts (§5.6,
+    // progress-bar follow-up 2026-09-18: a bare spinner gave no sense of whether
+    // a big library export was still working or stuck).
+    function run(onDone, onProgress) {
       if (running) return;
       if (!hasSyncRunning()) {
         onDone({
@@ -5856,16 +5886,18 @@
         }
         var statusPool = buildBatchStatusPool(candidates);
         getBatchWatchStatus(statusPool, function (rows) {
-          finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone);
+          finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone, onProgress);
         }, function () {
           // Dedup lookup failed - proceed without it rather than dropping
           // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
           // apply here: worst case is a few redundant writes, not silence).
-          finishExport(candidates, {}, listsThrown, cards.length, onDone);
+          finishExport(candidates, {}, listsThrown, cards.length, onDone, onProgress);
         });
+      }, function (done, total) {
+        if (onProgress) onProgress('timecodes', done, total);
       });
     }
-    function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone) {
+    function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone, onProgress) {
       var toPush = [];
       var skipped = 0;
       for (var i = 0; i < candidates.length; i++) {
@@ -5888,6 +5920,8 @@
           skipped: skipped,
           cardsScanned: cardsScanned
         });
+      }, function (done, total) {
+        if (onProgress) onProgress('uploading', done, total);
       });
     }
     function hasSyncRunning() {
@@ -7074,9 +7108,14 @@
         Lampa.Noty.show(Lampa.Lang.translate('scrob_lampac_export_need_session'));
         return;
       }
+
+      // Lampa.Loading.setText()/setProgress() (real core API, app.min.js's own
+      // Loading module) update the same text line the spinner already shows -
+      // a bare start()/stop() with no text left the user unable to tell a big
+      // library export apart from a stuck spinner (live feedback 2026-09-18).
       Lampa.Loading.start(function () {
         Lampa.Loading.stop();
-      });
+      }, Lampa.Lang.translate('scrob_lampac_export_progress_start'));
       run(function (result) {
         Lampa.Loading.stop();
         if (result.error) {
@@ -7085,6 +7124,10 @@
         }
         var text = Lampa.Lang.translate('scrob_lampac_export_done').replace('%watched%', result.watched).replace('%progress%', result.progress).replace('%skipped%', result.skipped).replace('%thrown%', result.listsThrown);
         Lampa.Noty.show(text);
+      }, function (stage, current, total) {
+        var percent = total ? Math.round(current / total * 100) : 0;
+        var label = Lampa.Lang.translate(stage === 'timecodes' ? 'scrob_lampac_export_progress_timecodes' : 'scrob_lampac_export_progress_uploading');
+        Lampa.Loading.setProgress(percent, label + ': ' + current + '/' + total);
       });
     }
 

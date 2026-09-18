@@ -261,6 +261,24 @@ export default function addLang() {
             en: 'lampac export done. Watched: %watched%, in progress: %progress%, skipped (already in Scrob): %skipped%, dropped: %thrown%',
             be: 'Экспарт з lampac завершаны. Прагледжана: %watched%, прагрэс: %progress%, прапушчана (ужо ёсць): %skipped%, кінута: %thrown%'
         },
+        scrob_lampac_export_progress_start: {
+            uk: 'Підготовка експорту...',
+            ru: 'Подготовка экспорта...',
+            en: 'Preparing export...',
+            be: 'Падрыхтоўка экспарту...'
+        },
+        scrob_lampac_export_progress_timecodes: {
+            uk: 'Зчитування таймкодів',
+            ru: 'Считывание таймкодов',
+            en: 'Reading timecodes',
+            be: 'Счытванне таймкодаў'
+        },
+        scrob_lampac_export_progress_uploading: {
+            uk: 'Завантаження в Scrob',
+            ru: 'Загрузка в Scrob',
+            en: 'Uploading to Scrob',
+            be: 'Загрузка ў Scrob'
+        },
         scrob_sync_conflict_gramsync: {
             uk: 'Увімкнений GramSync — можливі конфлікти',
             ru: 'Включён GramSync — возможны конфликты',
