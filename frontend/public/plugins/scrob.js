@@ -5531,6 +5531,21 @@
     SETTINGS_DEFAULTS[KEYS.PREFETCH_LIKE] = false;
     SETTINGS_DEFAULTS[KEYS.PREFETCH_WATH] = false;
 
+    // utils/sync/custom.js's own custom-category registry (which named custom
+    // Favorite categories exist, plus their display titles - drives real UI:
+    // left-menu items and a bookmarks ContentRow). Its own storage key is a
+    // single flat 'scrob_custom_categories', not scoped by anything - unlike
+    // mapstore.js/mirror.js (both already keyed off ACTIVE_PROFILE_ID, see the
+    // comment above its own set() call in doApplyUnsafe() below), so without
+    // this it leaks one levende profile's custom category names into every
+    // other profile's menu/bookmarks. Backed up/restored for BOTH situations B
+    // and C, same rationale as SETTINGS_FIELDS above - this is account data
+    // with no accsdb-provided source of truth to re-apply fresh from either.
+    // Kept separate from SETTINGS_FIELDS itself since its value is a JSON
+    // array, not a boolean - restoreSettingsFields()'s own boolean-specific
+    // restore logic doesn't apply here.
+    var CUSTOM_CATEGORIES_KEY = 'scrob_custom_categories';
+
     // Staged by stageProfile() on 'profile'/'changed', consumed by whichever
     // fires first: the real 'state:changed' signal (applyPendingProfile(), called
     // from main.js) or the fallback timer armed alongside it.
@@ -5607,7 +5622,7 @@
     function backupProfile(profileId) {
       var store = getBackupStore();
       var snapshot = {};
-      BACKUP_FIELDS.concat(SETTINGS_FIELDS).forEach(function (field) {
+      BACKUP_FIELDS.concat(SETTINGS_FIELDS).concat([CUSTOM_CATEGORIES_KEY]).forEach(function (field) {
         snapshot[field] = Lampa.Storage.get(field, '');
       });
       store[profileId] = snapshot;
@@ -5634,6 +5649,17 @@
       });
     }
 
+    // Restores CUSTOM_CATEGORIES_KEY from profileId's own snapshot, defaulting
+    // to an empty registry ('[]', matching storage.js's own DEFAULTS convention
+    // for other JSON-array-shaped keys) when there is none yet - same
+    // "restore-or-clean-default" shape as restoreProfile() below. Called
+    // alongside restoreSettingsFields() in both situations (B and C) - see
+    // CUSTOM_CATEGORIES_KEY's own comment above for why.
+    function restoreCustomCategories(profileId) {
+      var snapshot = getBackupStore()[profileId] || {};
+      Lampa.Storage.set(CUSTOM_CATEGORIES_KEY, snapshot[CUSTOM_CATEGORIES_KEY] || '[]');
+    }
+
     // Restores profileId's own backed-up snapshot, or resets every field to
     // empty if this levende profile has never signed in to Scrob before (first
     // visit) - the same "restore-or-clean-default" shape as this plugin's own
@@ -5644,6 +5670,7 @@
         Lampa.Storage.set(field, snapshot[field] || '');
       });
       restoreSettingsFields(profileId);
+      restoreCustomCategories(profileId);
     }
 
     // Actually switches credentials for `profile` (an object shaped like what
@@ -5749,9 +5776,11 @@
         // off ACTIVE_PROFILE_ID already).
         Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId);
         // Credentials come from accsdb, not a backup - but the prefetch
-        // candidate-list settings still need their own per-profile restore
-        // (see SETTINGS_FIELDS above).
+        // candidate-list settings and the custom-category registry still
+        // need their own per-profile restore (see SETTINGS_FIELDS and
+        // CUSTOM_CATEGORIES_KEY above).
         restoreSettingsFields(profile.profileId);
+        restoreCustomCategories(profile.profileId);
       } else {
         restoreProfile(profile.profileId);
       }
@@ -8073,9 +8102,17 @@
       // or from levende-bridge.js's own fallback timer (see its module comment -
       // that signal can be delayed or skipped by levende entirely) - registering
       // this callback covers both paths with a single UI refresh point.
+      // refreshCustomMenu() included - levende-bridge.js's own CUSTOM_CATEGORIES_KEY
+      // isolation swaps the underlying scrob_custom_categories storage on every
+      // apply, but the left-menu items it drives are actual DOM elements that
+      // only custom.js's own registerBookmarksRows()/patchCardMenu() re-read
+      // eagerly (per-render) - the persistent menu itself only re-renders when
+      // told to, otherwise it'd keep showing the outgoing profile's categories
+      // until an unrelated refresh (e.g. a full reload) happened to call this.
       setOnApply(function () {
         updateHeaderButton();
         refreshSettings();
+        refreshCustomMenu();
       });
 
       // Badges levende's OWN profile picker rows with a status dot - safe to

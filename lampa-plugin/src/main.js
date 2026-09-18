@@ -1688,9 +1688,17 @@ function initLevendeProfilesBridge() {
     // or from levende-bridge.js's own fallback timer (see its module comment -
     // that signal can be delayed or skipped by levende entirely) - registering
     // this callback covers both paths with a single UI refresh point.
+    // refreshCustomMenu() included - levende-bridge.js's own CUSTOM_CATEGORIES_KEY
+    // isolation swaps the underlying scrob_custom_categories storage on every
+    // apply, but the left-menu items it drives are actual DOM elements that
+    // only custom.js's own registerBookmarksRows()/patchCardMenu() re-read
+    // eagerly (per-render) - the persistent menu itself only re-renders when
+    // told to, otherwise it'd keep showing the outgoing profile's categories
+    // until an unrelated refresh (e.g. a full reload) happened to call this.
     levende.setOnApply(function () {
         updateHeaderButton()
         refreshSettings()
+        refreshCustomMenu()
     })
 
     // Badges levende's OWN profile picker rows with a status dot - safe to
