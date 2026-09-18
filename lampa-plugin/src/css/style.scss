@@ -114,3 +114,43 @@
     margin: 0.6em auto 0;
     word-break: break-all;
 }
+
+/* "Останній переглянутий епізод" бейдж на повній картці серіалу */
+.full-start-new__details.scrob-last-episode {
+    display: flex;
+    align-items: center;
+    color: #fff;
+}
+
+.scrob-last-episode__icon {
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-right: 0.5em;
+}
+
+.scrob-last-episode__icon svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.scrob-last-episode__new {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.7em;
+    color: #C147D8;
+    font-weight: 600;
+}
+
+.scrob-last-episode__dot {
+    width: 0.5em;
+    height: 0.5em;
+    border-radius: 50%;
+    background: #C147D8;
+    margin-right: 0.4em;
+    flex-shrink: 0;
+}
