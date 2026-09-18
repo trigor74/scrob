@@ -120,9 +120,11 @@ All messages are JSON objects:
 
 | Event | Description |
 |---|---|
-| `watch_event.created` | New watch/history entry |
+| `watch_event.created` | New watch/history entry (single item), or a bulk mark/rewatch-cancel action |
 | `watch_event.updated` | Watch entry updated (progress) |
-| `watch_event.deleted` | Watch entry deleted |
+| `watch_event.deleted` | Watch entry deleted (single item), or a bulk unwatch/clear/rewatch-start action |
+
+Single-item mark (`POST /history`):
 
 ```json
 {
@@ -134,12 +136,28 @@ All messages are JSON objects:
     "media_type": "movie",
     "media_title": "Inception",
     "watched_at": "2026-08-30T12:00:00Z",
-    "completed": true,
-    "progress_percent": 1.0,
-    "play_count": 1
+    "completed": true
   }
 }
 ```
+
+Other single-item endpoints (`DELETE /history/event/{id}`, `DELETE /history/item`) carry the same shape, minus `watched_at`/`completed` and with a `watch_event_id` in place of `id` where the endpoint itself doesn't load a full `WatchEvent` row.
+
+Bulk actions (`POST/DELETE /history/season`, `POST/DELETE /history/show-all`, `DELETE /history`, `POST/DELETE /history/rewatch`) emit **one event per action, not one per row** - large shows/seasons/full-history clears would otherwise storm the socket with dozens-hundreds of individual events for one user action:
+
+```json
+{
+  "type": "watch_event.created",
+  "payload": {
+    "scope": "season",
+    "count": 10,
+    "series_tmdb_id": 1399,
+    "season_number": 2
+  }
+}
+```
+
+`scope` is `"season"` | `"show"` | `"all"`. `count` is omitted for `start_rewatch`/`cancel_rewatch` (they change which cycle existing rows read against - no `WatchEvent` row is actually created or deleted, so there's no row count; the direction reflects the *observable* effect on watched-status instead - see routers/history.py's own comments at each call site).
 
 ### PlaybackSession
 
@@ -168,6 +186,29 @@ All messages are JSON objects:
   }
 }
 ```
+
+`playback_session.completed` (real completion via `POST /session/{key}/complete`, or the background auto-completer for a session left open ≥90% with no explicit `/complete` call):
+
+```json
+{
+  "type": "playback_session.completed",
+  "payload": {
+    "session_key": "manual-123-456",
+    "media_id": 456,
+    "media_tmdb_id": 12345,
+    "media_type": "movie",
+    "media_title": "Inception",
+    "state": "completed",
+    "progress_percent": 1.0,
+    "source": "manual",
+    "watch_event_id": 789
+  }
+}
+```
+
+`watch_event_id` is `null` when the completion landed within the per-user duplicate-watch window (a recent WatchEvent for the same title already exists, so none was created this time) - the session still ended, so the event is still sent, just without a new history row behind it.
+
+`playback_session.updated`/`.resumed` are documented here for the contract's sake but not currently emitted by any endpoint - `playback_session.playing`/`.paused` cover the equivalent transitions in practice.
 
 ### List
 

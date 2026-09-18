@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-17
+ * Build: 2026-09-18
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -1593,11 +1593,22 @@
     function onListDeleted(payload) {
       requestUpdate('list.deleted');
     }
+    // Identical effect for both directions (§5.7 Фаза 5 design point 2/3) -
+    // requestPlaybackPull() re-pulls whatever's on screen right now regardless
+    // of which way the change went. Two named handlers instead of one shared
+    // one only so requestUpdate()'s own reason string stays accurate for
+    // logging - off() below still needs each as a stable reference either way.
     function onWatchEvent(payload) {
       requestUpdate('watch_event.created');
+      requestPlaybackPull();
+    }
+    function onWatchEventDeleted(payload) {
+      requestUpdate('watch_event.deleted');
+      requestPlaybackPull();
     }
     function onPlaybackCompleted(payload) {
       requestUpdate('playback_session.completed');
+      requestPlaybackPull();
     }
     function onPlaybackStarted(payload) {
       requestPlaybackPull();
@@ -1668,6 +1679,7 @@
       socket.on('list.updated', onListUpdated);
       socket.on('list.deleted', onListDeleted);
       socket.on('watch_event.created', onWatchEvent);
+      socket.on('watch_event.deleted', onWatchEventDeleted);
       socket.on('playback_session.completed', onPlaybackCompleted);
       socket.on('playback_session.started', onPlaybackStarted);
       socket.on('playback_session.playing', onPlaybackPlaying);
@@ -1686,6 +1698,7 @@
       socket.off('list.updated', onListUpdated);
       socket.off('list.deleted', onListDeleted);
       socket.off('watch_event.created', onWatchEvent);
+      socket.off('watch_event.deleted', onWatchEventDeleted);
       socket.off('playback_session.completed', onPlaybackCompleted);
       socket.off('playback_session.started', onPlaybackStarted);
       socket.off('playback_session.playing', onPlaybackPlaying);

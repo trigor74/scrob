@@ -28,8 +28,14 @@ function onItemRemoved(payload) { requestUpdate('list.item_removed') }
 function onListCreated(payload) { requestUpdate('list.created') }
 function onListUpdated(payload) { requestUpdate('list.updated') }
 function onListDeleted(payload) { requestUpdate('list.deleted') }
-function onWatchEvent(payload) { requestUpdate('watch_event.created') }
-function onPlaybackCompleted(payload) { requestUpdate('playback_session.completed') }
+// Identical effect for both directions (§5.7 Фаза 5 design point 2/3) -
+// requestPlaybackPull() re-pulls whatever's on screen right now regardless
+// of which way the change went. Two named handlers instead of one shared
+// one only so requestUpdate()'s own reason string stays accurate for
+// logging - off() below still needs each as a stable reference either way.
+function onWatchEvent(payload) { requestUpdate('watch_event.created'); requestPlaybackPull() }
+function onWatchEventDeleted(payload) { requestUpdate('watch_event.deleted'); requestPlaybackPull() }
+function onPlaybackCompleted(payload) { requestUpdate('playback_session.completed'); requestPlaybackPull() }
 function onPlaybackStarted(payload) { requestPlaybackPull() }
 function onPlaybackPlaying(payload) { requestPlaybackPull() }
 function onPlaybackPaused(payload) { requestPlaybackPull() }
@@ -85,6 +91,7 @@ export function registerHandlers(socket) {
     socket.on('list.updated', onListUpdated)
     socket.on('list.deleted', onListDeleted)
     socket.on('watch_event.created', onWatchEvent)
+    socket.on('watch_event.deleted', onWatchEventDeleted)
     socket.on('playback_session.completed', onPlaybackCompleted)
     socket.on('playback_session.started', onPlaybackStarted)
     socket.on('playback_session.playing', onPlaybackPlaying)
@@ -103,6 +110,7 @@ export function unregisterHandlers(socket) {
     socket.off('list.updated', onListUpdated)
     socket.off('list.deleted', onListDeleted)
     socket.off('watch_event.created', onWatchEvent)
+    socket.off('watch_event.deleted', onWatchEventDeleted)
     socket.off('playback_session.completed', onPlaybackCompleted)
     socket.off('playback_session.started', onPlaybackStarted)
     socket.off('playback_session.playing', onPlaybackPlaying)
