@@ -27,7 +27,9 @@ export var KEYS = {
     // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
     DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
     DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
-    DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
+    DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
+    // Бейдж "останній переглянутий епізод" на повній картці серіалу.
+    SHOW_LAST_EPISODE_BADGE: 'scrob_show_last_episode_badge'
 }
 
 // Keys isolated per profile: backed up on switch, restored for the target.

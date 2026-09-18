@@ -508,6 +508,20 @@ export default function addLang() {
             ru: 'Позже',
             en: 'Watch later',
             be: 'Пазней'
+        },
+
+        // ─── Last-episode badge on the show's full card ─────
+        scrob_last_episode_badge: {
+            uk: 'Останній переглянутий епізод на картці',
+            ru: 'Последний просмотренный эпизод на карточке',
+            en: 'Last watched episode on card',
+            be: 'Апошні прагледжаны эпізод на картцы'
+        },
+        scrob_new_episodes: {
+            uk: '+%s нових',
+            ru: '+%s новых',
+            en: '+%s new',
+            be: '+%s новых'
         }
     })
 }

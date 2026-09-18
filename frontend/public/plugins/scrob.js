@@ -511,6 +511,19 @@
           ru: 'Позже',
           en: 'Watch later',
           be: 'Пазней'
+        },
+        // ─── Last-episode badge on the show's full card ─────
+        scrob_last_episode_badge: {
+          uk: 'Останній переглянутий епізод на картці',
+          ru: 'Последний просмотренный эпизод на карточке',
+          en: 'Last watched episode on card',
+          be: 'Апошні прагледжаны эпізод на картцы'
+        },
+        scrob_new_episodes: {
+          uk: '+%s нових',
+          ru: '+%s новых',
+          en: '+%s new',
+          be: '+%s новых'
         }
       });
     }
@@ -554,7 +567,9 @@
       // до /auth/me, тож так постійний api_key отримати неможливо в принципі.
       DEVICE_ACCESS_TOKEN: 'scrob_device_access_token',
       DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
-      DEVICE_EXPIRES_AT: 'scrob_device_expires_at'
+      DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
+      // Бейдж "останній переглянутий епізод" на повній картці серіалу.
+      SHOW_LAST_EPISODE_BADGE: 'scrob_show_last_episode_badge'
     };
 
     // Keys isolated per profile: backed up on switch, restored for the target.
@@ -5960,6 +5975,93 @@
       return !!(status && status.running);
     }
 
+    // Бейдж "останній переглянутий епізод" на повній картці серіалу.
+    // Той самий підхід, що вже перевірений у трьохсторонньому плагіні TraktTV.js
+    // на цьому ж форку клієнта (Lampa.Listener.follow('full', ...), e.type === 'complite'
+    // — DOM повної картки вже зібраний, кнопки згруповані).
+    //
+    // Дані беруться з уже наявного api.getWatchStatus() (те саме джерело, що й
+    // utils/sync/timeline.js онActivityStart) — жодного нового backend-ендпоінту.
+    // "Останній переглянутий" — максимальний (сезон, епізод) серед watched:true,
+    // а не найновіший updated_at: сервер уже rewatch-aware сам (GET /history/watch-status,
+    // backend/routers/history.py get_watch_status) — під час активного rewatch
+    // watched:true бере ТІЛЬКИ з поточного циклу RewatchProgress, тож max(сезон,епізод)
+    // природно відображає позицію в активному rewatch, а не старий рекорд з першого
+    // перегляду. updated_at натомість збивається ручною позначкою епізоду не по порядку
+    // (напр. довідмічений заднім числом пропущений епізод з нижчим номером).
+    //
+    // Лічильник непереглянутих епізодів — з data.movie.seasons[] (той самий об'єкт
+    // TMDB, що вже прийшов з подією 'full'/'complite'), без жодного додаткового запиту.
+    // episode_count у TMDB іноді проставляється на кілька днів раніше фактичного ефіру
+    // — свідомо прийнятий компроміс на користь нуля зайвих мережевих запитів.
+
+    function isTvCard(e) {
+      return !!(e && e.data && e.data.movie && e.object && e.object.method === 'tv');
+    }
+    function pickLastWatched(items) {
+      var last = null;
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (!item.watched) continue;
+        if (!last || item.season_number > last.season_number || item.season_number === last.season_number && item.episode_number > last.episode_number) {
+          last = item;
+        }
+      }
+      return last;
+    }
+
+    // Скільки епізодів з seasons[] (виключно "Спеціальні", season_number > 0)
+    // іде ПІСЛЯ останнього переглянутого — сума решти поточного сезону плюс усі наступні сезони.
+    function countUnwatched(seasons, lastSeason, lastEpisode) {
+      if (!Array.isArray(seasons)) return 0;
+      var count = 0;
+      for (var i = 0; i < seasons.length; i++) {
+        var s = seasons[i];
+        if (!s || s.season_number <= 0) continue;
+        var episodeCount = s.episode_count || 0;
+        if (s.season_number === lastSeason) {
+          count += Math.max(0, episodeCount - lastEpisode);
+        } else if (s.season_number > lastSeason) {
+          count += episodeCount;
+        }
+      }
+      return count;
+    }
+    function buildBadge(iconSvg, lastWatched, unwatchedCount) {
+      var el = document.createElement('div');
+      el.className = 'full-start-new__details scrob-last-episode';
+      var html = '<div class="scrob-last-episode__icon">' + iconSvg + '</div>' + '<span>' + Lampa.Lang.translate('full_season') + ': ' + lastWatched.season_number + '</span>' + '<span class="full-start-new__split">●</span>' + '<span>' + Lampa.Lang.translate('full_episode') + ': ' + lastWatched.episode_number + '</span>';
+      if (unwatchedCount > 0) {
+        html += '<span class="scrob-last-episode__new">' + '<span class="scrob-last-episode__dot"></span>' + Lampa.Lang.translate('scrob_new_episodes').replace('%s', unwatchedCount) + '</span>';
+      }
+      el.innerHTML = html;
+      return el;
+    }
+    function showBadge(iconSvg, e) {
+      if (!hasSession()) return;
+      if (!Lampa.Storage.get(KEYS.SHOW_LAST_EPISODE_BADGE, true)) return;
+      if (!isTvCard(e)) return;
+      var card = e.data.movie;
+      if (!card.id) return;
+      getWatchStatus(card.id, 'tv', function (items) {
+        var lastWatched = pickLastWatched(items);
+        if (!lastWatched) return;
+        var renderRoot = e.object.activity.render();
+        var buttons = renderRoot.find('.full-start-new__buttons').first();
+        if (!buttons.length) return;
+        renderRoot.find('.full-start-new__details.scrob-last-episode').remove();
+        var unwatchedCount = countUnwatched(card.seasons, lastWatched.season_number, lastWatched.episode_number);
+        buttons.before(buildBadge(iconSvg, lastWatched, unwatchedCount));
+      }, function (err) {
+        console.warn('ScrobLastEpisodeBadge', 'watch-status request failed', err);
+      });
+    }
+    function init(iconSvg) {
+      Lampa.Listener.follow('full', function (e) {
+        if (e.type === 'complite') showBadge(iconSvg, e);
+      });
+    }
+
     /**
      * Scrob custom category viewer component.
      * Pattern: kinobaza/myperson/component.js — Lampa.Maker.make('Category')
@@ -7342,6 +7444,22 @@
         onChange: startLampacExport
       });
 
+      // ── "Останній переглянутий епізод" бейдж на повній картці серіалу ──
+      Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: {
+          name: KEYS.SHOW_LAST_EPISODE_BADGE,
+          type: 'trigger',
+          default: true
+        },
+        field: {
+          name: Lampa.Lang.translate('scrob_last_episode_badge')
+        },
+        onChange: function onChange(value) {
+          Lampa.Storage.set(KEYS.SHOW_LAST_EPISODE_BADGE, value);
+        }
+      });
+
       // ══════════════════════════════════════════════════════
       //  NESTED PAGE: List sync settings
       // ══════════════════════════════════════════════════════
@@ -7644,7 +7762,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>@charset "UTF-8";\n/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}\n\n/* "Останній переглянутий епізод" бейдж на повній картці серіалу */\n.full-start-new__details.scrob-last-episode {\n  display: flex;\n  align-items: center;\n  color: #fff;\n}\n\n.scrob-last-episode__icon {\n  width: 18px;\n  height: 18px;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n  margin-right: 0.5em;\n}\n\n.scrob-last-episode__icon svg {\n  width: 100%;\n  height: 100%;\n  display: block;\n}\n\n.scrob-last-episode__new {\n  display: inline-flex;\n  align-items: center;\n  margin-left: 0.7em;\n  color: #C147D8;\n  font-weight: 600;\n}\n\n.scrob-last-episode__dot {\n  width: 0.5em;\n  height: 0.5em;\n  border-radius: 50%;\n  background: #C147D8;\n  margin-right: 0.4em;\n  flex-shrink: 0;\n}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page templates
@@ -7663,6 +7781,9 @@
 
       // Inject custom categories into full card bookmark button
       patchFullCardBookmark();
+
+      // "Останній переглянутий епізод" бейдж на повній картці серіалу
+      init(ICON_SVG);
       if (window.appready) {
         restoreSession();
         refreshCustomMenu();

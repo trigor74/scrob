@@ -9,6 +9,7 @@ import { avatarHtml, switchProfile, restoreIsolatedData } from './utils/profiles
 import * as custom from './utils/sync/custom'
 import * as timelineSync from './utils/sync/timeline'
 import * as lampacExport from './utils/sync/lampac-export'
+import * as lastEpisodeBadge from './utils/last-episode-badge'
 import CategoryComponent from './component/category'
 
 // Settings section icon (gradient ids prefixed scrob- to avoid conflicts)
@@ -1348,6 +1349,16 @@ function initSettings() {
         onChange: startLampacExport
     })
 
+    // ── "Останній переглянутий епізод" бейдж на повній картці серіалу ──
+    Lampa.SettingsApi.addParam({
+        component: 'scrob',
+        param: { name: KEYS.SHOW_LAST_EPISODE_BADGE, type: 'trigger', default: true },
+        field: { name: Lampa.Lang.translate('scrob_last_episode_badge') },
+        onChange: function (value) {
+            Lampa.Storage.set(KEYS.SHOW_LAST_EPISODE_BADGE, value)
+        }
+    })
+
     // ══════════════════════════════════════════════════════
     //  NESTED PAGE: List sync settings
     // ══════════════════════════════════════════════════════
@@ -1648,6 +1659,9 @@ function startPlugin() {
 
     // Inject custom categories into full card bookmark button
     patchFullCardBookmark()
+
+    // "Останній переглянутий епізод" бейдж на повній картці серіалу
+    lastEpisodeBadge.init(ICON_SVG)
 
     if (window.appready) {
         restoreSession()
