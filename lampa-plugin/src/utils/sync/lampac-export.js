@@ -206,10 +206,14 @@ function resolveCardTimecodes(card, raw) {
 
 // Small fixed-size concurrency pool - mirrors the external-player batch's
 // own "don't hammer the network" reasoning (§5.1.1), here against lampac's
-// server instead of Scrob's.
-function runPool(items, size, worker, onDone) {
+// server instead of Scrob's. `onProgress(done, total)` - optional - fires
+// after each item settles, regardless of order (concurrency 5, so item 3
+// can finish before item 1) - only the running count is meaningful here,
+// not which specific item just completed.
+function runPool(items, size, worker, onDone, onProgress) {
     var index = 0
     var active = 0
+    var done = 0
     var results = new Array(items.length)
 
     function launchNext() {
@@ -222,6 +226,8 @@ function runPool(items, size, worker, onDone) {
         worker(items[i], function (result) {
             results[i] = result
             active--
+            done++
+            if (onProgress) onProgress(done, items.length)
             launchNext()
         })
     }
@@ -328,12 +334,15 @@ function pushProgress(identity, timeSeconds, runtimeMinutes, callback) {
     }, function () { callback(false) })
 }
 
-function pushSequential(items, index, counters, onDone) {
+function pushSequential(items, index, counters, onDone, onProgress) {
     if (index >= items.length) { onDone(counters); return }
     var item = items[index]
     var runtimeMinutes = item.duration > 0 ? Math.round(item.duration / 60) : null
 
-    function next() { setTimeout(function () { pushSequential(items, index + 1, counters, onDone) }, PUSH_PAUSE_MS) }
+    function next() {
+        if (onProgress) onProgress(index + 1, items.length)
+        setTimeout(function () { pushSequential(items, index + 1, counters, onDone, onProgress) }, PUSH_PAUSE_MS)
+    }
 
     if (item.percent >= WATCHED_THRESHOLD_PERCENT) {
         pushWatched(item.identity, function (ok) { if (ok) counters.watched++; next() })
@@ -347,7 +356,12 @@ function pushSequential(items, index, counters, onDone) {
 // `onDone(result)` — result: { listsThrown, watched, progress, skipped, cardsScanned, error }
 // `error` set only when the export couldn't run at all (no session/sync off);
 // a partial/empty result from real attempts is NOT an error.
-export function run(onDone) {
+// `onProgress(stage, current, total)` — optional, `stage` is 'timecodes'
+// (runPool over the local card pool) or 'uploading' (pushSequential over the
+// deduped batch) - the only two multi-step, genuinely slow parts (§5.6,
+// progress-bar follow-up 2026-09-18: a bare spinner gave no sense of whether
+// a big library export was still working or stuck).
+export function run(onDone, onProgress) {
     if (running) return
     if (!hasSyncRunning()) { onDone({ error: 'sync_not_running' }); return }
     running = true
@@ -384,17 +398,19 @@ export function run(onDone) {
 
         var statusPool = buildBatchStatusPool(candidates)
         api.getBatchWatchStatus(statusPool, function (rows) {
-            finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone)
+            finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone, onProgress)
         }, function () {
             // Dedup lookup failed - proceed without it rather than dropping
             // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
             // apply here: worst case is a few redundant writes, not silence).
-            finishExport(candidates, {}, listsThrown, cards.length, onDone)
+            finishExport(candidates, {}, listsThrown, cards.length, onDone, onProgress)
         })
+    }, function (done, total) {
+        if (onProgress) onProgress('timecodes', done, total)
     })
 }
 
-function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone) {
+function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone, onProgress) {
     var toPush = []
     var skipped = 0
     for (var i = 0; i < candidates.length; i++) {
@@ -412,6 +428,8 @@ function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone
             skipped: skipped,
             cardsScanned: cardsScanned
         })
+    }, function (done, total) {
+        if (onProgress) onProgress('uploading', done, total)
     })
 }
 
