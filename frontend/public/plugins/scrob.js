@@ -1730,7 +1730,8 @@
     // Scrob sync — category mapping between Lampa favorite keys and Scrob list names.
     // Canonical list names are static English, never translated.
     // Universal rule: any other array key → '[Lampa] ' + Capitalized(key).
-    // Excluded from iteration: card, thrown (§5.3.2 - separate mechanism, below).
+    // Excluded from iteration: card, thrown (§5.3.2 - separate mechanism, below),
+    // watch (see note right below CANONICAL).
     //
     // `history` (SYNC-ARCHITECTURE-PLAN.md §5.3.1) is Lampa's own recently-
     // opened-cards playlist (Favorite.add('history', card, 100), capped
@@ -1764,10 +1765,22 @@
       viewed: '[Lampa] Viewed'
     };
 
+    // `watch` (with "ch", distinct from `wath`) is a dead/unused category - the
+    // real Lampa client (web/Android) never writes to it, only reads/writes
+    // `wath`. lampac's own BookmarkController.cs's EnsureDefaultArrays() force-
+    // includes it (an empty array) in EVERY /bookmark/list response regardless,
+    // and bookmark.js overwrites local Lampa.Storage 'favorite' wholesale with
+    // that response - so `favorite.watch = []` shows up for any lampac user,
+    // and the generic list-sync below (syncableKeys()'s "any array key" rule)
+    // dutifully mirrored it up as a useless "[Lampa] Watch" list on Scrob (found
+    // live 2026-09-19, lists.md). Excluded here so it's silently ignored, same
+    // as `card`.
+    //
     // Keys excluded from sync iteration
     var EXCLUDED = {
       card: true,
-      thrown: true
+      thrown: true,
+      watch: true
     };
 
     // Mark categories — mutually exclusive statuses (section 13, point 3)
@@ -7008,10 +7021,15 @@
       // endpoints (§5.3.2), never to a /lists mapping, so offering it in this
       // "map to a Scrob list" picker (as a standard OR a custom key) would be
       // misleading - see mapping.js's own EXCLUDED for the sync-side half of
-      // this same exclusion.
+      // this same exclusion. 'watch' (with "ch") is excluded for the same
+      // reason as mapping.js's own EXCLUDED - lampac force-includes this dead,
+      // never-written-to category in every /bookmark/list response (lists.md);
+      // engine.js already ignores it entirely, so offering it here would let
+      // the user create a mapping that silently never syncs anything.
       var excluded = {
         card: true,
-        thrown: true
+        thrown: true,
+        watch: true
       };
       for (var k in favorite) {
         if (excluded[k] || standardKeys.indexOf(k) !== -1 || !Array.isArray(favorite[k])) continue;
