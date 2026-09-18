@@ -6410,8 +6410,13 @@
     //
     // Лічильник непереглянутих епізодів — з data.movie.seasons[] (той самий об'єкт
     // TMDB, що вже прийшов з подією 'full'/'complite'), без жодного додаткового запиту.
-    // episode_count у TMDB іноді проставляється на кілька днів раніше фактичного ефіру
-    // — свідомо прийнятий компроміс на користь нуля зайвих мережевих запитів.
+    // seasons[].episode_count сам по собі рахує ВСІ анонсовані епізоди сезону, включно
+    // з тими, що ще не вийшли в ефір — тому межу "вже вийшло" беремо з next_episode_to_air
+    // (усе СУВОРО до нього вже вийшло) або, якщо дата наступного невідома, з
+    // last_episode_to_air (усе аж ВКЛЮЧНО з ним). Обидва поля — стандартні TMDB-поля
+    // повного /tv/{id}, присутні в data.movie так само, як next_episode_to_air, що сама
+    // Lampa вже читає (app.min.js:44777) — лише last_episode_to_air клієнт не використовує,
+    // але не вирізає з відповіді.
 
     function isTvCard(e) {
       return !!(e && e.data && e.data.movie && e.object && e.object.method === 'tv');
@@ -6428,19 +6433,51 @@
       return last;
     }
 
-    // Скільки епізодів з seasons[] (виключно "Спеціальні", season_number > 0)
-    // іде ПІСЛЯ останнього переглянутого — сума решти поточного сезону плюс усі наступні сезони.
-    function countUnwatched(seasons, lastSeason, lastEpisode) {
+    // Межа "вже вийшло": усе (season, episode) СУВОРО менше next_episode_to_air
+    // точно вийшло; якщо дата наступного невідома — усе аж ВКЛЮЧНО з last_episode_to_air.
+    // null, якщо TMDB не дав жодного з двох (тоді countUnwatched рахує без обмеження —
+    // той самий компроміс, що й раніше, лише як останній fallback).
+    function airedBoundary(card) {
+      var next = card.next_episode_to_air;
+      if (next && next.season_number != null && next.episode_number != null) {
+        return {
+          season: next.season_number,
+          episode: next.episode_number,
+          inclusive: false
+        };
+      }
+      var last = card.last_episode_to_air;
+      if (last && last.season_number != null && last.episode_number != null) {
+        return {
+          season: last.season_number,
+          episode: last.episode_number,
+          inclusive: true
+        };
+      }
+      return null;
+    }
+
+    // Скільки епізодів з seasons[] (виключно "Спеціальні", season_number > 0), що вже
+    // ВИЙШЛИ В ЕФІР (з урахуванням boundary), іде ПІСЛЯ останнього переглянутого.
+    function countUnwatched(seasons, lastSeason, lastEpisode, boundary) {
       if (!Array.isArray(seasons)) return 0;
       var count = 0;
       for (var i = 0; i < seasons.length; i++) {
         var s = seasons[i];
         if (!s || s.season_number <= 0) continue;
-        var episodeCount = s.episode_count || 0;
+        var airedInSeason = s.episode_count || 0;
+        if (boundary) {
+          if (s.season_number > boundary.season) {
+            airedInSeason = 0;
+          } else if (s.season_number === boundary.season) {
+            airedInSeason = Math.min(airedInSeason, boundary.inclusive ? boundary.episode : boundary.episode - 1);
+          }
+        }
+        if (airedInSeason <= 0) continue;
         if (s.season_number === lastSeason) {
-          count += Math.max(0, episodeCount - lastEpisode);
+          count += Math.max(0, airedInSeason - lastEpisode);
         } else if (s.season_number > lastSeason) {
-          count += episodeCount;
+          count += airedInSeason;
         }
       }
       return count;
@@ -6468,7 +6505,8 @@
         var buttons = renderRoot.find('.full-start-new__buttons').first();
         if (!buttons.length) return;
         renderRoot.find('.full-start-new__details.scrob-last-episode').remove();
-        var unwatchedCount = countUnwatched(card.seasons, lastWatched.season_number, lastWatched.episode_number);
+        var boundary = airedBoundary(card);
+        var unwatchedCount = countUnwatched(card.seasons, lastWatched.season_number, lastWatched.episode_number, boundary);
         buttons.before(buildBadge(iconSvg, lastWatched, unwatchedCount));
       }, function (err) {
         console.warn('ScrobLastEpisodeBadge', 'watch-status request failed', err);
