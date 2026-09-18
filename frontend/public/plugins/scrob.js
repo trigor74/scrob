@@ -2861,15 +2861,33 @@
             }
           }
 
-          // Also resolve any existing mirror lists (might have been added by other clients)
+          // Also resolve any existing mirror lists (might have been added by
+          // other clients) - but only if the name still maps to a CURRENT,
+          // non-excluded key. mapping.js's EXCLUDED/CANONICAL can change
+          // between plugin versions (`thrown` migrated fully off /lists in
+          // §5.3.2; `watch` excluded as lampac's own dead category,
+          // 2026-09-19, lists.md) - without this check, a mirror that still
+          // remembers a list name from BEFORE either migration got it
+          // silently RECREATED here (found live: forceSync() - which
+          // clearInitialDone()s, forcing this whole block to re-run - from
+          // lampac-export resurrected an already-deleted "[Lampa] Thrown"),
+          // even though nothing in the current plugin ever pushes into it
+          // again. Prune the stale entry instead of resurrecting it.
           var m = get();
           var mirrorNames = Object.keys(m.lists);
+          var map = getMap();
+          var mirrorChanged = false;
           for (var k = 0; k < mirrorNames.length; k++) {
-            if (!resolved[mirrorNames[k]]) {
-              pending++;
-              resolveDefaultKey(mirrorNames[k]);
+            if (resolved[mirrorNames[k]]) continue;
+            if (!resolveKeyForListName(mirrorNames[k], map, favorite)) {
+              delete m.lists[mirrorNames[k]];
+              mirrorChanged = true;
+              continue;
             }
+            pending++;
+            resolveDefaultKey(mirrorNames[k]);
           }
+          if (mirrorChanged) save(m);
           if (pending === 0) done();
         }
       }, function () {
