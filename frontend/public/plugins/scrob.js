@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-18
+ * Build: 2026-09-19
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -5897,6 +5897,15 @@
       return '<svg class="scrob-levende-status-icon" viewBox="0 0 419 454" xmlns="http://www.w3.org/2000/svg">' + '<defs>' + '<linearGradient id="' + ringId + '" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="454">' + ringStops + '</linearGradient>' + '<linearGradient id="' + dotId + '" gradientUnits="objectBoundingBox" x1="0" y1="1" x2="0" y2="0">' + dotStops + '</linearGradient>' + '</defs>' + '<path d="M 394.09 73.88 A 226.5 226.5 0 1 0 332.74 427.26 L 287.64 358.22 A 144.6 144.6 0 1 1 334.56 130.14 Z" fill="url(#' + ringId + ')"/>' + '<circle cx="368.97" cy="347.2" r="48.29" fill="url(#' + dotId + ')"/>' + '</svg>';
     }
 
+    // Mirrors storage.js's own hasSession() (OWN_API_KEY / DEVICE_ACCESS_TOKEN /
+    // ACCESS_TOKEN+ME.id), but reading from a backed-up snapshot object instead
+    // of live Storage - used for any (C) profile OTHER than the currently active
+    // one below, whose snapshot is the only record of what it signed in with.
+    function snapshotHasSession(snapshot) {
+      var me = snapshot[KEYS.ME];
+      return !!(snapshot[KEYS.OWN_API_KEY] || snapshot[KEYS.DEVICE_ACCESS_TOKEN] || snapshot[KEYS.ACCESS_TOKEN] && me && _typeof(me) === 'object' && me.id);
+    }
+
     // True only when accsdb gives BOTH the server and the key for a (B) profile
     // - one without the other is exactly the "misconfigured" case worth
     // flagging, same as a (C) profile that has never signed in successfully.
@@ -5910,12 +5919,19 @@
       // source of truth (may have just signed in this very session, before
       // any backup snapshot exists for it yet); any other profile falls back
       // to whatever was captured the last time we switched away from it.
+      // hasSession() itself (not a bare OWN_API_KEY check) - QR/device pairing
+      // never populates OWN_API_KEY at all (a device-scoped Bearer token, by
+      // server design never round-tripped into a real api_key - see the
+      // module comment on doApply()'s DEVICE_ACCESS_TOKEN clearing above), so
+      // checking OWN_API_KEY alone showed a QR-signed-in profile as
+      // unauthorized even though scrob_user_info/settings already displayed
+      // its name correctly.
       var currentId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null);
       if (profile && profile.id === currentId) {
-        return !!Lampa.Storage.get(KEYS.OWN_API_KEY, '');
+        return hasSession();
       }
-      var snapshot = getBackupStore()[profile && profile.id];
-      return !!(snapshot && snapshot[KEYS.OWN_API_KEY]);
+      var snapshot = getBackupStore()[profile && profile.id] || {};
+      return snapshotHasSession(snapshot);
     }
 
     // Prepended, not appended - levende already marks the current profile with

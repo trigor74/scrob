@@ -42,7 +42,7 @@
 // ever calling refresh()). stageProfile() below therefore also arms a
 // bounded fallback timer, so a slow or reload-skipped switch still applies
 // instead of leaving this plugin on the outgoing profile's credentials.
-import { KEYS } from './storage'
+import { KEYS, hasSession } from './storage'
 import * as sync from './sync'
 import * as timelineSync from './sync/timeline'
 
@@ -450,6 +450,19 @@ function statusIconSvg(ok) {
         '</svg>'
 }
 
+// Mirrors storage.js's own hasSession() (OWN_API_KEY / DEVICE_ACCESS_TOKEN /
+// ACCESS_TOKEN+ME.id), but reading from a backed-up snapshot object instead
+// of live Storage - used for any (C) profile OTHER than the currently active
+// one below, whose snapshot is the only record of what it signed in with.
+function snapshotHasSession(snapshot) {
+    var me = snapshot[KEYS.ME]
+    return !!(
+        snapshot[KEYS.OWN_API_KEY] ||
+        snapshot[KEYS.DEVICE_ACCESS_TOKEN] ||
+        (snapshot[KEYS.ACCESS_TOKEN] && me && typeof me === 'object' && me.id)
+    )
+}
+
 // True only when accsdb gives BOTH the server and the key for a (B) profile
 // - one without the other is exactly the "misconfigured" case worth
 // flagging, same as a (C) profile that has never signed in successfully.
@@ -464,13 +477,20 @@ function isProfileAuthorized(profile) {
     // source of truth (may have just signed in this very session, before
     // any backup snapshot exists for it yet); any other profile falls back
     // to whatever was captured the last time we switched away from it.
+    // hasSession() itself (not a bare OWN_API_KEY check) - QR/device pairing
+    // never populates OWN_API_KEY at all (a device-scoped Bearer token, by
+    // server design never round-tripped into a real api_key - see the
+    // module comment on doApply()'s DEVICE_ACCESS_TOKEN clearing above), so
+    // checking OWN_API_KEY alone showed a QR-signed-in profile as
+    // unauthorized even though scrob_user_info/settings already displayed
+    // its name correctly.
     var currentId = Lampa.Storage.get(CURRENT_PROFILE_KEY, null)
     if (profile && profile.id === currentId) {
-        return !!Lampa.Storage.get(KEYS.OWN_API_KEY, '')
+        return hasSession()
     }
 
-    var snapshot = getBackupStore()[profile && profile.id]
-    return !!(snapshot && snapshot[KEYS.OWN_API_KEY])
+    var snapshot = getBackupStore()[profile && profile.id] || {}
+    return snapshotHasSession(snapshot)
 }
 
 // Prepended, not appended - levende already marks the current profile with
