@@ -3864,65 +3864,6 @@
       return true;
     }
 
-    // Scrob sync — playback progress: push (session start/heartbeat/complete)
-    // AND pull (server → Lampa.Timeline). See SYNC-ARCHITECTURE-PLAN.md §5.1/§5.2.
-    //
-    // ─── Push ───────────────────────────────────────────────────
-    // Ports the proven session model from the old standalone scrob.js plugin,
-    // against the same backend session endpoints this plugin's api.js now wraps
-    // (POST /history/session/start, PATCH /history/session/{key},
-    // POST .../complete, DELETE .../{key}).
-    //
-    // Design points carried over deliberately (see the old scrob.js, function
-    // onPlayerStart() onward, for the original reasoning and live-tested fixes):
-    // - "Watched" is decided ONLY on player destroy (real exit), never mid-
-    //   playback — otherwise a title reads as watched on the server while the
-    //   user is still actually watching (e.g. sitting through end credits).
-    // - A generation counter (session.gen) guards against a slow /session/start
-    //   response landing AFTER a newer video has already started — the stale
-    //   response just deletes its own orphaned server-side session instead of
-    //   overwriting the new one's key.
-    // - heartbeatInFlight coalesces rapid pause/resume into the LATEST position
-    //   only (network delivery order between two independent PATCH requests is
-    //   not guaranteed) instead of firing one PATCH per event.
-    // - completeSession() defers behind an in-flight heartbeat rather than racing
-    //   it — an out-of-order "playing" heartbeat arriving after /complete would
-    //   silently reopen the session on the server.
-    //
-    // ─── Pull ───────────────────────────────────────────────────
-    // On-demand (this file): a movie/show's own full card opening triggers
-    // GET /history/watch-status, written into Timeline via pullWriteTimeline().
-    // Bulk (continue-watching, at login/profile-switch/start) is a separate,
-    // later addition reusing the same pullWriteTimeline()/buildHash()/
-    // resolveDuration() helpers. Prefetch (§5.2.7, further below) is a third,
-    // wider bulk pull over the user's own configurable Favorite lists (not just
-    // continue-watching) - fills in Timeline for ongoing-show detection
-    // (continue_watch's own filter) before the user opens any card by hand.
-    // - LWW against the local Timeline entry's own `updated` timestamp — never
-    //   blindly overwrites a possibly-newer local value (§5.2.3).
-    // - `syncingFromServer` guards onTimelineUpdate() against mistaking a pull's
-    //   own Timeline.update() echo for real local playback, and pullWriteTimeline()
-    //   additionally refuses to touch the hash of whatever is actively playing
-    //   right now — both needed because the active session's own local
-    //   `road.updated` only refreshes every ~2min (Lampa's natural cycle), not
-    //   every heartbeat, so LWW alone doesn't protect it.
-    // - "Watched" with no real progress writes percent:100 (matching how Lampa's
-    //   own "Просмотрено" menu action marks a file watched, not a Favorite('viewed')
-    //   toggle — that's a different, whole-card status, see §5.2.4/§5.3).
-    //
-    // Deliberately NOT in this module (handled elsewhere):
-    // - Favorite('viewed') — the whole-card "переглянуто" status (mutually
-    //   exclusive with look/scheduled/continued/thrown, §5.3/Гілка 8) is a
-    //   completely separate mechanism, synced generically through
-    //   mapping.js/engine.js's own list-sync, never touching Lampa.Timeline/
-    //   WatchEvent at all. NOT to be confused with the manual per-episode
-    //   Timeline marks (season-episode__viewed clicks outside the player)
-    //   THIS module does handle, further below (§5.2.6, Гілка 6).
-    // - Grace-period undo window and a persisted offline queue — failed
-    //   heartbeat/complete calls are retried via this plugin's own list-sync
-    //   retry queue (engine.js's enqueueRetry) instead of a second, separate
-    //   Lampa.Storage-backed queue.
-
     var WATCHED_THRESHOLD_PERCENT$1 = 90;
     var HEARTBEAT_THROTTLE_MS = 15000; // periodic heartbeat driven by Timeline updates
     var SAME_STATE_GUARD_MS = 3000; // native pause/playing: ignore immediate repeats
@@ -3949,13 +3890,6 @@
     var running$1 = false;
     var listenersBound = false;
     var profileListener = null; // Profile change listener reference (engine.js has the same field, same reason)
-
-    // Set only while pull-code (below) is writing a server-sourced value into
-    // Lampa.Timeline — guards onTimelineUpdate() against mistaking that echo
-    // for real local playback (SYNC-ARCHITECTURE-PLAN.md §5.2.3). Same pattern
-    // as engine.js's own `received` flag for Favorite writes, and the old
-    // scrob.js's `isSyncingNow`.
-    var syncingFromServer = false;
 
     // Single persistent session slot — mutated in place, never reassigned, so a
     // stray closure holding a reference to `session` always sees the latest
@@ -4217,13 +4151,60 @@
       return new Date(hasOffset ? s : s + 'Z').getTime() || 0;
     }
 
+    // Storage key Lampa.Timeline itself keeps its progress data under (verified
+    // against app.min.js's own Timeline filename()) - only differs per-profile
+    // while CUB *account* sync (not lampac, a different thing entirely - see
+    // lists.md) is active, same distinction already established for
+    // Lampa.Favorite reads elsewhere in this file.
+    function timelineStorageKey() {
+      var acc = Lampa.Account;
+      var usesAccountProfile = acc && acc.Permit && acc.Permit.sync && acc.Permit.account && acc.Permit.account.profile;
+      return 'file_view' + (usesAccountProfile ? '_' + acc.Permit.account.profile.id : '');
+    }
+
+    // Merges a batch of {hash, percent, time, duration, updated} writes directly
+    // into Lampa.Storage's timeline key, then refreshes Lampa's own in-memory
+    // cache silently (Lampa.Timeline.read(true) - see the module header for why
+    // this replaces calling the real Lampa.Timeline.update() for pulled data).
+    // One Storage.get/set pair for the whole batch, not one per item - matters
+    // for a large prefetch run (hundreds of entries) on a weak device.
+    function writeTimelineSilent(writes) {
+      if (!writes || !writes.length) return;
+      var key = timelineStorageKey();
+      var viewed = Lampa.Storage.get(key, {});
+      for (var i = 0; i < writes.length; i++) {
+        var w = writes[i];
+        var road = viewed[w.hash];
+        if (!road || _typeof(road) !== 'object') road = {
+          duration: 0,
+          time: 0,
+          percent: 0,
+          profile: 0,
+          updated: 0
+        };
+        road.percent = w.percent;
+        road.time = Math.round(w.time);
+        road.duration = Math.round(w.duration);
+        road.updated = w.updated;
+        viewed[w.hash] = road;
+      }
+      Lampa.Storage.set(key, viewed);
+      Lampa.Timeline.read(true);
+    }
+
     // `force` (§5.2.6, "Закрити") bypasses the LWW guard entirely — needed
     // because Lampa's own manual uncheck already stamped `updated: Date.now()`
     // locally, synchronously, before this ever runs, which would otherwise
     // always look "newer" than the server and silently block the restore. When
     // forced, the write itself is stamped `Date.now()` too (not `serverTime`)
     // so it correctly stays "newest" for any later LWW comparison.
-    function pullWriteTimeline(item, force) {
+    //
+    // `collector`, when given (an array), gets the computed write pushed onto it
+    // INSTEAD of writing to Storage immediately - lets a bulk caller (prefetch,
+    // continue-watching) batch its whole run into one writeTimelineSilent() call
+    // at the end rather than one Storage.get/set per item. Single on-demand
+    // callers omit it and get an immediate one-item write.
+    function pullWriteTimeline(item, force, collector) {
       var hash = buildHash(item.isSeries, item.originalName, item.season, item.episode);
       if (!hash) return;
       if (session.card && String(hash) === String(session.expectedHash)) return; // never clobber the active session
@@ -4246,16 +4227,14 @@
         watched: item.watched,
         force: !!force
       });
-      syncingFromServer = true;
-      Lampa.Timeline.update({
+      var write = {
         hash: hash,
         percent: percent,
         time: time,
         duration: duration,
-        received: true,
         updated: force ? Date.now() : serverTime || Date.now()
-      });
-      syncingFromServer = false;
+      };
+      if (collector) collector.push(write);else writeTimelineSilent([write]);
     }
 
     // ─── Player lifecycle ──────────────────────────────────────
@@ -4350,7 +4329,7 @@
       });
     }
     function onTimelineUpdate(e) {
-      if (!running$1 || syncingFromServer) return;
+      if (!running$1) return;
       if (!e || !e.data) return;
       if (!session.card) {
         // No internal player session — either an external-player result
@@ -5177,7 +5156,9 @@
     // Normalizes one GET /history/watch-status item into pullWriteTimeline()'s
     // shape — kept separate so the bulk pull (continue-watching, different
     // field names) can build the same shape from its own response later.
-    function applyWatchStatusItem(item, force) {
+    // `collector`, when given, batches into one writeTimelineSilent() call
+    // instead of writing per item - see pullWriteTimeline().
+    function applyWatchStatusItem(item, force, collector) {
       pullWriteTimeline({
         isSeries: item.media_type === 'episode',
         originalName: item.original_name,
@@ -5189,7 +5170,7 @@
         duration: item.duration,
         runtimeMinutes: item.runtime_minutes,
         updatedAt: item.updated_at
-      }, force);
+      }, force, collector);
     }
 
     // Normalizes one GET /history/continue-watching item (format_event() shape:
@@ -5197,7 +5178,7 @@
     // pullWriteTimeline()'s shape. Always partial progress, never "watched" —
     // /continue-watching is sourced from PlaybackProgress alone, which only
     // ever holds the 5%-90% in-progress window (backend/routers/history.py).
-    function applyContinueWatchingItem(item) {
+    function applyContinueWatchingItem(item, collector) {
       var media = item.media || {};
       var isSeries = media.type === 'episode';
       pullWriteTimeline({
@@ -5213,7 +5194,7 @@
         duration: null,
         runtimeMinutes: media.runtime,
         updatedAt: item.watched_at // aliases PlaybackProgress.updated_at, see format_event()
-      });
+      }, false, collector);
     }
 
     // Bulk pull: everything currently in progress, at login/profile-switch/app
@@ -5224,7 +5205,9 @@
     function pullContinueWatching() {
       if (!running$1) return;
       getContinueWatching(function (items) {
-        for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i]);
+        var collector = [];
+        for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i], collector);
+        writeTimelineSilent(collector);
       }, function (err) {
         console.warn('ScrobTimeline', 'continue-watching pull failed', err);
       });
@@ -5241,7 +5224,9 @@
       if (!card || !card.id) return;
       var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
       getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
-        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i]);
+        var collector = [];
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector);
+        writeTimelineSilent(collector);
       }, function (err) {
         console.warn('ScrobTimeline', 'watch-status request failed', err);
       });
@@ -5264,7 +5249,9 @@
       if (!card || !card.id) return;
       var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
       getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
-        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i]);
+        var collector = [];
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector);
+        writeTimelineSilent(collector);
       }, function (err) {
         console.warn('ScrobTimeline', 'watch-status request failed (socket-triggered)', err);
       });
@@ -5346,35 +5333,50 @@
     // causes server-side bounded to one batch query at a time, same spirit as
     // the external-player push's own "don't hammer a weak Android TV box's
     // network" reasoning (§5.1.1 point 5).
-    function runPrefetchChunks(chunks, index, gen) {
+    //
+    // `collector` accumulates writes across ALL chunks of this run - flushed
+    // once via writeTimelineSilent() (one Storage.get/set for the whole
+    // prefetch, not one per item/chunk) on both completion and failure (a later
+    // chunk failing must not lose whatever earlier chunks already collected -
+    // same "already-applied chunks are harmless to keep" intent the old
+    // per-item-write design had).
+    function runPrefetchChunks(chunks, index, gen, collector) {
       if (gen !== prefetchGeneration) return; // superseded mid-flight - see prefetchGeneration above
 
       if (index >= chunks.length) {
+        writeTimelineSilent(collector);
         prefetched = true;
         prefetchInFlight = false;
-        // Same signal continue_watch's own render already reacts to (used
-        // by the on-demand/bulk pulls above too) - makes the just-filled
-        // file_view data take effect on the CURRENT main screen immediately,
-        // not only on the next navigation to it.
-        Lampa.Listener.send('state:changed', {
-          target: 'favorite',
-          reason: 'read'
-        });
+        // Live fix 2026-09-19: this used to ALSO broadcast
+        // Lampa.Listener.send('state:changed', {target:'favorite',
+        // reason:'read'}) here, to make the just-filled data show up on the
+        // CURRENT screen immediately - but that's the exact same signal
+        // Lampa.Activity's own core listener reacts to with refresh(true) on
+        // EVERY cached activity (up to pages_save_total, not just the
+        // current screen) - the same "Android reloads other plugins'
+        // content" bug class already fixed once for
+        // Lampa.Favorite.read()/read(true) (engine.js's writeFavorite()).
+        // Removed for the same reason and the same accepted trade-off: the
+        // already-refreshed Timeline cache (writeTimelineSilent() above)
+        // takes effect on the NEXT render (Timeline.view(hash) reads it
+        // directly) rather than live-updating whatever's already on screen.
         console.log('ScrobTimeline', 'prefetch complete,', chunks.length, 'chunk(s)');
         return;
       }
       getBatchWatchStatus(chunks[index], function (items) {
         if (gen !== prefetchGeneration) return; // ditto - a stale response landed after the check above too
-        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i]);
-        runPrefetchChunks(chunks, index + 1, gen);
+        for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector);
+        runPrefetchChunks(chunks, index + 1, gen, collector);
       }, function (err) {
         if (gen !== prefetchGeneration) return;
         // All-or-nothing (SYNC-ARCHITECTURE-PLAN.md §9 п.6): deliberately NOT
         // queued through enqueueRetry (§5.1's retry queue is for mutations;
         // this is a read-only snapshot) - `prefetched` just stays false, so
         // the next `main` visit retries the WHOLE pool from scratch. Chunks
-        // already applied before this failure are harmless to redo
-        // (applyWatchStatusItem()/pullWriteTimeline() is idempotent, LWW-guarded).
+        // already collected before this failure are flushed anyway (harmless
+        // to redo - applyWatchStatusItem()/pullWriteTimeline() is
+        // idempotent, LWW-guarded).
+        writeTimelineSilent(collector);
         prefetchInFlight = false;
         console.warn('ScrobTimeline', 'batch watch-status prefetch failed', err);
       });
@@ -5397,7 +5399,7 @@
         chunks.push(candidates.slice(i, i + PREFETCH_CHUNK_SIZE));
       }
       console.log('ScrobTimeline', 'prefetch starting,', candidates.length, 'candidate(s),', chunks.length, 'chunk(s)');
-      runPrefetchChunks(chunks, 0, gen);
+      runPrefetchChunks(chunks, 0, gen, []);
     }
 
     // Separate 'activity' listener from onActivityStart() above (that one only
