@@ -91,12 +91,6 @@ export default function addLang() {
             en: 'Or manually at ',
             be: 'Або ўручную на '
         },
-        scrob_qr_manual_suffix: {
-            uk: '',
-            ru: '',
-            en: '',
-            be: ''
-        },
         scrob_qr_draw_failed: {
             uk: 'Не вдалося намалювати QR — введіть код вручну на іншому пристрої',
             ru: 'Не удалось нарисовать QR — введите код вручную на другом устройстве',
