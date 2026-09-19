@@ -370,16 +370,25 @@ function showQrAuthModal(data, returnTo) {
         '</div>'
     )
     $html.find('.scrob-qr-user-code').text(data.user_code) // .text() — без ризику інʼєкції в HTML
-    if (data.verification_uri) {
-        // verification_uri — те саме посилання, що зашите в QR (без коду), готове
-        // від сервера; не збираємо його самі з serverUrl(), щоб не розійтися з
-        // реальним server_url Scrob.
-        $html.find('.scrob-qr-manual').text(
-            Lampa.Lang.translate('scrob_qr_manual_prefix') + data.verification_uri + Lampa.Lang.translate('scrob_qr_manual_suffix')
-        )
-    }
 
-    Lampa.Utils.qrcode(data.verification_uri_complete, $html.find('.scrob-qr-code'), function () {
+    // Будуємо посилання самі з serverUrl(), а не з data.verification_uri*
+    // від сервера: до цього моменту serverUrl() уже гарантовано робочий (цей
+    // самий /auth/device/code запит щойно пройшов саме через нього) - на
+    // відміну від app_settings.server_url на бекенді, статичного налаштування,
+    // яке легко лишити незаданим (тоді сервер віддає дефолтний
+    // http://localhost:7330, що не працює на жодному пристрої, крім самого
+    // сервера). Код (?code=...) - пряме зчеплення рядків, не переклад:
+    // scrob_qr_manual_suffix раніше тримав це як i18n-ключ з порожнім
+    // значенням у кожній мові, а Lampa.Lang.translate() трактує порожній
+    // переклад як "немає перекладу" і повертає сам ключ - буквально
+    // "scrob_qr_manual_suffix" замість коду.
+    var manualLink = serverUrl() + '/link?code=' + encodeURIComponent(data.user_code)
+
+    $html.find('.scrob-qr-manual').text(
+        Lampa.Lang.translate('scrob_qr_manual_prefix') + manualLink
+    )
+
+    Lampa.Utils.qrcode(manualLink, $html.find('.scrob-qr-code'), function () {
         $html.find('.scrob-qr-code').text(Lampa.Lang.translate('scrob_qr_draw_failed'))
     })
 
