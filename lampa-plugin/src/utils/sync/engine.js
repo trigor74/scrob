@@ -673,6 +673,23 @@ function convergeAll(serverLists, done) {
     for (var a = 0; a < mirrorNames.length; a++) {
         var entry = m.lists[mirrorNames[a]]
         if (entry && entry.list_id) {
+            if (!byId[entry.list_id]) {
+                // List deleted server-side since last sync (dashboard cleanup,
+                // or a since-excluded category like watch/thrown) - mirror
+                // still holds the old id. Feeding it to convergeOneList()/
+                // pushRestItems() forever 404s on POST .../items and keeps
+                // re-queuing via enqueueRetry() every poll cycle (found live
+                // 2026-09-20, lists 15/17). Drop the stale entry from both
+                // storage and this pass's local snapshot (so the syncableKeys
+                // loop below doesn't re-add it from the same stale m.lists) -
+                // selfHeal() at the end of this same pass recreates it via
+                // ensureList() if the Lampa key is still syncable; an
+                // excluded/renamed key just stays dropped, same rule as
+                // resolveLists()'s self-heal (c6f767d).
+                mirror.removeList(mirrorNames[a])
+                delete m.lists[mirrorNames[a]]
+                continue
+            }
             targets[mirrorNames[a]] = {
                 listId: entry.list_id,
                 lampaKey: resolveKeyForListId(entry.list_id, map, m.lists, favorite)
