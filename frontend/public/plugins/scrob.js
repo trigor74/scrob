@@ -2143,6 +2143,30 @@
       }
     }
 
+    // Mark an element as permanently unpushable for this list - e.g. TMDB no
+    // longer recognizes its tmdb_id/media_type (a removed/merged entry - the
+    // list itself is valid, addListItem() 404s on the media lookup specifically,
+    // found live 2026-09-20). Retrying never succeeds, so convergeOneList()'s
+    // toPush diff excludes it going forward instead of rediscovering and
+    // re-pushing the same doomed item every poll cycle.
+    function markItemFailed(listName, elemKey) {
+      var m = get();
+      if (!m.lists[listName]) m.lists[listName] = {
+        list_id: null,
+        items: {},
+        failed: {}
+      };
+      if (!m.lists[listName].failed) m.lists[listName].failed = {};
+      m.lists[listName].failed[elemKey] = true;
+      save(m);
+    }
+
+    // Check whether an element was marked permanently unpushable for this list.
+    function isItemFailed(listName, elemKey) {
+      var list = getList(listName);
+      return !!(list && list.failed && list.failed[elemKey]);
+    }
+
     // Remove item_id from mirror for a specific list and element key
     function removeItemId(listName, elemKey) {
       var m = get();
@@ -3135,10 +3159,15 @@
         }
 
         // Local-first: push what is local but missing on the server.
+        // Skip elements already marked permanently unpushable (markItemFailed) -
+        // otherwise a locally-favorited item whose tmdb_id TMDB no longer
+        // recognizes (removed/merged entry) gets rediscovered and re-pushed
+        // every single poll cycle forever, 404ing each time (found live
+        // 2026-09-20, tmdb_id 285075).
         var toPush = [];
         var freshLocal = localElementSet(favorite, lampaKey);
         for (var lk in freshLocal) {
-          if (!scrobSet[lk]) toPush.push(lk);
+          if (!scrobSet[lk] && !isItemFailed(listName, lk)) toPush.push(lk);
         }
         if (toPush.length === 0) {
           callback(listChanged);
@@ -3193,6 +3222,19 @@
         if (isAuthError(err)) {
           pauseSync('Authentication expired');
           callback();
+          return;
+        }
+        if (status === 404) {
+          // Permanent, not transient: the list itself is already known-valid
+          // at this point (its id came from convergeAll()'s fresh byId check),
+          // so a 404 here is the backend's media/season lookup rejecting this
+          // exact tmdb_id/media_type (e.g. a TMDB entry later removed/merged) -
+          // no amount of retrying ever succeeds. Mark it instead of queuing
+          // a retry that would just fail identically forever.
+          markItemFailed(listName, items[index]);
+          setTimeout(function () {
+            pushRestItems(listId, listName, items, index + 1, callback);
+          }, 150);
           return;
         }
         enqueueRetry({
@@ -3343,6 +3385,13 @@
         }, function (err, status) {
           if (status === 409 || String(err).indexOf('409') !== -1) {
             fetchItemId(op.listId, op.listName, op.key, null);
+            return;
+          }
+          if (status === 404) {
+            // Same permanent-failure case as pushRestItems() - an 'add' op
+            // already past that check can still land here if it was queued
+            // by an older build. Stop retrying instead of failing forever.
+            markItemFailed(op.listName, op.key);
             return;
           }
           op.retries = (op.retries || 0) + 1;
@@ -3503,10 +3552,11 @@
         var scrobSet = scrobElementSet(scrobItems);
         var localSet = localElementSet(favorite, lampaKey);
 
-        // Push: localSet − scrobSet (REST only).
+        // Push: localSet − scrobSet (REST only). Same permanently-unpushable
+        // skip as convergeOneList()'s toPush above.
         var toAdd = [];
         for (var k in localSet) {
-          if (!scrobSet[k]) toAdd.push(k);
+          if (!scrobSet[k] && !isItemFailed(listName, k)) toAdd.push(k);
         }
 
         // Pull: scrobSet − localSet (unified applicator).

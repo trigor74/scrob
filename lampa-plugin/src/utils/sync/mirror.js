@@ -109,6 +109,26 @@ export function removeList(name) {
     }
 }
 
+// Mark an element as permanently unpushable for this list - e.g. TMDB no
+// longer recognizes its tmdb_id/media_type (a removed/merged entry - the
+// list itself is valid, addListItem() 404s on the media lookup specifically,
+// found live 2026-09-20). Retrying never succeeds, so convergeOneList()'s
+// toPush diff excludes it going forward instead of rediscovering and
+// re-pushing the same doomed item every poll cycle.
+export function markItemFailed(listName, elemKey) {
+    var m = get()
+    if (!m.lists[listName]) m.lists[listName] = { list_id: null, items: {}, failed: {} }
+    if (!m.lists[listName].failed) m.lists[listName].failed = {}
+    m.lists[listName].failed[elemKey] = true
+    save(m)
+}
+
+// Check whether an element was marked permanently unpushable for this list.
+export function isItemFailed(listName, elemKey) {
+    var list = getList(listName)
+    return !!(list && list.failed && list.failed[elemKey])
+}
+
 // Remove item_id from mirror for a specific list and element key
 export function removeItemId(listName, elemKey) {
     var m = get()
