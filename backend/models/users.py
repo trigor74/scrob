@@ -152,6 +152,10 @@ class UserSettings(Base):
     rate_prompt_movies   : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     rate_prompt_episodes : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
+    # Згортати на сторінці History епізоди одного серіалу, переглянуті того
+    # самого дня, в один рядок замість окремого рядка на кожен епізод.
+    condense_history_by_show : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+
     # Minutes within which a second watch of the same movie/episode is treated
     # as a duplicate of an existing one and not recorded again, regardless of
     # which source (webhook, import, manual entry, ...) either one came from
