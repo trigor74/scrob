@@ -660,10 +660,12 @@ function convergeAll(serverLists, done) {
     var map = mapstore.getMap()
     var m = mirror.get()
 
-    // Index server lists by id.
+    // Index server lists by id and by name.
     var byId = {}
+    var byName = {}
     for (var i = 0; i < serverLists.length; i++) {
         if (serverLists[i].id != null) byId[serverLists[i].id] = serverLists[i]
+        byName[serverLists[i].name] = serverLists[i]
     }
 
     // Build converge targets: every known pair exactly once.
@@ -725,7 +727,7 @@ function convergeAll(serverLists, done) {
                 mirror.save(mirror.get())
             }
             // Self-heal pass: brand-new local keys with no server list yet.
-            selfHeal(favorite, map, function () { done() })
+            selfHeal(favorite, map, byId, byName, function () { done() })
             return
         }
         var listName = names[index]
@@ -737,7 +739,7 @@ function convergeAll(serverLists, done) {
         })
     }
     if (names.length === 0) {
-        selfHeal(favorite, map, function () { done() })
+        selfHeal(favorite, map, byId, byName, function () { done() })
         return
     }
     next(0)
@@ -844,7 +846,8 @@ function pushRestItems(listId, listName, items, index, callback) {
 }
 
 // Self-heal: brand-new local keys with no server list yet → ensureList + re-diff.
-function selfHeal(favorite, map, done) {
+// byId/byName: the same fresh serverLists index convergeAll() just fetched.
+function selfHeal(favorite, map, byId, byName, done) {
     if (healing) { done(); return }
     var m = mirror.get()
     var missing = []
@@ -854,7 +857,24 @@ function selfHeal(favorite, map, done) {
         var mapped = map[key]
         if (mapped) {
             if (mapped.list_id && !m.lists[mapped.list_name]) {
-                missing.push({ key: key, name: mapped.list_name, listId: mapped.list_id })
+                // A mirror entry for this mapped key is missing - either
+                // brand-new, or just pruned above because its list_id is
+                // stale. mapstore's own list_id/list_name are never
+                // re-validated elsewhere in this per-poll path (only
+                // resolveLists()/initialSync() does), so blindly trusting
+                // them here resurrected the exact list convergeAll() just
+                // pruned, forever, with a fresh 404 on every push (found
+                // live 2026-09-20, lists 15/17 - a stale MAPPED mapping,
+                // not a plain mirror entry). Confirm the list still exists
+                // on the server before reconnecting; otherwise mark the
+                // mapping broken (custom.js UI already surfaces this),
+                // same as resolveLists()'s own brokenMappings handling.
+                var serverList = byId[mapped.list_id] || (mapped.list_name && byName[mapped.list_name])
+                if (serverList) {
+                    missing.push({ key: key, name: mapped.list_name, listId: serverList.id })
+                } else {
+                    mapstore.markBroken(key)
+                }
             }
             continue
         }
