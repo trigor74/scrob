@@ -79,6 +79,17 @@ export function removeMapping(lampaKey) {
     saveMap(map)
 }
 
+// Wipe all mappings and broken-flags for the active profile key (§ identity
+// change - see engine.js's resetLocalState()). Without ACTIVE_PROFILE_ID set
+// (manual API key / QR device pairing - main.js never writes it for those),
+// mapKey()/brokenKey() both fall back to a shared 'default' storage key, so
+// re-authenticating as a different Scrob account on the same device would
+// otherwise inherit the previous account's mappings.
+export function resetAll() {
+    saveMap({})
+    saveBroken([])
+}
+
 // Find the lampaKey for a given list_id (reverse lookup by mapping)
 // Returns lampaKey or null
 export function getMappingForList(listId) {

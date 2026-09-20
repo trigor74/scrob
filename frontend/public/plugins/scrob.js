@@ -2280,6 +2280,17 @@
       saveMap(map);
     }
 
+    // Wipe all mappings and broken-flags for the active profile key (§ identity
+    // change - see engine.js's resetLocalState()). Without ACTIVE_PROFILE_ID set
+    // (manual API key / QR device pairing - main.js never writes it for those),
+    // mapKey()/brokenKey() both fall back to a shared 'default' storage key, so
+    // re-authenticating as a different Scrob account on the same device would
+    // otherwise inherit the previous account's mappings.
+    function resetAll() {
+      saveMap({});
+      saveBroken([]);
+    }
+
     // Get all mapped list_ids
     function getMappedIds() {
       var map = getMap();
@@ -3785,6 +3796,21 @@
       clearInitialDone();
       initialSync();
       pullDropped(true);
+    }
+
+    // Wipe the local mirror/mapstore entirely (not just re-run initialSync - see
+    // forceSync() above) for the active profile key. Called around an identity
+    // change on a session with no ACTIVE_PROFILE_ID of its own (logout, and
+    // saving a new manual API key / completing a fresh QR device pairing -
+    // main.js) so a different Scrob account signing in on the same device never
+    // inherits the previous account's list_ids/mappings from the shared
+    // 'default' storage bucket (live-diagnosed 2026-09-20, see lists 15/17
+    // investigation - the actual cause there was unrelated, but the shared-
+    // 'default' risk this closes is real and was found along the way).
+    function resetLocalState() {
+      reset();
+      clearInitialDone();
+      resetAll();
     }
 
     // Get sync status for display
@@ -6537,13 +6563,19 @@
     // Manual API key — standalone auth method, no login required at all.
     function openApiKeyInput(returnTo) {
       returnTo = returnTo || 'settings_component';
+      var previousKey = Lampa.Storage.get(KEYS.OWN_API_KEY, '');
       Lampa.Input.edit({
         title: Lampa.Lang.translate('scrob_api_key'),
-        value: Lampa.Storage.get(KEYS.OWN_API_KEY, ''),
+        value: previousKey,
         free: true,
         nosave: true
       }, function (value) {
-        Lampa.Storage.set(KEYS.OWN_API_KEY, (value || '').trim());
+        var newKey = (value || '').trim();
+        Lampa.Storage.set(KEYS.OWN_API_KEY, newKey);
+        // Only a genuine change to a non-empty key is a plausible identity
+        // switch (see doLogout()'s comment) - re-confirming the same value,
+        // or clearing the field, isn't worth a full mirror/mapstore wipe.
+        if (newKey && newKey !== previousKey) resetLocalState();
         updateHeaderButton();
         refreshSettings();
         Lampa.Controller.toggle(returnTo);
@@ -6580,6 +6612,11 @@
       stop$1();
       stop();
       clearSession();
+      // Wipe the local mirror/mapstore too - without a real login (API key/QR,
+      // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
+      // 'default' key and leak into whichever Scrob account signs in next on
+      // this device (see resetLocalState()).
+      resetLocalState();
       removeHeaderButton();
       refreshSettings();
       Lampa.Noty.show(Lampa.Lang.translate('scrob_logout_success'));
@@ -6662,6 +6699,10 @@
             Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, res.body.access_token);
             Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, res.body.refresh_token);
             Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000);
+            // A freshly-completed pairing, not a refreshDeviceToken() token
+            // rotation - always a deliberate new-sign-in action, so always
+            // reset (see doLogout()'s comment on the shared 'default' key).
+            resetLocalState();
             Lampa.Modal.close();
             Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
             renderHeaderButton();
