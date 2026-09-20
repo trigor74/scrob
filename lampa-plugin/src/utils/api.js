@@ -85,6 +85,24 @@ export function getProfile(onDone, onFail) {
     )
 }
 
+// GET {path} (an already-prefixed avatar_url, e.g. "/profile/avatar/2") as a
+// Blob, turned into an object URL. Uses raw fetch() instead of Lampa.Reguest():
+// an <img src> can't carry a request header, so the caller's credential
+// (X-Api-Key, or - for a QR/device-token session with no API key at all -
+// the paired device's Bearer token) has to be sent via authHeaders() on a
+// real fetch and the response handed back as a blob: URL, rather than
+// embedded in the image URL itself where it would leak into browser
+// history, disk caches and proxy/access logs.
+export function fetchAvatar(path, onDone, onFail) {
+    fetch(base() + path, { headers: authHeaders() })
+        .then(function (r) { return r.ok ? r.blob() : null })
+        .then(function (blob) {
+            if (blob) onDone(URL.createObjectURL(blob))
+            else onFail()
+        })
+        .catch(function () { onFail() })
+}
+
 // POST /auth/login — form-urlencoded username+password → Token
 // NOTE: login is an unauthenticated endpoint — do NOT send Bearer
 // NOTE: Astro middleware requires X-Api-Key for /api/proxy/* routes

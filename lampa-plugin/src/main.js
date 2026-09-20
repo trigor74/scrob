@@ -5,7 +5,7 @@ import * as api from './utils/api'
 import { scrobSocketInit, scrobSocketDisconnect, getScrobSocket } from './utils/socket'
 import * as sync from './utils/sync'
 import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo, setOwnProfileInfo, pruneStaleBackups } from './utils/storage'
-import { avatarHtml, switchProfile, restoreIsolatedData } from './utils/profiles'
+import { avatarHtml, hydrateAvatar, switchProfile, restoreIsolatedData } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import * as timelineSync from './utils/sync/timeline'
 import * as lampacExport from './utils/sync/lampac-export'
@@ -39,6 +39,7 @@ function renderHeaderButton() {
     var btn = $('<div class="head__action selector open--scrob-profile"></div>')
 
     btn.append(avatarHtml(activeProfile()))
+    hydrateAvatar(btn)
     btn.on('hover:enter', showProfileSelect)
 
     $('.head .head__actions .open--settings').after(btn)
@@ -104,6 +105,9 @@ function showProfileSelect() {
                 icon: avatarHtml(activeProfile()),
                 selected: true
             }],
+            onDraw: function (item) {
+                hydrateAvatar(item)
+            },
             onSelect: function () {
                 Lampa.Controller.toggle(returnController)
             },
@@ -134,6 +138,9 @@ function showProfileSelect() {
     Lampa.Select.show({
         title: Lampa.Lang.translate('scrob_profiles'),
         items: items,
+        onDraw: function (item) {
+            hydrateAvatar(item)
+        },
         onSelect: function (a) {
             if (switchProfile(a.id)) renderHeaderButton()
             Lampa.Controller.toggle(returnController)
