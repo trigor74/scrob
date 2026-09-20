@@ -5750,6 +5750,19 @@
       restoreCustomCategories(profileId);
     }
 
+    // Deterministic short fingerprint of a (server, apiKey) pair - djb2 over the
+    // concatenation, base36-encoded. Used below to scope mirror.js/mapstore.js's
+    // own per-account storage for scenario (B) profiles - see the comment at its
+    // call site for why this can't just be profile.profileId.
+    function credentialFingerprint(server, apiKey) {
+      var str = (server || '') + '|' + (apiKey || '');
+      var hash = 5381;
+      for (var i = 0; i < str.length; i++) {
+        hash = (hash * 33 ^ str.charCodeAt(i)) >>> 0;
+      }
+      return hash.toString(36);
+    }
+
     // Actually switches credentials for `profile` (an object shaped like what
     // stageProfile() builds below). Called once, by whichever of
     // applyPendingProfile() / the fallback timer gets there first.
@@ -5847,11 +5860,25 @@
         Lampa.Storage.set(KEYS.OWN_API_KEY, profile.apiKey || '');
         Lampa.Storage.set(KEYS.ACTIVE_API_KEY, profile.apiKey || '');
         // No real Scrob user id available here (accsdb-provided key, never
-        // round-tripped through /auth/me) - a stable synthetic id, unique
-        // per levende profile, is enough to correctly scope this plugin's
-        // own mirror/map storage (utils/sync/mirror.js, mapstore.js both key
-        // off ACTIVE_PROFILE_ID already).
-        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId);
+        // round-tripped through /auth/me) - a stable synthetic id scopes
+        // this plugin's own mirror/map storage instead (utils/sync/
+        // mirror.js, mapstore.js both key off ACTIVE_PROFILE_ID already).
+        // Fingerprinted from server+apiKey, NOT bare profile.profileId -
+        // accsdb can rotate which Scrob account a levende profile SLOT
+        // points to (server/key edited in place) without profile.profileId
+        // itself ever changing, exactly as the module comment above already
+        // documents for why credentials always re-apply fresh regardless of
+        // previousId. A profileId-only id would keep mirror/mapstore keyed
+        // to the OLD account's storage after such a rotation - the new
+        // account's writes would then check its list_id ownership against
+        // the wrong account server-side and fail (live-reported: 404 on
+        // POST /lists/{id}/items, list ownership check is strict on write,
+        // lax on read - so convergeOneList's own read half kept looking
+        // fine while every push 404'd). Keying off the credentials
+        // themselves means a genuine rotation gets a fresh, correctly
+        // isolated namespace, while reverting to a previously-used account
+        // correctly reuses its own still-valid mirror/map data.
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId + '_' + credentialFingerprint(profile.server, profile.apiKey));
         // Credentials come from accsdb, not a backup - but the prefetch
         // candidate-list settings and the custom-category registry still
         // need their own per-profile restore (see SETTINGS_FIELDS and
