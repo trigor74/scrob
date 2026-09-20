@@ -788,6 +788,25 @@
       });
     }
 
+    // GET {path} (an already-prefixed avatar_url, e.g. "/profile/avatar/2") as a
+    // Blob, turned into an object URL. Uses raw fetch() instead of Lampa.Reguest():
+    // an <img src> can't carry a request header, so the caller's credential
+    // (X-Api-Key, or - for a QR/device-token session with no API key at all -
+    // the paired device's Bearer token) has to be sent via authHeaders() on a
+    // real fetch and the response handed back as a blob: URL, rather than
+    // embedded in the image URL itself where it would leak into browser
+    // history, disk caches and proxy/access logs.
+    function fetchAvatar(path, onDone, onFail) {
+      fetch(base() + path, {
+        headers: authHeaders()
+      }).then(function (r) {
+        return r.ok ? r.blob() : null;
+      }).then(function (blob) {
+        if (blob) onDone(URL.createObjectURL(blob));
+      }).catch(function () {
+      });
+    }
+
     // POST /auth/login — form-urlencoded username+password → Token
     // NOTE: login is an unauthenticated endpoint — do NOT send Bearer
     // NOTE: Astro middleware requires X-Api-Key for /api/proxy/* routes
@@ -3891,24 +3910,35 @@
       return COLORS[Math.abs(hash) % COLORS.length];
     }
 
-    // Avatar HTML: server image when avatar_url is set, uppercase first letter otherwise.
-    // Image URL needs ?api_key= because <img> cannot send headers.
+    // Avatar HTML: a letter placeholder, upgraded to the real server image by
+    // hydrateAvatar() below once it's fetched — an <img src> can't carry the
+    // auth header that fetch needs (X-Api-Key, or for a QR/device-token session
+    // with no API key at all, the paired device's Bearer token), so the image
+    // can no longer be loaded as a plain URL. Callers that insert this into a
+    // live DOM element must also call hydrateAvatar() on it afterwards.
     function avatarHtml(user) {
-      var server = serverUrl();
-      // Active profile's own key when one is set (see the matching note on
-      // apiKeyHeaders() in utils/api.js), otherwise the signed-in user's own.
-      var ownKey = Lampa.Storage.get(KEYS.ACTIVE_API_KEY) || Lampa.Storage.get(KEYS.OWN_API_KEY) || '';
-      if (user && user.avatar_url && server) {
-        var sep = user.avatar_url.indexOf('?') >= 0 ? '&' : '?';
-        return '<img class="scrob-avatar" src="' + server + '/api/proxy' + user.avatar_url + sep + 'api_key=' + encodeURIComponent(ownKey) + '">';
-      }
-
       // display_name: the only name-like field this plugin can ever resolve
       // for a session with no real login behind it (see storage.js's
       // getOwnProfileInfo()) - /auth/me (username) is Bearer-only.
       var name = user && (user.username || user.display_name) || '?';
       var letter = name.charAt(0).toUpperCase();
-      return '<div class="scrob-avatar scrob-avatar--letter" style="background:' + avatarColor(name) + '">' + letter + '</div>';
+      var attr = user && user.avatar_url ? ' data-scrob-avatar-path="' + encodeURIComponent(user.avatar_url) + '"' : '';
+      return '<div class="scrob-avatar scrob-avatar--letter"' + attr + ' style="background:' + avatarColor(name) + '">' + letter + '</div>';
+    }
+
+    // Swaps an avatarHtml() placeholder for the real avatar image once fetched
+    // with the caller's own auth headers (see fetchAvatar() in utils/api.js for
+    // why it's a header fetch and not a URL). $el is the jQuery element
+    // avatarHtml()'s output was inserted into — the placeholder itself, or an
+    // ancestor containing it. On any failure (no avatar, fetch error) the letter
+    // placeholder is simply left in place, same as before this image existed.
+    function hydrateAvatar($el) {
+      var placeholder = $el.is('[data-scrob-avatar-path]') ? $el : $el.find('[data-scrob-avatar-path]');
+      if (!placeholder.length) return;
+      var path = decodeURIComponent(placeholder.attr('data-scrob-avatar-path'));
+      fetchAvatar(path, function (blobUrl) {
+        placeholder.replaceWith('<img class="scrob-avatar" src="' + blobUrl + '">');
+      });
     }
 
     // Soft refresh of the active page (pattern: docs/gramsync/profile_levende.js softRefresh).
@@ -6817,6 +6847,7 @@
       removeHeaderButton();
       var btn = $('<div class="head__action selector open--scrob-profile"></div>');
       btn.append(avatarHtml(activeProfile()));
+      hydrateAvatar(btn);
       btn.on('hover:enter', showProfileSelect);
       $('.head .head__actions .open--settings').after(btn);
     }
@@ -6918,6 +6949,9 @@
             icon: avatarHtml(activeProfile()),
             selected: true
           }],
+          onDraw: function onDraw(item) {
+            hydrateAvatar(item);
+          },
           onSelect: function onSelect() {
             Lampa.Controller.toggle(returnController);
           },
@@ -6945,6 +6979,9 @@
       Lampa.Select.show({
         title: Lampa.Lang.translate('scrob_profiles'),
         items: items,
+        onDraw: function onDraw(item) {
+          hydrateAvatar(item);
+        },
         onSelect: function onSelect(a) {
           if (switchProfile(a.id)) renderHeaderButton();
           Lampa.Controller.toggle(returnController);
