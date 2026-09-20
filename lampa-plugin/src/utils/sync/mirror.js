@@ -98,6 +98,17 @@ export function setItemId(listName, elemKey, itemId) {
     save(m)
 }
 
+// Remove a whole list entry from the mirror (e.g. deleted server-side -
+// own get+mutate+save cycle, same pattern as setItemId/removeItemId above,
+// so it never races a concurrent write within the same convergeAll() pass).
+export function removeList(name) {
+    var m = get()
+    if (m.lists[name]) {
+        delete m.lists[name]
+        save(m)
+    }
+}
+
 // Remove item_id from mirror for a specific list and element key
 export function removeItemId(listName, elemKey) {
     var m = get()
