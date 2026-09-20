@@ -1403,6 +1403,21 @@ export function forceSync() {
     pullDropped(true)
 }
 
+// Wipe the local mirror/mapstore entirely (not just re-run initialSync - see
+// forceSync() above) for the active profile key. Called around an identity
+// change on a session with no ACTIVE_PROFILE_ID of its own (logout, and
+// saving a new manual API key / completing a fresh QR device pairing -
+// main.js) so a different Scrob account signing in on the same device never
+// inherits the previous account's list_ids/mappings from the shared
+// 'default' storage bucket (live-diagnosed 2026-09-20, see lists 15/17
+// investigation - the actual cause there was unrelated, but the shared-
+// 'default' risk this closes is real and was found along the way).
+export function resetLocalState() {
+    mirror.reset()
+    mirror.clearInitialDone()
+    mapstore.resetAll()
+}
+
 // Get sync status for display
 export function getStatus() {
     var m = mirror.get()

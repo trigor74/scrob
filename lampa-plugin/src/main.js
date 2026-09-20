@@ -329,13 +329,20 @@ function openLoginInputFlow(returnTo) {
 function openApiKeyInput(returnTo) {
     returnTo = returnTo || 'settings_component'
 
+    var previousKey = Lampa.Storage.get(KEYS.OWN_API_KEY, '')
+
     Lampa.Input.edit({
         title: Lampa.Lang.translate('scrob_api_key'),
-        value: Lampa.Storage.get(KEYS.OWN_API_KEY, ''),
+        value: previousKey,
         free: true,
         nosave: true
     }, function (value) {
-        Lampa.Storage.set(KEYS.OWN_API_KEY, (value || '').trim())
+        var newKey = (value || '').trim()
+        Lampa.Storage.set(KEYS.OWN_API_KEY, newKey)
+        // Only a genuine change to a non-empty key is a plausible identity
+        // switch (see doLogout()'s comment) - re-confirming the same value,
+        // or clearing the field, isn't worth a full mirror/mapstore wipe.
+        if (newKey && newKey !== previousKey) sync.resetLocalState()
         updateHeaderButton()
         refreshSettings()
         Lampa.Controller.toggle(returnTo)
@@ -372,6 +379,11 @@ function doLogout() {
     timelineSync.stop()
 
     clearSession()
+    // Wipe the local mirror/mapstore too - without a real login (API key/QR,
+    // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
+    // 'default' key and leak into whichever Scrob account signs in next on
+    // this device (see resetLocalState()).
+    sync.resetLocalState()
     removeHeaderButton()
     refreshSettings()
     Lampa.Noty.show(Lampa.Lang.translate('scrob_logout_success'))
@@ -467,6 +479,10 @@ function showQrAuthModal(data, returnTo) {
                 Lampa.Storage.set(KEYS.DEVICE_ACCESS_TOKEN, res.body.access_token)
                 Lampa.Storage.set(KEYS.DEVICE_REFRESH_TOKEN, res.body.refresh_token)
                 Lampa.Storage.set(KEYS.DEVICE_EXPIRES_AT, Date.now() + res.body.expires_in * 1000)
+                // A freshly-completed pairing, not a refreshDeviceToken() token
+                // rotation - always a deliberate new-sign-in action, so always
+                // reset (see doLogout()'s comment on the shared 'default' key).
+                sync.resetLocalState()
                 Lampa.Modal.close()
                 Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
                 updateHeaderButton()
