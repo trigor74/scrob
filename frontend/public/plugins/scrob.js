@@ -5746,6 +5746,31 @@
       BACKUP_FIELDS.forEach(function (field) {
         Lampa.Storage.set(field, snapshot[field] || '');
       });
+
+      // KEYS.ACTIVE_PROFILE_ID is part of BACKUP_FIELDS above, so a profile
+      // that already went through a real username/password login (the only
+      // situation-C flow that ever sets it - main.js's completeLogin(), to
+      // me.id) keeps its own real id, correctly restored. But a bare manual
+      // API key entry or a QR/device pairing - the two far more common
+      // situation-C sign-in paths - never touch ACTIVE_PROFILE_ID at all (see
+      // main.js: the API key settings field writes straight to OWN_API_KEY,
+      // deviceToken()'s success handler writes straight to
+      // DEVICE_ACCESS_TOKEN), so it was left restored to '' above for every
+      // levende profile that ever used either. mirror.js/mapstore.js both
+      // fall back to the literal string 'default' for an empty
+      // ACTIVE_PROFILE_ID - meaning EVERY such levende profile silently
+      // shared the exact same mirror/mapstore namespace, never its own.
+      // Live-reported (scrob.lmp.pp.ua): POST /lists/{id}/items 404s from a
+      // list_id that belonged to a different profile's account - traced to
+      // this, not the scenario-B accsdb-rotation gap fixed separately in
+      // a6fbe85. Falls back to a stable per-levende-profile id, same shape as
+      // scenario B's own synthetic id (minus the credential fingerprint - a
+      // levende PROFILE ID uniquely picks the backup snapshot circulating
+      // here, so there's no "same slot, different account" risk to guard
+      // against the way accsdb's own live-editable params have for B).
+      if (!Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID, '')) {
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profileId);
+      }
       restoreSettingsFields(profileId);
       restoreCustomCategories(profileId);
     }
