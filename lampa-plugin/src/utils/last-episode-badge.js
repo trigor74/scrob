@@ -17,11 +17,12 @@
 // TMDB, що вже прийшов з подією 'full'/'complite'), без жодного додаткового запиту.
 // seasons[].episode_count сам по собі рахує ВСІ анонсовані епізоди сезону, включно
 // з тими, що ще не вийшли в ефір — тому межу "вже вийшло" беремо з next_episode_to_air
-// (усе СУВОРО до нього вже вийшло) або, якщо дата наступного невідома, з
-// last_episode_to_air (усе аж ВКЛЮЧНО з ним). Обидва поля — стандартні TMDB-поля
-// повного /tv/{id}, присутні в data.movie так само, як next_episode_to_air, що сама
-// Lampa вже читає (app.min.js:44777) — лише last_episode_to_air клієнт не використовує,
-// але не вирізає з відповіді.
+// (усе до нього вже вийшло, а сам він — якщо його air_date вже сьогодні чи в
+// минулому, то й він теж, TMDB просто ще не встиг зняти його з "next") або,
+// якщо дата наступного невідома, з last_episode_to_air (усе аж ВКЛЮЧНО з ним).
+// Обидва поля — стандартні TMDB-поля повного /tv/{id}, присутні в data.movie
+// так само, як next_episode_to_air, що сама Lampa вже читає (app.min.js:44777) —
+// лише last_episode_to_air клієнт не використовує, але не вирізає з відповіді.
 
 import * as api from './api'
 import { KEYS, hasSession } from './storage'
@@ -44,14 +45,35 @@ function pickLastWatched(items) {
     return last
 }
 
+// today() у форматі TMDB air_date ('YYYY-MM-DD') - рядкове порівняння з ISO-датою
+// коректне лексикографічно, окремий парсинг не потрібен.
+function todayDateString() {
+    var d = new Date()
+    var mm = String(d.getMonth() + 1)
+    var dd = String(d.getDate())
+    if (mm.length < 2) mm = '0' + mm
+    if (dd.length < 2) dd = '0' + dd
+    return d.getFullYear() + '-' + mm + '-' + dd
+}
+
 // Межа "вже вийшло": усе (season, episode) СУВОРО менше next_episode_to_air
 // точно вийшло; якщо дата наступного невідома — усе аж ВКЛЮЧНО з last_episode_to_air.
 // null, якщо TMDB не дав жодного з двох (тоді countUnwatched рахує без обмеження —
 // той самий компроміс, що й раніше, лише як останній fallback).
+//
+// ВАЖЛИВО: next_episode_to_air.air_date - це лише ДАТА, без часу доби, а сам
+// покажчик "next" TMDB перераховує приблизно раз на добу. Тож у день виходу
+// епізоду (і деякий час після) next_episode_to_air ще СПОКІЙНІСІНЬКО може
+// вказувати на щойно вийшлий епізод, хоча він уже фактично вийшов в ефір.
+// Якщо air_date <= сьогодні - цей епізод уже вийшов, тож межу рахуємо
+// ВКЛЮЧНО з ним, а не строго до нього (інакше рахунок завжди відстає на 1
+// епізод одразу після виходу - саме так і зламалось: анонсовано 12, вийшло
+// 12, TMDB ще добу тримає next_episode_to_air на 12-му).
 function airedBoundary(card) {
     var next = card.next_episode_to_air
     if (next && next.season_number != null && next.episode_number != null) {
-        return { season: next.season_number, episode: next.episode_number, inclusive: false }
+        var alreadyAired = !!next.air_date && next.air_date <= todayDateString()
+        return { season: next.season_number, episode: next.episode_number, inclusive: alreadyAired }
     }
     var last = card.last_episode_to_air
     if (last && last.season_number != null && last.episode_number != null) {
