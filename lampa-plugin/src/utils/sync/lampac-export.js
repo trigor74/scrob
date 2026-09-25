@@ -157,15 +157,25 @@ function parseTimecodeResponse(raw) {
         out[hash] = {
             duration: parseFloat(entry.duration) || 0,
             time: parseFloat(entry.time) || 0,
-            percent: parseFloat(entry.percent) || 0
+            percent: parseFloat(entry.percent) || 0,
+            // Lampa.Timeline.update()'s own `updated` field (ms since epoch,
+            // Date.now() on the client that wrote it) - lampac stores it
+            // verbatim as SqlModel.watched_at and echoes it back here
+            // unchanged (TimeCode/Controller.cs's RoadJson()/Write()) - never
+            // a lampac invention, just never read here before. 0 means it was
+            // never actually set (legacy row/no native write yet); addHistoryEvent's
+            // own `if (watchedAt)` check already treats that as "unknown date"
+            // and omits the field, so no extra handling is needed for it here.
+            updated: parseFloat(entry.updated) || 0
         }
     }
     return out
 }
 
-// One card's timecode fetch → a list of {identity, percent, time, duration}
-// candidates. `identity` matches pushExternalWatchedMark()'s own shape
-// (timeline.js) so the same downstream push helpers can be reused untouched.
+// One card's timecode fetch → a list of {identity, percent, time, duration,
+// updated} candidates. `identity` matches pushExternalWatchedMark()'s own
+// shape (timeline.js) so the same downstream push helpers can be reused
+// untouched.
 function resolveCardTimecodes(card, raw) {
     var timecodes = parseTimecodeResponse(raw)
     var hashes = Object.keys(timecodes)
@@ -183,7 +193,7 @@ function resolveCardTimecodes(card, raw) {
             var tc = timecodes[hashes[h]]
             if (!best || tc.percent > best.percent) best = tc
         }
-        if (best) results.push({ identity: { isSeries: false, tmdbId: card.id }, percent: best.percent, time: best.time, duration: best.duration })
+        if (best) results.push({ identity: { isSeries: false, tmdbId: card.id }, percent: best.percent, time: best.time, duration: best.duration, updated: best.updated })
         return results
     }
 
@@ -198,7 +208,7 @@ function resolveCardTimecodes(card, raw) {
         var t = timecodes[hashes[i]]
         results.push({
             identity: { isSeries: true, seriesTmdbId: card.id, season: se.season, episode: se.episode },
-            percent: t.percent, time: t.time, duration: t.duration
+            percent: t.percent, time: t.time, duration: t.duration, updated: t.updated
         })
     }
     return results
@@ -301,7 +311,7 @@ function isAlreadyCovered(row, candidatePercent) {
 
 // ─── Push to Scrob (§5.6.3 п.6) ────────────────────────────
 
-function pushWatched(identity, callback) {
+function pushWatched(identity, watchedAt, callback) {
     var tmdbId = identity.isSeries ? identity.seriesTmdbId : identity.tmdbId
     var mediaType = identity.isSeries ? 'episode' : 'movie'
     var episode = identity.isSeries
@@ -312,7 +322,11 @@ function pushWatched(identity, callback) {
     // (getBatchWatchStatus) didn't catch it (a different source's recent
     // write, or a duplicate within this same import), but the end result is
     // the same as a normal success: it's marked watched in Scrob either way.
-    api.addHistoryEvent(tmdbId, mediaType, true, episode, null, function () { callback(true) }, function (err, status) { callback(status === 409) })
+    // watchedAt - Lampa's own road.updated (ms since epoch), threaded through
+    // from resolveCardTimecodes() - the real moment lampac saw this play,
+    // not "now". A falsy 0 (never actually set) is handled by
+    // addHistoryEvent()'s own `if (watchedAt)` check, same as passing null.
+    api.addHistoryEvent(tmdbId, mediaType, true, episode, watchedAt, function () { callback(true) }, function (err, status) { callback(status === 409) })
 }
 
 function pushProgress(identity, timeSeconds, runtimeMinutes, callback) {
@@ -345,7 +359,7 @@ function pushSequential(items, index, counters, onDone, onProgress) {
     }
 
     if (item.percent >= WATCHED_THRESHOLD_PERCENT) {
-        pushWatched(item.identity, function (ok) { if (ok) counters.watched++; next() })
+        pushWatched(item.identity, item.updated, function (ok) { if (ok) counters.watched++; next() })
     } else {
         pushProgress(item.identity, item.time, runtimeMinutes, function (ok) { if (ok) counters.progress++; next() })
     }
