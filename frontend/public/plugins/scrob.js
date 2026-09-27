@@ -5981,17 +5981,51 @@
     function resolveParsedTimecodes(card, timecodes) {
       var hashes = Object.keys(timecodes);
       if (!hashes.length) return [];
-      var isSeries = !!card.name;
+      var title = card.title || card.name || card.original_title || '';
       var results = [];
-      if (!isSeries) {
-        // Movie: card_id already scopes the response to this one title - if
-        // several hash variants exist (different encodes), take the one with
-        // the most progress rather than guessing which hash "is" the movie.
+      if (cardKind(card) !== 'tv') {
+        // Movie - or a card whose type can't be told from its fields (a
+        // trimmed lampac/tvOS bookmark carries only original_title even for a
+        // show; a Scrob-pulled series with an empty title has no `name`). The
+        // hash itself decides: Lampa keys a movie's progress by
+        // hash(original_title) and an episode's by hash(season+episode+name).
+        // Taking ANY hash as "the movie" (the old rule) exported a
+        // misdetected show's episodes as a movie with the show's tmdb id -
+        // a wrong title in Scrob's history/now-playing (found live
+        // 2026-09-27, ids 67391/122612/228429/289271).
+        var movieHashes = {};
+        if (card.original_title) movieHashes[String(Lampa.Utils.hash(card.original_title))] = true;
+        if (card.title) movieHashes[String(Lampa.Utils.hash(card.title))] = true;
+        var showName = card.original_title || card.title;
         var best = null;
+        var episodes = [];
         for (var h = 0; h < hashes.length; h++) {
           var tc = timecodes[hashes[h]];
-          if (!best || tc.percent > best.percent) best = tc;
+          if (movieHashes[String(hashes[h])]) {
+            if (!best || tc.percent > best.percent) best = tc;
+            continue;
+          }
+          // Not this movie's own hash - an episode of a show hiding behind
+          // a movie-looking card, or unrelated/unverifiable: skipped.
+          var mse = resolveSeasonEpisode(hashes[h], showName);
+          if (mse.season && mse.episode) {
+            episodes.push({
+              identity: {
+                isSeries: true,
+                seriesTmdbId: card.id,
+                season: mse.season,
+                episode: mse.episode
+              },
+              percent: tc.percent,
+              time: tc.time,
+              duration: tc.duration,
+              updated: tc.updated,
+              title: title
+            });
+          }
         }
+        // Episodes found - it is a show; its bare-title hash is no movie.
+        if (episodes.length) return episodes;
         if (best) results.push({
           identity: {
             isSeries: false,
@@ -6000,7 +6034,8 @@
           percent: best.percent,
           time: best.time,
           duration: best.duration,
-          updated: best.updated
+          updated: best.updated,
+          title: title
         });
         return results;
       }
@@ -6024,10 +6059,20 @@
           percent: t.percent,
           time: t.time,
           duration: t.duration,
-          updated: t.updated
+          updated: t.updated,
+          title: title
         });
       }
       return results;
+    }
+
+    // 'tv' / 'movie' as lampac's card_id suffix uses it - via the same
+    // detectMediaType() list-sync relies on (method/first_air_date/name), plus
+    // lampac's own extra series cues (TimeCode/plugin.js cards()). Was a bare
+    // `card.name` check, blind to a series card without `name`.
+    function cardKind(card) {
+      if (detectMediaType(card) === 'series' || card.original_name || card.number_of_seasons) return 'tv';
+      return 'movie';
     }
 
     // Small fixed-size concurrency pool - mirrors the external-player batch's
@@ -6063,7 +6108,7 @@
       for (var k = 0; k < Math.min(size, items.length); k++) launchNext();
     }
     function fetchCardTimecodes(auth, card, callback) {
-      var cardId = card.id + '_' + (card.name ? 'tv' : 'movie');
+      var cardId = card.id + '_' + cardKind(card);
       var url = buildTimecodeUrl(auth, cardId);
       var network = new Lampa.Reguest();
       network.timeout(15000);
@@ -6154,13 +6199,19 @@
     // lampac card_id ('674_movie' / '1851_tv') → the local Favorite card, the
     // only place a hash-only row's original name (needed to match the hash)
     // can come from.
+    // Prefers a card of the same kind; falls back to any card with this id - a
+    // trimmed card's kind can't be trusted, and resolveParsedTimecodes() lets
+    // the hash itself decide for a non-'tv' card anyway.
     function findFavoriteCard(favorite, cardId) {
       var parts = String(cardId).split('_');
+      var fallback = null;
       for (var i = 0; i < favorite.card.length; i++) {
         var card = favorite.card[i];
-        if (card && card.id == parts[0] && (card.name ? 'tv' : 'movie') === parts[1]) return card;
+        if (!card || card.id != parts[0]) continue;
+        if (cardKind(card) === parts[1]) return card;
+        if (!fallback) fallback = card;
       }
-      return null;
+      return fallback;
     }
 
     // One candidate per title/episode - several rows can describe the same one
@@ -6186,7 +6237,11 @@
       var scope = {};
       for (var i = 0; i < favorite.card.length; i++) {
         var card = favorite.card[i];
-        if (card && card.id) scope[card.id + '_' + (card.name ? 'tv' : 'movie')] = true;
+        // Both kinds: a trimmed card's kind can't be trusted (cardKind()).
+        if (card && card.id) {
+          scope[card.id + '_tv'] = true;
+          scope[card.id + '_movie'] = true;
+        }
       }
       return scope;
     }
@@ -6209,12 +6264,14 @@
         };
         var identity = parseDumpIdentity(row.id);
         if (identity) {
+          var known = row.card ? findFavoriteCard(favorite, row.card) : null;
           keepBest(byKey, {
             identity: identity,
             percent: tc.percent,
             time: tc.time,
             duration: tc.duration,
-            updated: tc.updated
+            updated: tc.updated,
+            title: known ? known.title || known.name || known.original_title || '' : ''
           });
           continue;
         }
@@ -6342,11 +6399,13 @@
         callback(status === 409);
       });
     }
-    function pushProgress(identity, timeSeconds, runtimeMinutes, callback) {
+    function pushProgress(identity, timeSeconds, runtimeMinutes, title, callback) {
       var payload = {
         tmdb_id: identity.isSeries ? null : identity.tmdbId,
         media_type: identity.isSeries ? 'episode' : 'movie',
-        title: 'lampac import',
+        // The card's own title when known - Scrob shows this placeholder only
+        // when its TMDB lookup fails.
+        title: title || 'lampac import',
         runtime: runtimeMinutes || null,
         reset: false
       };
@@ -6391,7 +6450,7 @@
           next();
         });
       } else {
-        pushProgress(item.identity, item.time, runtimeMinutes, function (ok) {
+        pushProgress(item.identity, item.time, runtimeMinutes, item.title, function (ok) {
           if (ok) counters.progress++;
           next();
         });
