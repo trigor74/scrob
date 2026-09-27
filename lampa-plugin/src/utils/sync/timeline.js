@@ -1382,6 +1382,7 @@ export function pullContinueWatching() {
         var collector = []
         for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i], collector)
         writeTimelineSilent(collector)
+        if (collector.length) scheduleMainRepaint()
     }, function (err) {
         console.warn('ScrobTimeline', 'continue-watching pull failed', err)
     })
@@ -1464,6 +1465,48 @@ var prefetchInFlight = false
 // pattern as session.gen above, for the same reason.
 var prefetchGeneration = 0
 
+// ─── Post-switch repaint of the main screen ─────────────────
+// Neither bulk pull (pullContinueWatching()/runPrefetch()) repaints what's
+// already on screen (see runPrefetchChunks() for why no state:changed
+// broadcast) - fine at app start, but right after a profile switch the
+// main screen was just rebuilt (profiles.js softRefresh()) from the
+// restored backup's file_view, before either pull landed, so the
+// continue-watching row kept showing stale titles until the next visit.
+// For a short window after a switch, a pull that actually wrote something
+// asks core to refresh the CURRENT activity only - activity.refresh()
+// (core Activity slide: re-creates it via Activity.replace() only if it's
+// still the active one), never Activity's refresh(true) over the whole
+// navigation stack. Debounced so both pulls landing close together cost
+// one repaint.
+var REPAINT_WINDOW_MS = 30000
+var REPAINT_DEBOUNCE_MS = 1000
+var repaintUntil = 0
+var repaintTimer = null
+// Skip the repaint when main was already rebuilt AFTER the last pulled
+// write - profiles.js's switchProfile() calls a plain Favorite.read(),
+// whose state:changed makes core itself refresh every activity ~1.4s
+// later (Activity refresh(true) 1s + slide runRefresh() 400ms); a pull
+// landing before that is already on screen, and repainting again was a
+// visible second, pointless rebuild (found live 2026-09-27).
+var lastPullWriteAt = 0
+var mainBuiltAt = 0
+
+function scheduleMainRepaint() {
+    if (Date.now() > repaintUntil) return
+    lastPullWriteAt = Date.now()
+    if (repaintTimer) clearTimeout(repaintTimer)
+    repaintTimer = setTimeout(function () {
+        repaintTimer = null
+        if (!running) return
+        if (mainBuiltAt >= lastPullWriteAt) return
+        var active = Lampa.Activity.active()
+        if (!active || active.component !== 'main') return
+        if (!active.activity || typeof active.activity.refresh !== 'function') return
+        console.log('ScrobTimeline', 'repaint main after profile switch')
+        active.activity.refresh()
+    }, REPAINT_DEBOUNCE_MS)
+}
+
 function prefetchCandidateKeys() {
     var keys = []
     if (Lampa.Storage.get(KEYS.PREFETCH_HISTORY, true)) keys.push('history')
@@ -1517,6 +1560,7 @@ function runPrefetchChunks(chunks, index, gen, collector) {
 
     if (index >= chunks.length) {
         writeTimelineSilent(collector)
+        if (collector.length) scheduleMainRepaint()
         prefetched = true
         prefetchInFlight = false
         // Live fix 2026-09-19: this used to ALSO broadcast
@@ -1549,6 +1593,7 @@ function runPrefetchChunks(chunks, index, gen, collector) {
         // to redo - applyWatchStatusItem()/pullWriteTimeline() is
         // idempotent, LWW-guarded).
         writeTimelineSilent(collector)
+        if (collector.length) scheduleMainRepaint()
         prefetchInFlight = false
         console.warn('ScrobTimeline', 'batch watch-status prefetch failed', err)
     })
@@ -1583,6 +1628,10 @@ function runPrefetch() {
 // session, or while one is already in flight - see `prefetched` above.
 function onMainScreenActivity(e) {
     if (!running) return
+    // 'init' fires only when core actually (re)creates the main activity
+    // (Activity create(), incl. every Activity.replace()), not on a plain
+    // back-navigation 'start' - see scheduleMainRepaint().
+    if (e && e.type === 'init' && e.component === 'main') mainBuiltAt = Date.now()
     if (!e || e.type !== 'start' || e.component !== 'main') return
     runPrefetch()
 }
@@ -1622,6 +1671,9 @@ function setupProfileListener() {
             if (newId !== lastProfileId) {
                 lastProfileId = newId
                 stop()
+                // Armed after stop() (which disarms it) - covers the bulk
+                // pulls this start() kicks off, see scheduleMainRepaint().
+                repaintUntil = Date.now() + REPAINT_WINDOW_MS
                 start()
             }
         }
@@ -1698,6 +1750,12 @@ export function stop() {
     prefetched = false
     prefetchInFlight = false
     prefetchGeneration++
+
+    repaintUntil = 0
+    if (repaintTimer) {
+        clearTimeout(repaintTimer)
+        repaintTimer = null
+    }
 
     resetSessionState()
     resetExternalContext()

@@ -29,7 +29,12 @@ export var KEYS = {
     DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
     DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
     // Бейдж "останній переглянутий епізод" на повній картці серіалу.
-    SHOW_LAST_EPISODE_BADGE: 'scrob_show_last_episode_badge'
+    SHOW_LAST_EPISODE_BADGE: 'scrob_show_last_episode_badge',
+    // lampac data area of the signed-in (main) profile: whatever
+    // lampac_profile_id was already on this device at login, kept as
+    // {value} so an empty area ('') is distinguishable from "not captured".
+    // See profiles.js's applyLampacProfileId().
+    LAMPAC_BASE_PROFILE_ID: 'scrob_lampac_base_profile_id'
 }
 
 // Keys isolated per profile: backed up on switch, restored for the target.
@@ -40,7 +45,13 @@ export var ISOLATED_KEYS = [
     'online_last_balanser',
     'file_view',
     'torrents_view',
-    'torrents_filter_data'
+    'torrents_filter_data',
+    // lampac bookmark.js's changelog cursor (lampac 95b3a03+; unused by an
+    // older lampac). One per device on lampac's side - it has to travel with
+    // the profile's own `favorite` and lampac area (profiles.js's
+    // applyLampacProfileId()), or the next page load asks the new area for
+    // "changes since" a version number from a different area.
+    'lampac_bookmark_version'
 ]
 
 // Defaults applied when the target profile has no saved data yet.
@@ -69,7 +80,9 @@ var DEFAULTS = {
     //     so the non-index cid property is silently dropped - the per-card filter looks saved,
     //     then vanishes on the next reload.
     torrents_view: '[]',
-    torrents_filter_data: '{}'
+    torrents_filter_data: '{}',
+    // '0' = no cursor yet: lampac pulls a full /bookmark/dump of the area.
+    lampac_bookmark_version: '0'
 }
 
 // Backup storage key for ONE profile - a single JSON object holding all of

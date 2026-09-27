@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-25
+ * Build: 2026-09-27
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -563,11 +563,22 @@
       DEVICE_REFRESH_TOKEN: 'scrob_device_refresh_token',
       DEVICE_EXPIRES_AT: 'scrob_device_expires_at',
       // Бейдж "останній переглянутий епізод" на повній картці серіалу.
-      SHOW_LAST_EPISODE_BADGE: 'scrob_show_last_episode_badge'
+      SHOW_LAST_EPISODE_BADGE: 'scrob_show_last_episode_badge',
+      // lampac data area of the signed-in (main) profile: whatever
+      // lampac_profile_id was already on this device at login, kept as
+      // {value} so an empty area ('') is distinguishable from "not captured".
+      // See profiles.js's applyLampacProfileId().
+      LAMPAC_BASE_PROFILE_ID: 'scrob_lampac_base_profile_id'
     };
 
     // Keys isolated per profile: backed up on switch, restored for the target.
-    var ISOLATED_KEYS = ['favorite', 'online_view', 'online_watched_last', 'online_last_balanser', 'file_view', 'torrents_view', 'torrents_filter_data'];
+    var ISOLATED_KEYS = ['favorite', 'online_view', 'online_watched_last', 'online_last_balanser', 'file_view', 'torrents_view', 'torrents_filter_data',
+    // lampac bookmark.js's changelog cursor (lampac 95b3a03+; unused by an
+    // older lampac). One per device on lampac's side - it has to travel with
+    // the profile's own `favorite` and lampac area (profiles.js's
+    // applyLampacProfileId()), or the next page load asks the new area for
+    // "changes since" a version number from a different area.
+    'lampac_bookmark_version'];
 
     // Defaults applied when the target profile has no saved data yet.
     var DEFAULTS = {
@@ -595,7 +606,9 @@
       //     so the non-index cid property is silently dropped - the per-card filter looks saved,
       //     then vanishes on the next reload.
       torrents_view: '[]',
-      torrents_filter_data: '{}'
+      torrents_filter_data: '{}',
+      // '0' = no cursor yet: lampac pulls a full /bookmark/dump of the area.
+      lampac_bookmark_version: '0'
     };
 
     // Backup storage key for ONE profile - a single JSON object holding all of
@@ -3949,6 +3962,74 @@
       activity.outdated = false;
     }
 
+    // ─── Per-profile lampac data area ──────────────────────────
+    // lampac keeps one data area per (uid, lampac_profile_id) - bookmarks,
+    // timecodes and sync.js's online_view/torrents_view alike - so with an
+    // untouched lampac_profile_id every Scrob profile on a device shared ONE
+    // area, and each page load merged the other profiles' lampac changes into
+    // whichever profile was active (then pushed them to its Scrob account;
+    // found live 2026-09-27). The signed-in (main) profile keeps the area the
+    // device already had at login; every other profile gets its own
+    // 'scrob_<id>'. Works for both lampac generations - profile_id predates
+    // 95b3a03.
+
+    var LAMPAC_PROFILE_KEY = 'lampac_profile_id';
+    var LAMPAC_AREA_PREFIX = 'scrob_';
+    // Extra field in a profile backup (not an ISOLATED_KEY, never restored):
+    // the lampac area its lampac_bookmark_version was taken from.
+    var LAMPAC_AREA_TAG = 'lampac_area';
+    function lampacBaseProfileId() {
+      var saved = Lampa.Storage.get(KEYS.LAMPAC_BASE_PROFILE_ID, '');
+      if (saved && _typeof(saved) === 'object' && typeof saved.value === 'string') return saved.value;
+      return null;
+    }
+
+    // Remembers the device's own lampac area once per session (login). A value
+    // that is already one of ours ('scrob_...') means a previous session never
+    // released it (see releaseLampacProfileId()) - fall back to the default
+    // area rather than adopting another profile's.
+    function captureLampacBaseProfileId() {
+      if (lampacBaseProfileId() !== null) return;
+      var current = String(Lampa.Storage.get(LAMPAC_PROFILE_KEY, '') || '');
+      if (current.indexOf(LAMPAC_AREA_PREFIX) === 0) current = '';
+      Lampa.Storage.set(KEYS.LAMPAC_BASE_PROFILE_ID, {
+        value: current
+      });
+    }
+    function lampacProfileIdFor(targetId) {
+      var me = getMe();
+      if (me.id != null && String(me.id) === String(targetId)) return lampacBaseProfileId() || '';
+      return LAMPAC_AREA_PREFIX + targetId;
+    }
+
+    // Returns true when the area actually changed.
+    function setLampacProfileId(value) {
+      if (String(Lampa.Storage.get(LAMPAC_PROFILE_KEY, '') || '') === value) return false;
+      Lampa.Storage.set(LAMPAC_PROFILE_KEY, value);
+      return true;
+    }
+
+    // Ask lampac's own scripts to re-read the (new) area - both events exist in
+    // lampac before and after 95b3a03; a no-op without lampac.
+    function requestLampacPull() {
+      Lampa.Listener.send('lampac', {
+        name: 'bookmark_pullFromServer'
+      });
+      Lampa.Listener.send('lampac', {
+        type: 'timecode_pullFromServer'
+      });
+    }
+
+    // Logout: hand the device back its own lampac area. The cursor is reset
+    // because the local `favorite` left behind belongs to the profile just
+    // left, not to the base area.
+    function releaseLampacProfileId() {
+      var base = lampacBaseProfileId();
+      if (base === null) return;
+      if (setLampacProfileId(base)) Lampa.Storage.set('lampac_bookmark_version', '0');
+      Lampa.Storage.set(KEYS.LAMPAC_BASE_PROFILE_ID, '');
+    }
+
     // Back up the currently-active profile's isolated keys (if any profile was
     // active), then restore targetId's own backup-or-defaults. Shared by
     // switchProfile() (an in-session switch) and completeLogin() (a fresh sign-in
@@ -3970,23 +4051,41 @@
           var value = Lampa.Storage.get(key, 'none');
           if (value != 'none') outgoing[key] = value;
         });
+        // Which lampac area lampac_bookmark_version above belongs to - see
+        // the restore side below.
+        outgoing[LAMPAC_AREA_TAG] = String(Lampa.Storage.get(LAMPAC_PROFILE_KEY, '') || '');
         Lampa.Storage.set(backupKey(currentId), outgoing);
       }
+
+      // Switch the lampac area BEFORE restoring: lampac's sync.js exports
+      // online_view/torrents_view on every Storage 'change', immediately, to
+      // whatever lampac_profile_id is set at that moment - restoring first
+      // would upload the target's data into the outgoing profile's area.
+      captureLampacBaseProfileId();
+      var lampacArea = lampacProfileIdFor(targetId);
+      var lampacChanged = setLampacProfileId(lampacArea);
 
       // Restore: a malformed/corrupted backup for this one profile falls
       // through to defaults for every key instead of taking anything else
       // down with it.
       var saved = Lampa.Storage.get(backupKey(targetId), 'none');
       if (saved === 'none' || _typeof(saved) !== 'object' || saved === null) saved = {};
+
+      // A cursor saved against a different area (a backup from before this
+      // per-profile split, or with no area tag at all) is meaningless for
+      // this one - drop it so lampac starts from a full dump.
+      var staleCursor = saved[LAMPAC_AREA_TAG] !== lampacArea;
       ISOLATED_KEYS.forEach(function (key) {
-        Lampa.Storage.set(key, key in saved ? saved[key] : defaultValue(key));
+        var keep = key in saved && !(key === 'lampac_bookmark_version' && staleCursor);
+        Lampa.Storage.set(key, keep ? saved[key] : defaultValue(key));
       });
+      if (lampacChanged) requestLampacPull();
     }
 
     // Switch active profile:
     // 1. backup/restore isolated keys (current → backup, target → restore-or-default)
-    // 2. activate target credentials
-    // 3. re-read timeline/favorite into UI
+    // 2. re-read timeline/favorite into UI
+    // 3. activate target credentials
     // 4. soft refresh the active page
     function switchProfile(targetId) {
       var currentId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
@@ -3998,7 +4097,19 @@
       if (!target || target.id == currentId) return false;
       restoreIsolatedData(target.id);
 
-      // 2. Activate target credentials — API key BEFORE profile id. Lampa.Storage.set()
+      // 2. Re-read data into UI — BEFORE step 3, same order as main.js's
+      // completeLogin(). restoreIsolatedData() only writes Storage, while
+      // Lampa.Favorite.get() reads core's in-memory cache (refreshed only by
+      // Favorite.read()). Setting ACTIVE_PROFILE_ID restarts timeline.js
+      // synchronously, and its start() runs the watch-status prefetch whose
+      // candidate pool comes from Favorite.get({type:'history'}) - read after
+      // step 3, that pool was still the OUTGOING profile's history, so the
+      // "Ви дивилися"/continue-watching row of the new profile stayed stale
+      // until each card was opened by hand (found live 2026-09-27).
+      Lampa.Timeline.read();
+      Lampa.Favorite.read();
+
+      // 3. Activate target credentials — API key BEFORE profile id. Lampa.Storage.set()
       // dispatches its 'change' event synchronously (no microtask/setTimeout), and the
       // sync engine's setupProfileListener() reacts to ACTIVE_PROFILE_ID changing by
       // immediately restarting sync (utils/sync/engine.js). If the profile id were set
@@ -4008,10 +4119,6 @@
       // old one's identity.
       Lampa.Storage.set(KEYS.ACTIVE_API_KEY, target.api_key);
       Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, target.id);
-
-      // 3. Re-read data into UI
-      Lampa.Timeline.read();
-      Lampa.Favorite.read();
 
       // 4. Soft refresh of the active page
       softRefresh();
@@ -5362,6 +5469,7 @@
         var collector = [];
         for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i], collector);
         writeTimelineSilent(collector);
+        if (collector.length) scheduleMainRepaint();
       }, function (err) {
         console.warn('ScrobTimeline', 'continue-watching pull failed', err);
       });
@@ -5441,6 +5549,47 @@
     // state into whatever profile is active by the time this lands). Same
     // pattern as session.gen above, for the same reason.
     var prefetchGeneration = 0;
+
+    // ─── Post-switch repaint of the main screen ─────────────────
+    // Neither bulk pull (pullContinueWatching()/runPrefetch()) repaints what's
+    // already on screen (see runPrefetchChunks() for why no state:changed
+    // broadcast) - fine at app start, but right after a profile switch the
+    // main screen was just rebuilt (profiles.js softRefresh()) from the
+    // restored backup's file_view, before either pull landed, so the
+    // continue-watching row kept showing stale titles until the next visit.
+    // For a short window after a switch, a pull that actually wrote something
+    // asks core to refresh the CURRENT activity only - activity.refresh()
+    // (core Activity slide: re-creates it via Activity.replace() only if it's
+    // still the active one), never Activity's refresh(true) over the whole
+    // navigation stack. Debounced so both pulls landing close together cost
+    // one repaint.
+    var REPAINT_WINDOW_MS = 30000;
+    var REPAINT_DEBOUNCE_MS = 1000;
+    var repaintUntil = 0;
+    var repaintTimer = null;
+    // Skip the repaint when main was already rebuilt AFTER the last pulled
+    // write - profiles.js's switchProfile() calls a plain Favorite.read(),
+    // whose state:changed makes core itself refresh every activity ~1.4s
+    // later (Activity refresh(true) 1s + slide runRefresh() 400ms); a pull
+    // landing before that is already on screen, and repainting again was a
+    // visible second, pointless rebuild (found live 2026-09-27).
+    var lastPullWriteAt = 0;
+    var mainBuiltAt = 0;
+    function scheduleMainRepaint() {
+      if (Date.now() > repaintUntil) return;
+      lastPullWriteAt = Date.now();
+      if (repaintTimer) clearTimeout(repaintTimer);
+      repaintTimer = setTimeout(function () {
+        repaintTimer = null;
+        if (!running$1) return;
+        if (mainBuiltAt >= lastPullWriteAt) return;
+        var active = Lampa.Activity.active();
+        if (!active || active.component !== 'main') return;
+        if (!active.activity || typeof active.activity.refresh !== 'function') return;
+        console.log('ScrobTimeline', 'repaint main after profile switch');
+        active.activity.refresh();
+      }, REPAINT_DEBOUNCE_MS);
+    }
     function prefetchCandidateKeys() {
       var keys = [];
       if (Lampa.Storage.get(KEYS.PREFETCH_HISTORY, true)) keys.push('history');
@@ -5499,6 +5648,7 @@
 
       if (index >= chunks.length) {
         writeTimelineSilent(collector);
+        if (collector.length) scheduleMainRepaint();
         prefetched = true;
         prefetchInFlight = false;
         // Live fix 2026-09-19: this used to ALSO broadcast
@@ -5531,6 +5681,7 @@
         // to redo - applyWatchStatusItem()/pullWriteTimeline() is
         // idempotent, LWW-guarded).
         writeTimelineSilent(collector);
+        if (collector.length) scheduleMainRepaint();
         prefetchInFlight = false;
         console.warn('ScrobTimeline', 'batch watch-status prefetch failed', err);
       });
@@ -5563,6 +5714,10 @@
     // session, or while one is already in flight - see `prefetched` above.
     function onMainScreenActivity(e) {
       if (!running$1) return;
+      // 'init' fires only when core actually (re)creates the main activity
+      // (Activity create(), incl. every Activity.replace()), not on a plain
+      // back-navigation 'start' - see scheduleMainRepaint().
+      if (e && e.type === 'init' && e.component === 'main') mainBuiltAt = Date.now();
       if (!e || e.type !== 'start' || e.component !== 'main') return;
       runPrefetch();
     }
@@ -5601,6 +5756,9 @@
           if (newId !== lastProfileId) {
             lastProfileId = newId;
             stop();
+            // Armed after stop() (which disarms it) - covers the bulk
+            // pulls this start() kicks off, see scheduleMainRepaint().
+            repaintUntil = Date.now() + REPAINT_WINDOW_MS;
             start();
           }
         }
@@ -5673,6 +5831,11 @@
       prefetched = false;
       prefetchInFlight = false;
       prefetchGeneration++;
+      repaintUntil = 0;
+      if (repaintTimer) {
+        clearTimeout(repaintTimer);
+        repaintTimer = null;
+      }
       resetSessionState();
       resetExternalContext();
     }
@@ -6205,8 +6368,11 @@
       if (!value) return url;
       return url + (url.indexOf('?') === -1 ? '?' : '&') + key + '=' + encodeURIComponent(value);
     }
-    function buildTimecodeUrl(auth, cardId) {
-      var url = auth.host + '/timecode/all';
+
+    // `method` - 'all' (per-card, both lampac generations) or 'dump' (whole
+    // area, lampac 95b3a03+); defaults to 'all'.
+    function buildTimecodeUrl(auth, cardId, method) {
+      var url = auth.host + '/timecode/' + (method || 'all');
       url = appendParam(url, 'token', auth.token);
       url = appendParam(url, 'account_email', auth.accountEmail);
       url = appendParam(url, 'uid', auth.uid);
@@ -6293,7 +6459,12 @@
     // shape (timeline.js) so the same downstream push helpers can be reused
     // untouched.
     function resolveCardTimecodes(card, raw) {
-      var timecodes = parseTimecodeResponse(raw);
+      return resolveParsedTimecodes(card, parseTimecodeResponse(raw));
+    }
+
+    // Same, from an already-parsed { hash: {duration, time, percent, updated} }
+    // map - shared with the /timecode/dump path below (its hash-only rows).
+    function resolveParsedTimecodes(card, timecodes) {
       var hashes = Object.keys(timecodes);
       if (!hashes.length) return [];
       var isSeries = !!card.name;
@@ -6396,6 +6567,193 @@
         network.clear();
         callback([]);
       }, false, {});
+    }
+
+    // ─── lampac generation + whole-area dump (lampac 95b3a03+) ───
+    // An older lampac has neither /api/capabilities nor /timecode/dump - any
+    // failure here just means "old server", and the per-card /timecode/all path
+    // above runs exactly as before.
+
+    // ModuleCapabilities "timecode" contract version that introduced
+    // /timecode/dump (Modules/Sync/TimeCode/ModInit.cs).
+    var TIMECODE_DUMP_FEATURE = 3;
+    // Native identity written by lampac's timecode.js / the tvOS client
+    // (TimeCode/plugin.js identify()).
+    var IDENTITY_MOVIE = /^movie-(\d+)$/;
+    var IDENTITY_EPISODE = /^tv-(\d+)-s(\d+)e(\d+)$/;
+    function requestJson(url, timeout, onSuccess, onFail) {
+      var network = new Lampa.Reguest();
+      network.timeout(timeout);
+      network.native(url, function (data) {
+        network.clear();
+        onSuccess(typeof data === 'string' ? function () {
+          try {
+            return JSON.parse(data);
+          } catch (e) {
+            return null;
+          }
+        }() : data);
+      }, function () {
+        network.clear();
+        onFail();
+      }, false, {});
+    }
+
+    // null for an older lampac (404) or anything that isn't lampac's own answer.
+    function fetchCapabilities(auth, callback) {
+      requestJson(appendParam(auth.host + '/api/capabilities', 'token', auth.token), 10000, function (caps) {
+        callback(caps && caps.lampac ? caps : null);
+      }, function () {
+        callback(null);
+      });
+    }
+
+    // Same identity rule as lampac's own timecode.js: when the server hands out
+    // the identity (assignedUid - no accsdb users), it writes with uid=<that>
+    // and deliberately WITHOUT account_email (account_email outranks uid in
+    // lampac's identity resolution, so sending it would read another area).
+    function applyCapabilities(auth, caps) {
+      if (!caps || !caps.assignedUid) return;
+      auth.uid = caps.assignedUid;
+      auth.accountEmail = '';
+    }
+    function supportsTimecodeDump(caps) {
+      var version = caps && caps.features ? parseInt(caps.features.timecode, 10) : 0;
+      return version >= TIMECODE_DUMP_FEATURE;
+    }
+    function parseDumpIdentity(id) {
+      var m = IDENTITY_MOVIE.exec(id || '');
+      if (m) return {
+        isSeries: false,
+        tmdbId: parseInt(m[1], 10)
+      };
+      m = IDENTITY_EPISODE.exec(id || '');
+      if (m) return {
+        isSeries: true,
+        seriesTmdbId: parseInt(m[1], 10),
+        season: parseInt(m[2], 10),
+        episode: parseInt(m[3], 10)
+      };
+      return null;
+    }
+
+    // lampac card_id ('674_movie' / '1851_tv') → the local Favorite card, the
+    // only place a hash-only row's original name (needed to match the hash)
+    // can come from.
+    function findFavoriteCard(favorite, cardId) {
+      var parts = String(cardId).split('_');
+      for (var i = 0; i < favorite.card.length; i++) {
+        var card = favorite.card[i];
+        if (card && card.id == parts[0] && (card.name ? 'tv' : 'movie') === parts[1]) return card;
+      }
+      return null;
+    }
+
+    // One candidate per title/episode - several rows can describe the same one
+    // (a hash-only row next to an identified one, or two encodes' hashes);
+    // keep the most progressed, same rule as resolveParsedTimecodes()' movies.
+    function keepBest(byKey, candidate) {
+      var key = dedupKey(candidate.identity);
+      if (!byKey[key] || candidate.percent > byKey[key].percent) byKey[key] = candidate;
+    }
+
+    // The area /timecode/dump reads may hold OTHER Scrob profiles' progress:
+    // until profiles.js gave each managed profile its own 'scrob_<id>' lampac
+    // area (689dd8f), every profile on the device wrote into the device's one
+    // base area - which the main profile still uses. Dumping it whole exported
+    // every profile's history into the main Scrob account (found live
+    // 2026-09-27). The per-card path was only ever safe because it walked this
+    // profile's own favorite.card - so on a shared area, scope the dump the
+    // same way: null (no scope) for a profile's own area or a single-account
+    // session, where the whole dump genuinely is this account's.
+    function dumpScope(favorite) {
+      var area = String(Lampa.Storage.get('lampac_profile_id', '') || '');
+      if (area.indexOf('scrob_') === 0 || getProfiles().length <= 1) return null;
+      var scope = {};
+      for (var i = 0; i < favorite.card.length; i++) {
+        var card = favorite.card[i];
+        if (card && card.id) scope[card.id + '_' + (card.name ? 'tv' : 'movie')] = true;
+      }
+      return scope;
+    }
+    function dumpRowsToCandidates(rows, favorite) {
+      var byKey = {};
+      var hashOnly = {};
+      var titles = {};
+      var scope = dumpScope(favorite);
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (!row || row.deleted) continue;
+        if (scope && !scope[row.card]) continue;
+        if (row.card) titles[row.card] = true;
+        var tc = {
+          duration: parseFloat(row.duration) || 0,
+          time: parseFloat(row.position) || 0,
+          percent: parseFloat(row.percent) || 0,
+          // Same value /timecode/all returns as road.updated (ms since epoch).
+          updated: parseFloat(row.watched_at) || 0
+        };
+        var identity = parseDumpIdentity(row.id);
+        if (identity) {
+          keepBest(byKey, {
+            identity: identity,
+            percent: tc.percent,
+            time: tc.time,
+            duration: tc.duration,
+            updated: tc.updated
+          });
+          continue;
+        }
+        if (row.card && row.hash) {
+          if (!hashOnly[row.card]) hashOnly[row.card] = {};
+          hashOnly[row.card][row.hash] = tc;
+        }
+      }
+      for (var cardId in hashOnly) {
+        var card = findFavoriteCard(favorite, cardId);
+        if (!card) continue;
+        var resolved = resolveParsedTimecodes(card, hashOnly[cardId]);
+        for (var r = 0; r < resolved.length; r++) keepBest(byKey, resolved[r]);
+      }
+      var candidates = [];
+      for (var k in byKey) candidates.push(byKey[k]);
+      return {
+        candidates: candidates,
+        titles: Object.keys(titles).length
+      };
+    }
+
+    // callback(null) on any failure - the caller falls back to the per-card path.
+    function fetchDumpCandidates(auth, favorite, callback) {
+      requestJson(buildTimecodeUrl(auth, null, 'dump'), 30000, function (data) {
+        if (!data || data.accsdb || !Array.isArray(data.rows)) {
+          callback(null);
+          return;
+        }
+        callback(dumpRowsToCandidates(data.rows, favorite));
+      }, function () {
+        callback(null);
+      });
+    }
+
+    // The original per-card path (both lampac generations): one /timecode/all
+    // per local Favorite card.
+    function fetchLegacyCandidates(auth, cards, onProgress, callback) {
+      runPool(cards, TIMECODE_POOL_SIZE, function (card, done) {
+        fetchCardTimecodes(auth, card, done);
+      }, function (perCardResults) {
+        var candidates = [];
+        for (var i = 0; i < perCardResults.length; i++) {
+          var list = perCardResults[i] || [];
+          for (var j = 0; j < list.length; j++) candidates.push(list[j]);
+        }
+        callback({
+          candidates: candidates,
+          titles: cards.length
+        });
+      }, function (done, total) {
+        if (onProgress) onProgress('timecodes', done, total);
+      });
     }
 
     // ─── Dedup against Scrob (§5.6.3 п.5) ──────────────────────
@@ -6549,50 +6907,53 @@
       var listsThrown = exportThrownList(favorite);
       if (listsThrown > 0) forceSync();
       var auth = buildLampacAuth();
-      var cards = favorite.card;
-      if (!cards.length) {
+      function legacy() {
+        fetchLegacyCandidates(auth, favorite.card, onProgress, function (res) {
+          exportCandidates(res, listsThrown, onDone, onProgress);
+        });
+      }
+      fetchCapabilities(auth, function (caps) {
+        applyCapabilities(auth, caps);
+        if (!supportsTimecodeDump(caps)) {
+          legacy();
+          return;
+        }
+        fetchDumpCandidates(auth, favorite, function (res) {
+          if (!res) {
+            legacy();
+            return;
+          }
+          if (onProgress) onProgress('timecodes', 1, 1);
+          exportCandidates(res, listsThrown, onDone, onProgress);
+        });
+      });
+    }
+
+    // `res` - { candidates, titles } from either timecode source above.
+    function exportCandidates(res, listsThrown, onDone, onProgress) {
+      var candidates = [];
+      for (var i = 0; i < res.candidates.length; i++) {
+        if (res.candidates[i].percent >= PROGRESS_FLOOR_PERCENT) candidates.push(res.candidates[i]);
+      }
+      if (!candidates.length) {
         running = false;
         onDone({
           listsThrown: listsThrown,
           watched: 0,
           progress: 0,
           skipped: 0,
-          cardsScanned: 0
+          cardsScanned: res.titles
         });
         return;
       }
-      runPool(cards, TIMECODE_POOL_SIZE, function (card, done) {
-        fetchCardTimecodes(auth, card, done);
-      }, function (perCardResults) {
-        var candidates = [];
-        for (var i = 0; i < perCardResults.length; i++) {
-          var list = perCardResults[i] || [];
-          for (var j = 0; j < list.length; j++) {
-            if (list[j].percent >= PROGRESS_FLOOR_PERCENT) candidates.push(list[j]);
-          }
-        }
-        if (!candidates.length) {
-          running = false;
-          onDone({
-            listsThrown: listsThrown,
-            watched: 0,
-            progress: 0,
-            skipped: 0,
-            cardsScanned: cards.length
-          });
-          return;
-        }
-        var statusPool = buildBatchStatusPool(candidates);
-        getBatchWatchStatus(statusPool, function (rows) {
-          finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone, onProgress);
-        }, function () {
-          // Dedup lookup failed - proceed without it rather than dropping
-          // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
-          // apply here: worst case is a few redundant writes, not silence).
-          finishExport(candidates, {}, listsThrown, cards.length, onDone, onProgress);
-        });
-      }, function (done, total) {
-        if (onProgress) onProgress('timecodes', done, total);
+      var statusPool = buildBatchStatusPool(candidates);
+      getBatchWatchStatus(statusPool, function (rows) {
+        finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, res.titles, onDone, onProgress);
+      }, function () {
+        // Dedup lookup failed - proceed without it rather than dropping
+        // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
+        // apply here: worst case is a few redundant writes, not silence).
+        finishExport(candidates, {}, listsThrown, res.titles, onDone, onProgress);
       });
     }
     function finishExport(candidates, knownLookup, listsThrown, cardsScanned, onDone, onProgress) {
@@ -7216,6 +7577,10 @@
       // Stop sync before clearing session (lifecycle wiring)
       stop$1();
       stop();
+
+      // Give lampac back the device's own data area (utils/profiles.js) -
+      // otherwise a managed profile's 'scrob_<id>' area outlives the session.
+      releaseLampacProfileId();
       clearSession();
       // Wipe the local mirror/mapstore too - without a real login (API key/QR,
       // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
