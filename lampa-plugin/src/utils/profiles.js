@@ -4,7 +4,8 @@ import {
     ISOLATED_KEYS,
     backupKey,
     defaultValue,
-    getProfiles
+    getProfiles,
+    getMe
 } from './storage'
 import { fetchAvatar } from './api'
 
@@ -68,6 +69,70 @@ export function softRefresh() {
     activity.outdated = false
 }
 
+// ─── Per-profile lampac data area ──────────────────────────
+// lampac keeps one data area per (uid, lampac_profile_id) - bookmarks,
+// timecodes and sync.js's online_view/torrents_view alike - so with an
+// untouched lampac_profile_id every Scrob profile on a device shared ONE
+// area, and each page load merged the other profiles' lampac changes into
+// whichever profile was active (then pushed them to its Scrob account;
+// found live 2026-09-27). The signed-in (main) profile keeps the area the
+// device already had at login; every other profile gets its own
+// 'scrob_<id>'. Works for both lampac generations - profile_id predates
+// 95b3a03.
+
+var LAMPAC_PROFILE_KEY = 'lampac_profile_id'
+var LAMPAC_AREA_PREFIX = 'scrob_'
+// Extra field in a profile backup (not an ISOLATED_KEY, never restored):
+// the lampac area its lampac_bookmark_version was taken from.
+var LAMPAC_AREA_TAG = 'lampac_area'
+
+function lampacBaseProfileId() {
+    var saved = Lampa.Storage.get(KEYS.LAMPAC_BASE_PROFILE_ID, '')
+    if (saved && typeof saved === 'object' && typeof saved.value === 'string') return saved.value
+    return null
+}
+
+// Remembers the device's own lampac area once per session (login). A value
+// that is already one of ours ('scrob_...') means a previous session never
+// released it (see releaseLampacProfileId()) - fall back to the default
+// area rather than adopting another profile's.
+function captureLampacBaseProfileId() {
+    if (lampacBaseProfileId() !== null) return
+    var current = String(Lampa.Storage.get(LAMPAC_PROFILE_KEY, '') || '')
+    if (current.indexOf(LAMPAC_AREA_PREFIX) === 0) current = ''
+    Lampa.Storage.set(KEYS.LAMPAC_BASE_PROFILE_ID, { value: current })
+}
+
+function lampacProfileIdFor(targetId) {
+    var me = getMe()
+    if (me.id != null && String(me.id) === String(targetId)) return lampacBaseProfileId() || ''
+    return LAMPAC_AREA_PREFIX + targetId
+}
+
+// Returns true when the area actually changed.
+function setLampacProfileId(value) {
+    if (String(Lampa.Storage.get(LAMPAC_PROFILE_KEY, '') || '') === value) return false
+    Lampa.Storage.set(LAMPAC_PROFILE_KEY, value)
+    return true
+}
+
+// Ask lampac's own scripts to re-read the (new) area - both events exist in
+// lampac before and after 95b3a03; a no-op without lampac.
+function requestLampacPull() {
+    Lampa.Listener.send('lampac', { name: 'bookmark_pullFromServer' })
+    Lampa.Listener.send('lampac', { type: 'timecode_pullFromServer' })
+}
+
+// Logout: hand the device back its own lampac area. The cursor is reset
+// because the local `favorite` left behind belongs to the profile just
+// left, not to the base area.
+export function releaseLampacProfileId() {
+    var base = lampacBaseProfileId()
+    if (base === null) return
+    if (setLampacProfileId(base)) Lampa.Storage.set('lampac_bookmark_version', '0')
+    Lampa.Storage.set(KEYS.LAMPAC_BASE_PROFILE_ID, '')
+}
+
 // Back up the currently-active profile's isolated keys (if any profile was
 // active), then restore targetId's own backup-or-defaults. Shared by
 // switchProfile() (an in-session switch) and completeLogin() (a fresh sign-in
@@ -91,9 +156,20 @@ export function restoreIsolatedData(targetId) {
 
             if (value != 'none') outgoing[key] = value
         })
+        // Which lampac area lampac_bookmark_version above belongs to - see
+        // the restore side below.
+        outgoing[LAMPAC_AREA_TAG] = String(Lampa.Storage.get(LAMPAC_PROFILE_KEY, '') || '')
 
         Lampa.Storage.set(backupKey(currentId), outgoing)
     }
+
+    // Switch the lampac area BEFORE restoring: lampac's sync.js exports
+    // online_view/torrents_view on every Storage 'change', immediately, to
+    // whatever lampac_profile_id is set at that moment - restoring first
+    // would upload the target's data into the outgoing profile's area.
+    captureLampacBaseProfileId()
+    var lampacArea = lampacProfileIdFor(targetId)
+    var lampacChanged = setLampacProfileId(lampacArea)
 
     // Restore: a malformed/corrupted backup for this one profile falls
     // through to defaults for every key instead of taking anything else
@@ -101,9 +177,17 @@ export function restoreIsolatedData(targetId) {
     var saved = Lampa.Storage.get(backupKey(targetId), 'none')
     if (saved === 'none' || typeof saved !== 'object' || saved === null) saved = {}
 
+    // A cursor saved against a different area (a backup from before this
+    // per-profile split, or with no area tag at all) is meaningless for
+    // this one - drop it so lampac starts from a full dump.
+    var staleCursor = saved[LAMPAC_AREA_TAG] !== lampacArea
+
     ISOLATED_KEYS.forEach(function (key) {
-        Lampa.Storage.set(key, key in saved ? saved[key] : defaultValue(key))
+        var keep = key in saved && !(key === 'lampac_bookmark_version' && staleCursor)
+        Lampa.Storage.set(key, keep ? saved[key] : defaultValue(key))
     })
+
+    if (lampacChanged) requestLampacPull()
 }
 
 // Switch active profile:
