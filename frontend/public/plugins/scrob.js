@@ -6170,13 +6170,35 @@
       var key = dedupKey(candidate.identity);
       if (!byKey[key] || candidate.percent > byKey[key].percent) byKey[key] = candidate;
     }
+
+    // The area /timecode/dump reads may hold OTHER Scrob profiles' progress:
+    // until profiles.js gave each managed profile its own 'scrob_<id>' lampac
+    // area (689dd8f), every profile on the device wrote into the device's one
+    // base area - which the main profile still uses. Dumping it whole exported
+    // every profile's history into the main Scrob account (found live
+    // 2026-09-27). The per-card path was only ever safe because it walked this
+    // profile's own favorite.card - so on a shared area, scope the dump the
+    // same way: null (no scope) for a profile's own area or a single-account
+    // session, where the whole dump genuinely is this account's.
+    function dumpScope(favorite) {
+      var area = String(Lampa.Storage.get('lampac_profile_id', '') || '');
+      if (area.indexOf('scrob_') === 0 || getProfiles().length <= 1) return null;
+      var scope = {};
+      for (var i = 0; i < favorite.card.length; i++) {
+        var card = favorite.card[i];
+        if (card && card.id) scope[card.id + '_' + (card.name ? 'tv' : 'movie')] = true;
+      }
+      return scope;
+    }
     function dumpRowsToCandidates(rows, favorite) {
       var byKey = {};
       var hashOnly = {};
       var titles = {};
+      var scope = dumpScope(favorite);
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         if (!row || row.deleted) continue;
+        if (scope && !scope[row.card]) continue;
         if (row.card) titles[row.card] = true;
         var tc = {
           duration: parseFloat(row.duration) || 0,
