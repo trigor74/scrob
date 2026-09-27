@@ -7418,9 +7418,12 @@
       // unrelated earlier session/profile - same isolation switchProfile() already
       // does for an in-session switch, needed here too since this is equally a
       // "become profile me.id" transition, just via a fresh login instead.
-      restoreIsolatedData(me.id);
-      Lampa.Timeline.read();
-      Lampa.Favorite.read();
+      // Під levende ці ключі й lampac_profile_id веде сам levende для свого профілю.
+      if (!isLevendeActive()) {
+        restoreIsolatedData(me.id);
+        Lampa.Timeline.read();
+        Lampa.Favorite.read();
+      }
 
       // API key before profile id — same ordering fix as switchProfile()
       // (utils/profiles.js): Storage.set() fires its 'change' listener
@@ -7580,7 +7583,8 @@
 
       // Give lampac back the device's own data area (utils/profiles.js) -
       // otherwise a managed profile's 'scrob_<id>' area outlives the session.
-      releaseLampacProfileId();
+      // Під levende область lampac належить активному профілю levende, не scrob.
+      if (!isLevendeActive()) releaseLampacProfileId();
       clearSession();
       // Wipe the local mirror/mapstore too - without a real login (API key/QR,
       // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
