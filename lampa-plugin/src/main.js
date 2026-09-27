@@ -5,7 +5,7 @@ import * as api from './utils/api'
 import { scrobSocketInit, scrobSocketDisconnect, getScrobSocket } from './utils/socket'
 import * as sync from './utils/sync'
 import { KEYS, hasSession, getMe, getProfiles, activeProfile, clearSession, serverUrl, ownCredentialKey, getOwnProfileInfo, setOwnProfileInfo, pruneStaleBackups } from './utils/storage'
-import { avatarHtml, hydrateAvatar, switchProfile, restoreIsolatedData } from './utils/profiles'
+import { avatarHtml, hydrateAvatar, switchProfile, restoreIsolatedData, releaseLampacProfileId } from './utils/profiles'
 import * as custom from './utils/sync/custom'
 import * as timelineSync from './utils/sync/timeline'
 import * as lampacExport from './utils/sync/lampac-export'
@@ -336,6 +336,9 @@ function doLogout() {
     sync.stop()
     timelineSync.stop()
 
+    // Give lampac back the device's own data area (utils/profiles.js) -
+    // otherwise a managed profile's 'scrob_<id>' area outlives the session.
+    releaseLampacProfileId()
     clearSession()
     // Wipe the local mirror/mapstore too - without a real login (API key/QR,
     // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
