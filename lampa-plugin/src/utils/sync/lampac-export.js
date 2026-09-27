@@ -25,7 +25,15 @@
 //   client can't bulk-fetch these either (Sync/TimeCode/plugin.js only ever
 //   pulls for whatever card is CURRENTLY open, via Lampa.Storage's real
 //   navigation-state 'activity' key) - so a real per-card request from here
-//   is unavoidable for a genuine historical import.
+//   is unavoidable for a genuine historical import ON AN OLDER lampac.
+//   lampac 95b3a03+ (2026-09-21) adds GET /timecode/dump (whole area in one
+//   response, with native identity movie-<id>/tv-<id>-s<S>e<E> per row) -
+//   detected via /api/capabilities (features.timecode >= 3) and preferred
+//   when present: no dependence on the local `favorite.card` pool (Lampa's
+//   own history cap evicted older titles, silently dropping their
+//   timecodes) and one request instead of hundreds. Any failure there
+//   falls back to the per-card path, which is also all an older lampac
+//   (no /api/capabilities) ever gets.
 // - Host: no Lampa.Storage key holds it (`lampac_host` doesn't exist
 //   anywhere in the real client - confirmed by full-repo grep; it's
 //   server-side-only config for an unrelated module). bookmark.js/
@@ -47,7 +55,10 @@
 //   present wins) - sending only one risks resolving the WRONG bucket for a
 //   CUB-account user. `token` is included when the DOM scan recovers one,
 //   but never required - `uid` alone is enough for the common anonymous-
-//   device setup this was verified against live.
+//   device setup this was verified against live. lampac 95b3a03+ can hand
+//   out the identity itself (/api/capabilities assignedUid, no accsdb
+//   users): its timecode.js then writes with that uid and WITHOUT
+//   account_email, so this export does the same (applyCapabilities()).
 
 import * as api from '../api'
 import * as engine from './engine'
@@ -100,8 +111,10 @@ function appendParam(url, key, value) {
     return url + (url.indexOf('?') === -1 ? '?' : '&') + key + '=' + encodeURIComponent(value)
 }
 
-function buildTimecodeUrl(auth, cardId) {
-    var url = auth.host + '/timecode/all'
+// `method` - 'all' (per-card, both lampac generations) or 'dump' (whole
+// area, lampac 95b3a03+); defaults to 'all'.
+function buildTimecodeUrl(auth, cardId, method) {
+    var url = auth.host + '/timecode/' + (method || 'all')
     url = appendParam(url, 'token', auth.token)
     url = appendParam(url, 'account_email', auth.accountEmail)
     url = appendParam(url, 'uid', auth.uid)
@@ -177,7 +190,12 @@ function parseTimecodeResponse(raw) {
 // shape (timeline.js) so the same downstream push helpers can be reused
 // untouched.
 function resolveCardTimecodes(card, raw) {
-    var timecodes = parseTimecodeResponse(raw)
+    return resolveParsedTimecodes(card, parseTimecodeResponse(raw))
+}
+
+// Same, from an already-parsed { hash: {duration, time, percent, updated} }
+// map - shared with the /timecode/dump path below (its hash-only rows).
+function resolveParsedTimecodes(card, timecodes) {
     var hashes = Object.keys(timecodes)
     if (!hashes.length) return []
 
@@ -260,6 +278,142 @@ function fetchCardTimecodes(auth, card, callback) {
         network.clear()
         callback([])
     }, false, {})
+}
+
+// ─── lampac generation + whole-area dump (lampac 95b3a03+) ───
+// An older lampac has neither /api/capabilities nor /timecode/dump - any
+// failure here just means "old server", and the per-card /timecode/all path
+// above runs exactly as before.
+
+// ModuleCapabilities "timecode" contract version that introduced
+// /timecode/dump (Modules/Sync/TimeCode/ModInit.cs).
+var TIMECODE_DUMP_FEATURE = 3
+// Native identity written by lampac's timecode.js / the tvOS client
+// (TimeCode/plugin.js identify()).
+var IDENTITY_MOVIE = /^movie-(\d+)$/
+var IDENTITY_EPISODE = /^tv-(\d+)-s(\d+)e(\d+)$/
+
+function requestJson(url, timeout, onSuccess, onFail) {
+    var network = new Lampa.Reguest()
+    network.timeout(timeout)
+    network.native(url, function (data) {
+        network.clear()
+        onSuccess(typeof data === 'string' ? (function () { try { return JSON.parse(data) } catch (e) { return null } })() : data)
+    }, function () {
+        network.clear()
+        onFail()
+    }, false, {})
+}
+
+// null for an older lampac (404) or anything that isn't lampac's own answer.
+function fetchCapabilities(auth, callback) {
+    requestJson(appendParam(auth.host + '/api/capabilities', 'token', auth.token), 10000, function (caps) {
+        callback(caps && caps.lampac ? caps : null)
+    }, function () { callback(null) })
+}
+
+// Same identity rule as lampac's own timecode.js: when the server hands out
+// the identity (assignedUid - no accsdb users), it writes with uid=<that>
+// and deliberately WITHOUT account_email (account_email outranks uid in
+// lampac's identity resolution, so sending it would read another area).
+function applyCapabilities(auth, caps) {
+    if (!caps || !caps.assignedUid) return
+    auth.uid = caps.assignedUid
+    auth.accountEmail = ''
+}
+
+function supportsTimecodeDump(caps) {
+    var version = caps && caps.features ? parseInt(caps.features.timecode, 10) : 0
+    return version >= TIMECODE_DUMP_FEATURE
+}
+
+function parseDumpIdentity(id) {
+    var m = IDENTITY_MOVIE.exec(id || '')
+    if (m) return { isSeries: false, tmdbId: parseInt(m[1], 10) }
+    m = IDENTITY_EPISODE.exec(id || '')
+    if (m) return { isSeries: true, seriesTmdbId: parseInt(m[1], 10), season: parseInt(m[2], 10), episode: parseInt(m[3], 10) }
+    return null
+}
+
+// lampac card_id ('674_movie' / '1851_tv') → the local Favorite card, the
+// only place a hash-only row's original name (needed to match the hash)
+// can come from.
+function findFavoriteCard(favorite, cardId) {
+    var parts = String(cardId).split('_')
+    for (var i = 0; i < favorite.card.length; i++) {
+        var card = favorite.card[i]
+        if (card && card.id == parts[0] && (card.name ? 'tv' : 'movie') === parts[1]) return card
+    }
+    return null
+}
+
+// One candidate per title/episode - several rows can describe the same one
+// (a hash-only row next to an identified one, or two encodes' hashes);
+// keep the most progressed, same rule as resolveParsedTimecodes()' movies.
+function keepBest(byKey, candidate) {
+    var key = dedupKey(candidate.identity)
+    if (!byKey[key] || candidate.percent > byKey[key].percent) byKey[key] = candidate
+}
+
+function dumpRowsToCandidates(rows, favorite) {
+    var byKey = {}
+    var hashOnly = {}
+    var titles = {}
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i]
+        if (!row || row.deleted) continue
+        if (row.card) titles[row.card] = true
+        var tc = {
+            duration: parseFloat(row.duration) || 0,
+            time: parseFloat(row.position) || 0,
+            percent: parseFloat(row.percent) || 0,
+            // Same value /timecode/all returns as road.updated (ms since epoch).
+            updated: parseFloat(row.watched_at) || 0
+        }
+        var identity = parseDumpIdentity(row.id)
+        if (identity) {
+            keepBest(byKey, { identity: identity, percent: tc.percent, time: tc.time, duration: tc.duration, updated: tc.updated })
+            continue
+        }
+        if (row.card && row.hash) {
+            if (!hashOnly[row.card]) hashOnly[row.card] = {}
+            hashOnly[row.card][row.hash] = tc
+        }
+    }
+    for (var cardId in hashOnly) {
+        var card = findFavoriteCard(favorite, cardId)
+        if (!card) continue
+        var resolved = resolveParsedTimecodes(card, hashOnly[cardId])
+        for (var r = 0; r < resolved.length; r++) keepBest(byKey, resolved[r])
+    }
+    var candidates = []
+    for (var k in byKey) candidates.push(byKey[k])
+    return { candidates: candidates, titles: Object.keys(titles).length }
+}
+
+// callback(null) on any failure - the caller falls back to the per-card path.
+function fetchDumpCandidates(auth, favorite, callback) {
+    requestJson(buildTimecodeUrl(auth, null, 'dump'), 30000, function (data) {
+        if (!data || data.accsdb || !Array.isArray(data.rows)) { callback(null); return }
+        callback(dumpRowsToCandidates(data.rows, favorite))
+    }, function () { callback(null) })
+}
+
+// The original per-card path (both lampac generations): one /timecode/all
+// per local Favorite card.
+function fetchLegacyCandidates(auth, cards, onProgress, callback) {
+    runPool(cards, TIMECODE_POOL_SIZE, function (card, done) {
+        fetchCardTimecodes(auth, card, done)
+    }, function (perCardResults) {
+        var candidates = []
+        for (var i = 0; i < perCardResults.length; i++) {
+            var list = perCardResults[i] || []
+            for (var j = 0; j < list.length; j++) candidates.push(list[j])
+        }
+        callback({ candidates: candidates, titles: cards.length })
+    }, function (done, total) {
+        if (onProgress) onProgress('timecodes', done, total)
+    })
 }
 
 // ─── Dedup against Scrob (§5.6.3 п.5) ──────────────────────
@@ -385,42 +539,45 @@ export function run(onDone, onProgress) {
     if (listsThrown > 0) engine.forceSync()
 
     var auth = buildLampacAuth()
-    var cards = favorite.card
 
-    if (!cards.length) {
+    function legacy() {
+        fetchLegacyCandidates(auth, favorite.card, onProgress, function (res) {
+            exportCandidates(res, listsThrown, onDone, onProgress)
+        })
+    }
+
+    fetchCapabilities(auth, function (caps) {
+        applyCapabilities(auth, caps)
+        if (!supportsTimecodeDump(caps)) { legacy(); return }
+        fetchDumpCandidates(auth, favorite, function (res) {
+            if (!res) { legacy(); return }
+            if (onProgress) onProgress('timecodes', 1, 1)
+            exportCandidates(res, listsThrown, onDone, onProgress)
+        })
+    })
+}
+
+// `res` - { candidates, titles } from either timecode source above.
+function exportCandidates(res, listsThrown, onDone, onProgress) {
+    var candidates = []
+    for (var i = 0; i < res.candidates.length; i++) {
+        if (res.candidates[i].percent >= PROGRESS_FLOOR_PERCENT) candidates.push(res.candidates[i])
+    }
+
+    if (!candidates.length) {
         running = false
-        onDone({ listsThrown: listsThrown, watched: 0, progress: 0, skipped: 0, cardsScanned: 0 })
+        onDone({ listsThrown: listsThrown, watched: 0, progress: 0, skipped: 0, cardsScanned: res.titles })
         return
     }
 
-    runPool(cards, TIMECODE_POOL_SIZE, function (card, done) {
-        fetchCardTimecodes(auth, card, done)
-    }, function (perCardResults) {
-        var candidates = []
-        for (var i = 0; i < perCardResults.length; i++) {
-            var list = perCardResults[i] || []
-            for (var j = 0; j < list.length; j++) {
-                if (list[j].percent >= PROGRESS_FLOOR_PERCENT) candidates.push(list[j])
-            }
-        }
-
-        if (!candidates.length) {
-            running = false
-            onDone({ listsThrown: listsThrown, watched: 0, progress: 0, skipped: 0, cardsScanned: cards.length })
-            return
-        }
-
-        var statusPool = buildBatchStatusPool(candidates)
-        api.getBatchWatchStatus(statusPool, function (rows) {
-            finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, cards.length, onDone, onProgress)
-        }, function () {
-            // Dedup lookup failed - proceed without it rather than dropping
-            // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
-            // apply here: worst case is a few redundant writes, not silence).
-            finishExport(candidates, {}, listsThrown, cards.length, onDone, onProgress)
-        })
-    }, function (done, total) {
-        if (onProgress) onProgress('timecodes', done, total)
+    var statusPool = buildBatchStatusPool(candidates)
+    api.getBatchWatchStatus(statusPool, function (rows) {
+        finishExport(candidates, buildKnownStatusLookup(rows), listsThrown, res.titles, onDone, onProgress)
+    }, function () {
+        // Dedup lookup failed - proceed without it rather than dropping
+        // the whole import (§9 п.6 "all-or-nothing" precedent doesn't
+        // apply here: worst case is a few redundant writes, not silence).
+        finishExport(candidates, {}, listsThrown, res.titles, onDone, onProgress)
     })
 }
 
