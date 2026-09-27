@@ -5468,12 +5468,22 @@
     var REPAINT_DEBOUNCE_MS = 1000;
     var repaintUntil = 0;
     var repaintTimer = null;
+    // Skip the repaint when main was already rebuilt AFTER the last pulled
+    // write - profiles.js's switchProfile() calls a plain Favorite.read(),
+    // whose state:changed makes core itself refresh every activity ~1.4s
+    // later (Activity refresh(true) 1s + slide runRefresh() 400ms); a pull
+    // landing before that is already on screen, and repainting again was a
+    // visible second, pointless rebuild (found live 2026-09-27).
+    var lastPullWriteAt = 0;
+    var mainBuiltAt = 0;
     function scheduleMainRepaint() {
       if (Date.now() > repaintUntil) return;
+      lastPullWriteAt = Date.now();
       if (repaintTimer) clearTimeout(repaintTimer);
       repaintTimer = setTimeout(function () {
         repaintTimer = null;
         if (!running$1) return;
+        if (mainBuiltAt >= lastPullWriteAt) return;
         var active = Lampa.Activity.active();
         if (!active || active.component !== 'main') return;
         if (!active.activity || typeof active.activity.refresh !== 'function') return;
@@ -5605,6 +5615,10 @@
     // session, or while one is already in flight - see `prefetched` above.
     function onMainScreenActivity(e) {
       if (!running$1) return;
+      // 'init' fires only when core actually (re)creates the main activity
+      // (Activity create(), incl. every Activity.replace()), not on a plain
+      // back-navigation 'start' - see scheduleMainRepaint().
+      if (e && e.type === 'init' && e.component === 'main') mainBuiltAt = Date.now();
       if (!e || e.type !== 'start' || e.component !== 'main') return;
       runPrefetch();
     }
