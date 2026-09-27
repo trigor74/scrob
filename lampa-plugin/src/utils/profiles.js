@@ -108,8 +108,8 @@ export function restoreIsolatedData(targetId) {
 
 // Switch active profile:
 // 1. backup/restore isolated keys (current → backup, target → restore-or-default)
-// 2. activate target credentials
-// 3. re-read timeline/favorite into UI
+// 2. re-read timeline/favorite into UI
+// 3. activate target credentials
 // 4. soft refresh the active page
 export function switchProfile(targetId) {
     var currentId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
@@ -124,7 +124,19 @@ export function switchProfile(targetId) {
 
     restoreIsolatedData(target.id)
 
-    // 2. Activate target credentials — API key BEFORE profile id. Lampa.Storage.set()
+    // 2. Re-read data into UI — BEFORE step 3, same order as main.js's
+    // completeLogin(). restoreIsolatedData() only writes Storage, while
+    // Lampa.Favorite.get() reads core's in-memory cache (refreshed only by
+    // Favorite.read()). Setting ACTIVE_PROFILE_ID restarts timeline.js
+    // synchronously, and its start() runs the watch-status prefetch whose
+    // candidate pool comes from Favorite.get({type:'history'}) - read after
+    // step 3, that pool was still the OUTGOING profile's history, so the
+    // "Ви дивилися"/continue-watching row of the new profile stayed stale
+    // until each card was opened by hand (found live 2026-09-27).
+    Lampa.Timeline.read()
+    Lampa.Favorite.read()
+
+    // 3. Activate target credentials — API key BEFORE profile id. Lampa.Storage.set()
     // dispatches its 'change' event synchronously (no microtask/setTimeout), and the
     // sync engine's setupProfileListener() reacts to ACTIVE_PROFILE_ID changing by
     // immediately restarting sync (utils/sync/engine.js). If the profile id were set
@@ -134,10 +146,6 @@ export function switchProfile(targetId) {
     // old one's identity.
     Lampa.Storage.set(KEYS.ACTIVE_API_KEY, target.api_key)
     Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, target.id)
-
-    // 3. Re-read data into UI
-    Lampa.Timeline.read()
-    Lampa.Favorite.read()
 
     // 4. Soft refresh of the active page
     softRefresh()

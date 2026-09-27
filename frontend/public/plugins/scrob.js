@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-25
+ * Build: 2026-09-27
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -3985,8 +3985,8 @@
 
     // Switch active profile:
     // 1. backup/restore isolated keys (current → backup, target → restore-or-default)
-    // 2. activate target credentials
-    // 3. re-read timeline/favorite into UI
+    // 2. re-read timeline/favorite into UI
+    // 3. activate target credentials
     // 4. soft refresh the active page
     function switchProfile(targetId) {
       var currentId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
@@ -3998,7 +3998,19 @@
       if (!target || target.id == currentId) return false;
       restoreIsolatedData(target.id);
 
-      // 2. Activate target credentials — API key BEFORE profile id. Lampa.Storage.set()
+      // 2. Re-read data into UI — BEFORE step 3, same order as main.js's
+      // completeLogin(). restoreIsolatedData() only writes Storage, while
+      // Lampa.Favorite.get() reads core's in-memory cache (refreshed only by
+      // Favorite.read()). Setting ACTIVE_PROFILE_ID restarts timeline.js
+      // synchronously, and its start() runs the watch-status prefetch whose
+      // candidate pool comes from Favorite.get({type:'history'}) - read after
+      // step 3, that pool was still the OUTGOING profile's history, so the
+      // "Ви дивилися"/continue-watching row of the new profile stayed stale
+      // until each card was opened by hand (found live 2026-09-27).
+      Lampa.Timeline.read();
+      Lampa.Favorite.read();
+
+      // 3. Activate target credentials — API key BEFORE profile id. Lampa.Storage.set()
       // dispatches its 'change' event synchronously (no microtask/setTimeout), and the
       // sync engine's setupProfileListener() reacts to ACTIVE_PROFILE_ID changing by
       // immediately restarting sync (utils/sync/engine.js). If the profile id were set
@@ -4008,10 +4020,6 @@
       // old one's identity.
       Lampa.Storage.set(KEYS.ACTIVE_API_KEY, target.api_key);
       Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, target.id);
-
-      // 3. Re-read data into UI
-      Lampa.Timeline.read();
-      Lampa.Favorite.read();
 
       // 4. Soft refresh of the active page
       softRefresh();
@@ -5362,6 +5370,7 @@
         var collector = [];
         for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i], collector);
         writeTimelineSilent(collector);
+        if (collector.length) scheduleMainRepaint();
       }, function (err) {
         console.warn('ScrobTimeline', 'continue-watching pull failed', err);
       });
@@ -5441,6 +5450,37 @@
     // state into whatever profile is active by the time this lands). Same
     // pattern as session.gen above, for the same reason.
     var prefetchGeneration = 0;
+
+    // ─── Post-switch repaint of the main screen ─────────────────
+    // Neither bulk pull (pullContinueWatching()/runPrefetch()) repaints what's
+    // already on screen (see runPrefetchChunks() for why no state:changed
+    // broadcast) - fine at app start, but right after a profile switch the
+    // main screen was just rebuilt (profiles.js softRefresh()) from the
+    // restored backup's file_view, before either pull landed, so the
+    // continue-watching row kept showing stale titles until the next visit.
+    // For a short window after a switch, a pull that actually wrote something
+    // asks core to refresh the CURRENT activity only - activity.refresh()
+    // (core Activity slide: re-creates it via Activity.replace() only if it's
+    // still the active one), never Activity's refresh(true) over the whole
+    // navigation stack. Debounced so both pulls landing close together cost
+    // one repaint.
+    var REPAINT_WINDOW_MS = 30000;
+    var REPAINT_DEBOUNCE_MS = 1000;
+    var repaintUntil = 0;
+    var repaintTimer = null;
+    function scheduleMainRepaint() {
+      if (Date.now() > repaintUntil) return;
+      if (repaintTimer) clearTimeout(repaintTimer);
+      repaintTimer = setTimeout(function () {
+        repaintTimer = null;
+        if (!running$1) return;
+        var active = Lampa.Activity.active();
+        if (!active || active.component !== 'main') return;
+        if (!active.activity || typeof active.activity.refresh !== 'function') return;
+        console.log('ScrobTimeline', 'repaint main after profile switch');
+        active.activity.refresh();
+      }, REPAINT_DEBOUNCE_MS);
+    }
     function prefetchCandidateKeys() {
       var keys = [];
       if (Lampa.Storage.get(KEYS.PREFETCH_HISTORY, true)) keys.push('history');
@@ -5499,6 +5539,7 @@
 
       if (index >= chunks.length) {
         writeTimelineSilent(collector);
+        if (collector.length) scheduleMainRepaint();
         prefetched = true;
         prefetchInFlight = false;
         // Live fix 2026-09-19: this used to ALSO broadcast
@@ -5531,6 +5572,7 @@
         // to redo - applyWatchStatusItem()/pullWriteTimeline() is
         // idempotent, LWW-guarded).
         writeTimelineSilent(collector);
+        if (collector.length) scheduleMainRepaint();
         prefetchInFlight = false;
         console.warn('ScrobTimeline', 'batch watch-status prefetch failed', err);
       });
@@ -5601,6 +5643,9 @@
           if (newId !== lastProfileId) {
             lastProfileId = newId;
             stop();
+            // Armed after stop() (which disarms it) - covers the bulk
+            // pulls this start() kicks off, see scheduleMainRepaint().
+            repaintUntil = Date.now() + REPAINT_WINDOW_MS;
             start();
           }
         }
@@ -5673,6 +5718,11 @@
       prefetched = false;
       prefetchInFlight = false;
       prefetchGeneration++;
+      repaintUntil = 0;
+      if (repaintTimer) {
+        clearTimeout(repaintTimer);
+        repaintTimer = null;
+      }
       resetSessionState();
       resetExternalContext();
     }
