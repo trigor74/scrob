@@ -6731,12 +6731,51 @@
       }
       return scope;
     }
+
+    // The native identity in a dump row is NOT trusted blindly: lampac's own
+    // timecode.js assigns it by guessing a hash's owner among bookmarks (some
+    // trimmed to a bare original_title), so one hash can be claimed by two
+    // same-named titles, and a show can get a bogus movie-<id> row next to its
+    // real tv-<id>-sXeY ones (found live 2026-09-27: movie-67391 100%,
+    // movie-228429/movie-289271 sharing one hash and watched_at). A row whose
+    // kind contradicts either the dump itself or the local card is dropped.
+    function localKinds(favorite) {
+      var kinds = {};
+      for (var i = 0; i < favorite.card.length; i++) {
+        var card = favorite.card[i];
+        if (!card || !card.id) continue;
+        if (!kinds[card.id]) kinds[card.id] = {};
+        var kind = cardKind(card);
+        // A trimmed card (no series cues, no release_date) proves nothing
+        // about being a movie - cardKind() only defaults it to 'movie'.
+        if (kind === 'tv') kinds[card.id].tv = true;else if (card.release_date) kinds[card.id].movie = true;
+      }
+      return kinds;
+    }
+    function kindContradicted(identity, showIds, kinds) {
+      if (identity.isSeries) {
+        var s = kinds[identity.seriesTmdbId];
+        return !!(s && s.movie && !s.tv);
+      }
+      // A show with episodes in this very dump can't also be this movie.
+      if (showIds[identity.tmdbId]) return true;
+      var m = kinds[identity.tmdbId];
+      return !!(m && m.tv && !m.movie);
+    }
     function dumpRowsToCandidates(rows, favorite) {
       var byKey = {};
       var hashOnly = {};
       var titles = {};
       var scope = dumpScope(favorite);
-      for (var i = 0; i < rows.length; i++) {
+      var kinds = localKinds(favorite);
+      var showIds = {};
+      var i, identity;
+      for (i = 0; i < rows.length; i++) {
+        if (!rows[i] || rows[i].deleted) continue;
+        identity = parseDumpIdentity(rows[i].id);
+        if (identity && identity.isSeries) showIds[identity.seriesTmdbId] = true;
+      }
+      for (i = 0; i < rows.length; i++) {
         var row = rows[i];
         if (!row || row.deleted) continue;
         if (scope && !scope[row.card]) continue;
@@ -6748,8 +6787,9 @@
           // Same value /timecode/all returns as road.updated (ms since epoch).
           updated: parseFloat(row.watched_at) || 0
         };
-        var identity = parseDumpIdentity(row.id);
+        identity = parseDumpIdentity(row.id);
         if (identity) {
+          if (kindContradicted(identity, showIds, kinds)) continue;
           var known = row.card ? findFavoriteCard(favorite, row.card) : null;
           keepBest(byKey, {
             identity: identity,
@@ -6770,10 +6810,23 @@
         var card = findFavoriteCard(favorite, cardId);
         if (!card) continue;
         var resolved = resolveParsedTimecodes(card, hashOnly[cardId]);
-        for (var r = 0; r < resolved.length; r++) keepBest(byKey, resolved[r]);
+        for (var r = 0; r < resolved.length; r++) {
+          if (kindContradicted(resolved[r].identity, showIds, kinds)) continue;
+          keepBest(byKey, resolved[r]);
+        }
       }
+      // Last pass: a movie candidate for an id that ended up with episode
+      // candidates (from any row kind above) is the same contradiction.
       var candidates = [];
-      for (var k in byKey) candidates.push(byKey[k]);
+      var k;
+      for (k in byKey) {
+        if (byKey[k].identity.isSeries) showIds[byKey[k].identity.seriesTmdbId] = true;
+      }
+      for (k in byKey) {
+        var id = byKey[k].identity;
+        if (!id.isSeries && showIds[id.tmdbId]) continue;
+        candidates.push(byKey[k]);
+      }
       return {
         candidates: candidates,
         titles: Object.keys(titles).length
