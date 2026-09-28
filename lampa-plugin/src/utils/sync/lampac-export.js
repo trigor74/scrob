@@ -228,7 +228,7 @@ function resolveParsedTimecodes(card, timecodes) {
             }
             // Not this movie's own hash - an episode of a show hiding behind
             // a movie-looking card, or unrelated/unverifiable: skipped.
-            var mse = resolveSeasonEpisode(hashes[h], showName)
+            var mse = resolveSeasonEpisode(hashes[h], showName, seasonBound(card))
             if (mse.season && mse.episode) {
                 episodes.push({
                     identity: { isSeries: true, seriesTmdbId: card.id, season: mse.season, episode: mse.episode },
@@ -248,7 +248,7 @@ function resolveParsedTimecodes(card, timecodes) {
     // searched for was originally computed.
     var originalName = card.original_name || card.original_title || card.title || card.name
     for (var i = 0; i < hashes.length; i++) {
-        var se = resolveSeasonEpisode(hashes[i], originalName)
+        var se = resolveSeasonEpisode(hashes[i], originalName, seasonBound(card))
         if (!se.season || !se.episode) continue
         var t = timecodes[hashes[i]]
         results.push({
@@ -257,6 +257,19 @@ function resolveParsedTimecodes(card, timecodes) {
         })
     }
     return results
+}
+
+// Brute-forcing a hash over 40 seasons x 1500 episodes can land on a pure
+// collision of Lampa's 32-bit hash when the hash isn't this show's at all:
+// an old lampac filed each write under whatever card was on screen, so a
+// dump holds other titles' hashes under this card_id (found live
+// 2026-09-27: Ashes to Crown S1E9 under 228429 resolved as Soul Land 2
+// "S36E1425"). The card's own season count, when it has one, caps the
+// seasons tried (+1 for a season newer than the saved card). Episodes stay
+// uncapped - long shows legitimately number past 1000.
+function seasonBound(card) {
+    var n = parseInt(card.number_of_seasons, 10)
+    return n > 0 ? n + 1 : 0
 }
 
 // 'tv' / 'movie' as lampac's card_id suffix uses it - via the same
@@ -467,6 +480,19 @@ function dumpRowsToCandidates(rows, favorite) {
         identity = parseDumpIdentity(rows[i].id)
         if (identity && identity.isSeries) showIds[identity.seriesTmdbId] = true
     }
+    // Which title each hash verifiably belongs to - from identity rows that
+    // survive the kind check. A hash-only copy of that hash under ANOTHER
+    // title's card_id is an old lampac's on-screen-card duplicate, never a
+    // second real watch (the real one is exported through its owner); same
+    // title (a wrong suffix, or an unidentified duplicate) is kept - it just
+    // resolves to the same episode and keepBest() merges it.
+    var hashOwner = {}
+    for (i = 0; i < rows.length; i++) {
+        if (!rows[i] || rows[i].deleted || !rows[i].hash) continue
+        identity = parseDumpIdentity(rows[i].id)
+        if (!identity || kindContradicted(identity, showIds, kinds)) continue
+        hashOwner[rows[i].hash] = String(identity.isSeries ? identity.seriesTmdbId : identity.tmdbId)
+    }
     for (i = 0; i < rows.length; i++) {
         var row = rows[i]
         if (!row || row.deleted) continue
@@ -487,6 +513,8 @@ function dumpRowsToCandidates(rows, favorite) {
             continue
         }
         if (row.card && row.hash) {
+            var owner = hashOwner[row.hash]
+            if (owner && owner !== String(row.card).split('_')[0]) continue
             if (!hashOnly[row.card]) hashOnly[row.card] = {}
             hashOnly[row.card][row.hash] = tc
         }

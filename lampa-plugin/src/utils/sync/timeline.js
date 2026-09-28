@@ -292,9 +292,13 @@ function extractSeasonEpisode(obj) {
 // never guess the formula itself. Same technique the old scrob.js and the
 // third-party TraktTV plugin both independently arrived at (see
 // LAMPA-TRACKING-REFERENCE.md §4.1.3/§4.2.3).
-export function resolveSeasonEpisode(hash, originalName) {
+// `maxSeason` (optional) narrows the season range when the caller knows the
+// show's real season count - fewer tries, fewer chance collisions of Lampa's
+// 32-bit hash (lampac-export.js); live tracking keeps the full range.
+export function resolveSeasonEpisode(hash, originalName, maxSeason) {
     if (!hash || !originalName) return {}
-    for (var s = 1; s <= 40; s++) {
+    var lastSeason = maxSeason > 0 ? Math.min(maxSeason, 40) : 40
+    for (var s = 1; s <= lastSeason; s++) {
         var sep = s > 10 ? ':' : ''
         for (var e = 1; e <= 1500; e++) {
             if (String(Lampa.Utils.hash([s, sep, e, originalName].join(''))) === String(hash)) {
