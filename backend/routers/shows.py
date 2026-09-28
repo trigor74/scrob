@@ -917,6 +917,7 @@ async def get_show(
         networks = []
         recommendations = []
         cast = []
+        crew = []
         tmdb_extra: dict | None = None
         api_key = await get_user_tmdb_key(db, effective_user_id)
         metadata_lang = await get_user_metadata_language(db, effective_user_id)
@@ -966,6 +967,7 @@ async def get_show(
                     }
                     for c in tmdb_extra.get("credits", {}).get("cast", [])[:12]
                 ]
+                crew = tmdb.notable_crew(tmdb_extra.get("credits", {}))
                 if metadata_lang:
                     try:
                         await upsert_show_translation(
@@ -1230,6 +1232,7 @@ async def get_show(
                 for c in (tmdb_extra or show.tmdb_data or {}).get("created_by", [])
             ],
             "cast": cast,
+            "crew": crew,
             "networks": networks,
             "where_to_watch": where_to_watch,
         }
@@ -1262,6 +1265,8 @@ async def get_show(
             }
             for c in data.get("credits", {}).get("cast", [])[:12]
         ]
+
+        crew = tmdb.notable_crew(data.get("credits", {}))
 
         networks = [
             {
@@ -1354,6 +1359,7 @@ async def get_show(
                 for c in data.get("created_by", [])
             ],
             "cast": cast,
+            "crew": crew,
             "networks": networks,
             "seasons_meta": [
                 {
@@ -2034,6 +2040,7 @@ async def get_episode_detail(
             }
             for c in credits.get("cast", [])[:12]
         ]
+        crew = tmdb.notable_crew(credits)
         guest_stars = [
             {
                 "tmdb_id": c.get("id"),
@@ -2105,6 +2112,7 @@ async def get_episode_detail(
             "runtime": ep_data.get("runtime"),
             "tmdb_rating": ep_data.get("vote_average"),
             "cast": cast,
+            "crew": crew,
             "guest_stars": guest_stars,
             "show": show_info,
             "season": {
@@ -2674,6 +2682,11 @@ async def get_tvdb_show(
         "seasons": {},
         "seasons_meta": show_data["seasons"],
         "cast": cast,
+        # TVDB has no series-level crew - Director/Writer only exist on each
+        # episode's own extended data (see get_tvdb_episode). Kept as an
+        # explicit empty list, not an absent key, so the frontend's "hide
+        # the Crew tab when empty" check works the same as everywhere else.
+        "crew": [],
         "networks": networks,
         "where_to_watch": where_to_watch,
     }
@@ -3073,6 +3086,18 @@ async def get_tvdb_episode(
     if not ep_data:
         raise HTTPException(status_code=404, detail="Episode not found")
 
+    # Cast/crew live on the episode's own extended data, not the series'
+    # (see core/tvdb.py's format_crew docstring) - fetched separately since
+    # ep_data['tvdb_id'] is only known once the episode above is resolved.
+    # Falls back to the series-level (actors-only) cast on any failure rather
+    # than failing the whole page for a secondary section.
+    raw_episode: dict = {}
+    if ep_data.get("tvdb_id"):
+        try:
+            raw_episode = await tvdb_client.get_episode(ep_data["tvdb_id"], api_key)
+        except Exception:
+            raw_episode = {}
+
     series_tmdb_id = show_data.get("tmdb_id_cross")
     series_tmdb_id = int(series_tmdb_id) if series_tmdb_id else None
     show_result = await db.execute(
@@ -3281,7 +3306,13 @@ async def get_tvdb_episode(
                         "subtitle_languages": coll_file.subtitle_languages,
                     }
 
+    # Series-level extended data only ever lists actors (peopleType), never
+    # crew - keep using it for cast. Crew (Director/Writer) only exists on
+    # the episode's own extended data (raw_episode, fetched above), which in
+    # turn never lists series-regular actors - each is the only source for
+    # its own field, not an either/or fallback.
     cast = tvdb_client.format_cast(raw_series)
+    crew = tvdb_client.format_crew(raw_episode) if raw_episode else []
     season_meta = next((s for s in show_data["seasons"] if s["season_number"] == season_number), {})
 
     resolved_tmdb_id = mapping.tmdb_episode_id if mapping else (
@@ -3323,6 +3354,7 @@ async def get_tvdb_episode(
         "in_lists": in_lists,
         "library": library_info,
         "cast": cast,
+        "crew": crew,
         "episodes": [{"episode_number": e["episode_number"], "name": e["name"]} for e in eps],
         "show": {
             "id": show.id if show else None,
