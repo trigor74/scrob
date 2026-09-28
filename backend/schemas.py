@@ -164,6 +164,7 @@ class UserSettings(BaseModel):
     trakt_push_dropped: Optional[bool] = None
     trakt_push_lists: Optional[bool] = None
     trakt_scrobble: Optional[bool] = None
+    trakt_show_comments: Optional[bool] = None
     trakt_auto_sync_interval: Optional[float] = None
     trakt_auto_push_interval: Optional[float] = None
 
@@ -178,6 +179,20 @@ class UserSettings(BaseModel):
     simkl_scrobble: Optional[bool] = None
     simkl_auto_sync_interval: Optional[float] = None
     simkl_auto_push_interval: Optional[float] = None
+
+    # WeTrakr — single Scrob-owned app key (core/wetrakr.py), no client_id/secret
+    # field here; OAuth tokens managed via /wetrakr/* endpoints
+    wetrakr_connected: Optional[bool] = None  # read-only, derived from token presence
+    wetrakr_sync_watched: Optional[bool] = None
+    wetrakr_sync_ratings: Optional[bool] = None
+    wetrakr_push_watched: Optional[bool] = None
+    wetrakr_push_ratings: Optional[bool] = None
+    wetrakr_sync_lists: Optional[bool] = None
+    wetrakr_push_lists: Optional[bool] = None
+    wetrakr_sync_comments: Optional[bool] = None
+    wetrakr_push_comments: Optional[bool] = None
+    wetrakr_auto_sync_interval: Optional[float] = None
+    wetrakr_auto_push_interval: Optional[float] = None
 
     # MDBList — API key authentication
     mdblist_api_key: Optional[str] = None
