@@ -443,18 +443,18 @@ async def enrich_with_state(
 
     # Split by season_number so a season-only list item doesn't make the whole
     # show (or vice versa) appear "in that list" elsewhere in the app.
-    list_membership: dict[int, list[int]] = {}
+    list_membership: dict[tuple[str, int], list[int]] = {}
     season_list_membership: dict[tuple[int, int], list[int]] = {}
     if user_list_ids and all_tmdb_ids:
         q = await db.execute(
-            select(Media.tmdb_id, ListItem.season_number, ListItem.list_id)
+            select(Media.tmdb_id, Media.media_type, ListItem.season_number, ListItem.list_id)
             .join(ListItem, ListItem.media_id == Media.id)
             .where(ListItem.list_id.in_(user_list_ids), Media.tmdb_id.in_(all_tmdb_ids))
             .distinct()
         )
-        for row_tmdb_id, row_season_number, list_id in q.all():
+        for row_tmdb_id, row_media_type, row_season_number, list_id in q.all():
             if row_season_number is None:
-                list_membership.setdefault(row_tmdb_id, []).append(list_id)
+                list_membership.setdefault((row_media_type.value, row_tmdb_id), []).append(list_id)
             else:
                 season_list_membership.setdefault((row_tmdb_id, row_season_number), []).append(list_id)
 
@@ -765,7 +765,7 @@ async def enrich_with_state(
         if t == "series" and item.get("season_number") is not None:
             item["in_lists"] = season_list_membership.get((tid, item["season_number"]), [])
         else:
-            item["in_lists"] = list_membership.get(tid, [])
+            item["in_lists"] = list_membership.get((t, tid), [])
         item["is_monitored"] = monitored_status.get(tid, False)
         item["request_enabled"] = request_enabled_map.get(tid, False)
         item["request_status"] = request_status_map.get(tid)
@@ -1074,12 +1074,16 @@ async def find_by_imdb(
 async def search_tvdb(
     q: str = Query(..., min_length=2),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_or_api_key),
+    current_user: User | None = Depends(get_optional_user_or_api_key),
 ):
+    if current_user is None:
+        await require_anon_nav_allowed(db)
+    effective_user_id = current_user.id if current_user else ANON_USER_ID
+
     from routers.shows import get_user_tvdb_key
     from core import tvdb as tvdb_client
 
-    api_key = await get_user_tvdb_key(db, current_user.id)
+    api_key = await get_user_tvdb_key(db, effective_user_id)
     if not api_key:
         raise HTTPException(status_code=400, detail="TVDB API key not configured")
 
