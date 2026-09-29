@@ -341,6 +341,7 @@ export interface AdminUser {
 
 export interface GlobalSettings {
   tmdb_api_key: string | null;
+  mdblist_api_key: string | null;
   tvdb_api_key: string | null;
   tvdb_subscriber_pin: string | null;
   radarr_url: string | null;
@@ -513,6 +514,7 @@ export interface UserSettings {
   // MDBList
   mdblist_api_key: string | null;
   mdblist_connected: boolean;
+  has_global_mdblist_key: boolean;
   mdblist_sync_watched: boolean;
   mdblist_sync_ratings: boolean;
   mdblist_sync_watchlist: boolean;
@@ -1205,6 +1207,33 @@ export interface TraktCommentsResponse {
   trakt_url?: string;
 }
 
+export interface CalendarEntry {
+  air_date: string;
+  show_tmdb_id?: number | null;
+  show_tvdb_id?: number | null;
+  show_title: string;
+  poster_path: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  episode_name: string | null;
+  collected: boolean;
+  watched: boolean;
+}
+
+export interface CalendarPayload {
+  schema?: number;
+  generated_at?: string;
+  today: string;
+  shows_checked?: number;
+  entries: CalendarEntry[];
+}
+
+export interface CalendarResponse {
+  computed_at: string | null;
+  cached: boolean;
+  calendar: CalendarPayload;
+}
+
 // API calls
 export const api = {
   auth: {
@@ -1578,7 +1607,7 @@ export const api = {
     getPublic: (userId: number, token?: string) =>
       get<PublicProfile>(`/profile/${userId}`, undefined, token),
     publicAccessStatus: () =>
-      get<{ enable_logged_out_navigation: boolean; disable_comments: boolean }>("/profile/public-access-status"),
+      get<{ enable_logged_out_navigation: boolean; disable_comments: boolean; has_global_tvdb_key: boolean }>("/profile/public-access-status"),
     update: (body: Partial<UserPreferences>, token: string) =>
       patch<UserPreferences>("/profile/me", body, token),
     uploadAvatar: (formData: FormData, token: string) =>
@@ -1617,6 +1646,13 @@ export const api = {
   traktComments: {
     list: (params: { media_type: "movie" | "show"; tmdb_id?: number; tvdb_id?: number; season_number?: number; episode_number?: number }, token?: string) =>
       get<TraktCommentsResponse>("/trakt/comments", params, token),
+  },
+
+  calendar: {
+    get: (token?: string, cachedOnly?: boolean) =>
+      get<CalendarResponse>("/calendar", cachedOnly ? { cached_only: true } : undefined, token),
+    refresh: (token?: string) =>
+      post<CalendarResponse>("/calendar/refresh", undefined, token),
   },
 
   admin: {
