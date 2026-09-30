@@ -162,6 +162,7 @@ const seasonTitle = season
                   showTmdbId={season.show.tmdb_id ?? undefined}
                   episodeOrder="tvdb"
                   tvdbId={Number(id)}
+                  tvdbOnly={!season.show.tmdb_id}
                   requestEnabled={false}
                   hideLists={false}
                   userRating={season.season_user_rating}
@@ -204,7 +205,8 @@ const seasonTitle = season
 
         <CommentsSection
           mediaType="series"
-          tmdbId={season.show.tmdb_id ?? Number(id)}
+          tmdbId={season.show.tmdb_id}
+          tvdbId={Number(id)}
           seasonNumber={Number(season_number)}
         />
 

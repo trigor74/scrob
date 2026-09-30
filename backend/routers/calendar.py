@@ -39,7 +39,6 @@ from models.users import User, UserSettings
 router = APIRouter()
 
 CALENDAR_TTL = timedelta(hours=24)
-# 5 = наші backdrop_path/still_path, 6 = апстрімні lookback + watch status; 7 = обидва
 CALENDAR_SCHEMA = 7
 CALENDAR_WINDOW_DAYS = 14
 CALENDAR_LOOKBACK_DAYS = 7
@@ -102,10 +101,13 @@ async def _candidate_shows(db: AsyncSession, user_id: int) -> list[Show]:
 
     return [
         s for s in shows
-        if s.tmdb_id and s.id not in dropped_show_ids and not _is_definitely_over(s)
+        if (s.tmdb_id or s.tvdb_id) and s.id not in dropped_show_ids and not _is_definitely_over(s)
     ]
 
 
+# Чи прибирати серіал з календаря як завершений. Не плутати з _is_tvdb_show()
+# нижче — та вирішує, звідки брати розклад (TheTVDB чи TMDB). Для серіалів лише
+# з TheTVDB знімка tmdb_data немає, тож перевірка зводиться до статусу.
 def _is_definitely_over(show: Show) -> bool:
     """Самого лише кешованого статусу "Ended"/"Canceled" недостатньо, щоб
     виключити серіал з календаря: поле status у TMDB відстає від реального
@@ -119,6 +121,13 @@ def _is_definitely_over(show: Show) -> bool:
         return False
     next_air = ((show.tmdb_data or {}).get("next_episode_to_air") or {}).get("air_date")
     return not next_air
+
+
+def _is_tvdb_show(show: Show) -> bool:
+    """A show whose season/episode numbers are TheTVDB's own (no TMDB
+    counterpart, or explicitly TVDB-canonical) - scheduled from TheTVDB, never
+    TMDB."""
+    return bool(show.tvdb_id) and (show.canonical_source == "tvdb" or not show.tmdb_id)
 
 
 async def _resolve_watch_status(db: AsyncSession, user_id: int, entries: list[dict]) -> None:
@@ -162,8 +171,10 @@ async def _resolve_watch_status(db: AsyncSession, user_id: int, entries: list[di
 
 async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     from core import tmdb as tmdb_client
+    from core import tvdb as tvdb_client
     from core.translations import get_user_metadata_language
     from routers.media import check_tmdb_key, get_user_tmdb_key
+    from routers.shows import get_user_tvdb_key
 
     # Handed back in the payload too, so the frontend's Today/Yesterday/
     # Tomorrow labels use this same reference instead of the viewer's own
@@ -173,7 +184,15 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     candidates = await _candidate_shows(db, user_id)
 
     api_key = await get_user_tmdb_key(db, user_id)
-    if not check_tmdb_key(api_key) or not candidates:
+    tvdb_api_key = await get_user_tvdb_key(db, user_id)
+    tmdb_ok = check_tmdb_key(api_key)
+    # Each show is scheduled from the provider it's numbered by; a provider
+    # with no usable key just drops its shows instead of blanking the calendar.
+    candidates = [
+        s for s in candidates
+        if (tvdb_api_key if _is_tvdb_show(s) else (tmdb_ok and s.tmdb_id))
+    ]
+    if not candidates:
         return {
             "schema": CALENDAR_SCHEMA, "generated_at": datetime.utcnow().isoformat(),
             "today": today.isoformat(), "shows_checked": 0, "entries": [],
@@ -184,7 +203,36 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     window_end = today + timedelta(days=CALENDAR_WINDOW_DAYS - 1)
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
 
+    async def _fetch_tvdb(show: Show) -> list[dict]:
+        async with sem:
+            try:
+                raw_eps = await tvdb_client.get_series_episodes(
+                    show.tvdb_id, None, tvdb_api_key, language=tvdb_client.tvdb_language(language)
+                )
+            except Exception:
+                return []
+        out = []
+        for raw in raw_eps:
+            ep = tvdb_client.format_episode(raw)
+            air_date = ep["air_date"]
+            if not air_date or not (window_start.isoformat() <= air_date <= window_end.isoformat()):
+                continue
+            out.append({
+                "air_date": air_date,
+                "show_id": show.id,
+                "show_tmdb_id": None,
+                "show_tvdb_id": show.tvdb_id,
+                "show_title": show.title,
+                "poster_path": show.poster_path,
+                "season_number": ep["season_number"],
+                "episode_number": ep["episode_number"],
+                "episode_name": ep["name"],
+            })
+        return out
+
     async def _fetch(show: Show) -> list[dict]:
+        if _is_tvdb_show(show):
+            return await _fetch_tvdb(show)
         async with sem:
             try:
                 detail = await tmdb_client.get_show_light(show.tmdb_id, api_key=api_key, language=language)
