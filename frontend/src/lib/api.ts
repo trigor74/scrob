@@ -337,6 +337,7 @@ export interface AdminUser {
   api_key: string;
   created_at: string;
   avatar_url: string | null;
+  totp_enabled?: boolean;
 }
 
 export interface GlobalSettings {
@@ -1115,7 +1116,8 @@ export interface ProfileCommentItem {
   id: number;
   content: string;
   media_type: string;
-  tmdb_id: number;
+  tmdb_id: number | null;
+  tvdb_id: number | null;
   season_number: number | null;
   episode_number: number | null;
   title: string | null;
@@ -1633,9 +1635,9 @@ export const api = {
   },
 
   comments: {
-    list: (params: { media_type: string; tmdb_id: number; season_number?: number; episode_number?: number }, token?: string) =>
+    list: (params: { media_type: string; tmdb_id?: number; tvdb_id?: number; season_number?: number; episode_number?: number }, token?: string) =>
       get<Comment[]>("/comments", params, token),
-    create: (body: { media_type: string; tmdb_id: number; season_number?: number; episode_number?: number; content: string }, token: string) =>
+    create: (body: { media_type: string; tmdb_id?: number; tvdb_id?: number; season_number?: number; episode_number?: number; content: string }, token: string) =>
       post<Comment>("/comments", body, token),
     update: (id: number, content: string, token: string) =>
       patch<{ id: number; content: string; updated_at: string | null }>(`/comments/${id}`, { content }, token),
