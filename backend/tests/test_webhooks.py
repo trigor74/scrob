@@ -17,6 +17,7 @@ from routers import webhooks
 from routers.webhooks import (
     _backfill_credits_stingers,
     _backfill_jellyfin_runtimes,
+    _backfill_kodi_runtime,
     _backfill_plex_runtime,
     _commit_playback_session_update,
     _consume_recently_pushed_watched,
@@ -2001,12 +2002,96 @@ class ParseKodiPayloadTests(unittest.TestCase):
         data = parse_kodi_payload(self._stop_payload(position=120, total=7680, end=False))
         self.assertLess(data["progress_percent"], 0.05)
 
+    def test_total_length_is_kept_for_the_runtime_backfill(self):
+        data = parse_kodi_payload(self._stop_payload(position=120, total=7680, end=False))
+        self.assertEqual(data["total_seconds"], 7680)
+
+    def test_unknown_total_length_is_none(self):
+        payload = {"method": "Player.OnPlay", "item": {"type": "movie", "title": "x", "uniqueid": {"tmdb": "603"}}}
+        self.assertIsNone(parse_kodi_payload(payload)["total_seconds"])
+
     def test_synthetic_mark_watched_payload_is_complete(self):
         # Shape the add-on POSTs for a "mark as watched" (time == totaltime).
         data = parse_kodi_payload(self._stop_payload(position=7680, total=7680, end=True))
         self.assertTrue(data["ended"])
         self.assertEqual(data["progress_percent"], 1.0)
         self.assertEqual(data["session_id"], "7")
+
+
+class BackfillKodiRuntimeTests(IsolatedAsyncioTestCase):
+    """The Kodi-style webhook is the one external players use (Scrob's Kodi
+    add-on, the Silo watch-provider plugin). Like the Plex and Jellyfin
+    paths, it must fill a missing Media.runtime from the event's own total
+    length, then TMDB, or the Now Playing bar's live progress never engages
+    for a title TMDB has no runtime for yet (#383)."""
+
+    def _movie(self, **overrides):
+        defaults = dict(runtime=None, media_type=MediaType.movie, tmdb_id=550, show_id=None, season_number=None, episode_number=None)
+        return SimpleNamespace(**{**defaults, **overrides})
+
+    async def test_noop_when_runtime_already_set(self) -> None:
+        media = self._movie(runtime=42)
+        db = _FakeDB([])
+        with patch("core.tmdb.get_movie", new_callable=AsyncMock) as mock_get_movie:
+            await _backfill_kodi_runtime(db, media, {"total_seconds": 5400}, "tmdb-key")
+        self.assertEqual(media.runtime, 42)
+        self.assertEqual(db.commits, 0)
+        mock_get_movie.assert_not_called()
+
+    async def test_uses_the_event_total_length_first(self) -> None:
+        media = self._movie()
+        db = _FakeDB([])
+        with patch("core.tmdb.get_movie", new_callable=AsyncMock) as mock_get_movie:
+            await _backfill_kodi_runtime(db, media, {"total_seconds": 3187}, "tmdb-key")
+        self.assertEqual(media.runtime, 53)
+        self.assertEqual(db.commits, 1)
+        mock_get_movie.assert_not_called()
+
+    async def test_falls_back_to_tmdb_when_the_event_has_no_length(self) -> None:
+        media = self._movie(tmdb_id=550)
+        db = _FakeDB([])
+        with patch("core.tmdb.get_movie", new_callable=AsyncMock, return_value={"runtime": 139}) as mock_get_movie:
+            await _backfill_kodi_runtime(db, media, {"total_seconds": None}, "tmdb-key")
+        mock_get_movie.assert_awaited_once_with(550, api_key="tmdb-key")
+        self.assertEqual(media.runtime, 139)
+
+    async def test_leaves_runtime_none_when_every_source_fails(self) -> None:
+        media = self._movie(tmdb_id=None)
+        db = _FakeDB([])
+        await _backfill_kodi_runtime(db, media, {"total_seconds": 0}, "tmdb-key")
+        self.assertIsNone(media.runtime)
+        self.assertEqual(db.commits, 0)
+
+
+class FindOrCreateShowRaceTests(IsolatedAsyncioTestCase):
+    """#446: one media server feeding two Scrob accounts delivers the same
+    webhook to both at once, so both decide a brand-new show is missing and
+    both insert it. The loser must get the winner's row back, not a failed
+    session and a 500 (which dropped the event for that user)."""
+
+    SHOW = {"name": "Deadwood", "external_ids": {}, "seasons": []}
+
+    async def test_creates_the_show_inside_a_savepoint(self) -> None:
+        db = _OpenSessionFakeDB([None])
+        with patch("routers.webhooks.tmdb.get_show", AsyncMock(return_value=self.SHOW)):
+            show = await webhooks._find_or_create_show(db, 1406, "k")
+        self.assertEqual(show.tmdb_id, 1406)
+        # add() happens inside the savepoint, never before it.
+        self.assertEqual(db.events, ["begin_nested", "add"])
+
+    async def test_loser_of_the_insert_race_gets_the_winners_row(self) -> None:
+        winner = SimpleNamespace(id=7, tmdb_id=1406)
+        db = _OpenSessionFakeDB([None, winner], flush_raises=IntegrityError("insert", {}, Exception("dup tmdb_id")))
+        with patch("routers.webhooks.tmdb.get_show", AsyncMock(return_value=self.SHOW)):
+            show = await webhooks._find_or_create_show(db, 1406, "k")
+        self.assertIs(show, winner)
+
+    async def test_an_integrity_error_with_no_winning_row_still_raises(self) -> None:
+        # e.g. a tvdb_id clash: nothing exists for this tmdb_id to fall back to.
+        db = _OpenSessionFakeDB([None, None], flush_raises=IntegrityError("insert", {}, Exception("dup tvdb_id")))
+        with patch("routers.webhooks.tmdb.get_show", AsyncMock(return_value=self.SHOW)):
+            with self.assertRaises(IntegrityError):
+                await webhooks._find_or_create_show(db, 1406, "k")
 
 
 class FindOrCreateMediaKodiShowIdTests(IsolatedAsyncioTestCase):
