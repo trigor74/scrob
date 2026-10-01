@@ -17,7 +17,7 @@ services:
 
   scrob:
     container_name: scrob
-    image: lampame/scrob:latest
+    image: ghcr.io/trigor74/scrob:latest
     restart: unless-stopped
     depends_on:
       scrob-db:
