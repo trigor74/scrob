@@ -6,11 +6,10 @@
   [**English**](README.md) | [**Українська**](README.uk.md)
 
   [![GitHub Stars](https://img.shields.io/github/stars/lampame/scrob?style=flat-square)](https://github.com/lampame/scrob/stargazers)
-  [![Docker Pulls](https://img.shields.io/docker/pulls/lampame/scrob?style=flat-square)](https://hub.docker.com/r/lampame/scrob)
   [![GitHub Contributors](https://img.shields.io/github/contributors/lampame/scrob?style=flat-square)](https://github.com/lampame/scrob/graphs/contributors)
   [![GitHub Sponsors](https://img.shields.io/github/sponsors/ellite?style=flat-square)](https://github.com/sponsors/ellite)
-  [![Latest Release](https://img.shields.io/github/v/release/lampame/scrob?style=flat-square)](https://github.com/lampame/scrob/releases/latest)
-  [![Build](https://github.com/lampame/scrob/actions/workflows/fork-release.yml/badge.svg?branch=main)](https://github.com/lampame/scrob/actions/workflows/fork-release.yml)
+  [![Latest Release](https://img.shields.io/github/v/release/trigor74/scrob?style=flat-square)](https://github.com/trigor74/scrob/releases/latest)
+  [![Build](https://github.com/trigor74/scrob/actions/workflows/fork-release.yml/badge.svg)](https://github.com/trigor74/scrob/actions/workflows/fork-release.yml)
 </div>
 
 ---
@@ -38,6 +37,7 @@ Scrob синхронізує ваші бібліотеки з **Jellyfin**, **Pl
 - [Можливості](#можливості)
 - [Скріншоти](#скріншоти)
 - [Початок роботи](#початок-роботи)
+  - [Варіанти збірки](#варіанти-збірки)
   - [Docker Compose](#docker-compose)
   - [Omnibus (один контейнер)](#omnibus-один-контейнер)
   - [Docker Run](#docker-run)
@@ -157,14 +157,25 @@ Scrob синхронізує ваші бібліотеки з **Jellyfin**, **Pl
 - [Docker](https://docs.docker.com/get-docker/) та [Docker Compose](https://docs.docker.com/compose/install/)
 - [TMDB Read Access Token](https://www.themoviedb.org/settings/api) (безкоштовний) — використовується для метаданих, пошуку та зображень
 
+### Варіанти збірки
+
+Образи публікуються лише в **GHCR**: `ghcr.io/trigor74/scrob`. З того самого коду збираються два варіанти:
+
+| Варіант | Теги | Що всередині |
+|---|---|---|
+| **lampame-lp** (рекомендовано) | `:latest`, `:lampame-lp`, `:vX.Y.Z-lampame-lp[.N]` | усе з `lampame`, плюс інтеграція плагіна Scrob для Lampa з [плагіном профілів levende](https://github.com/levende/lampa-plugins) (`profiles.js`) |
+| **lampame** | `:lampame`, `:vX.Y.Z-lampame[.N]` | те саме, але без інтеграції з профілями levende |
+
+Кожен варіант має також образ `-omnibus` з вбудованим PostgreSQL (`:latest-omnibus`, `:lampame-omnibus`, ...). `X.Y.Z` — версія апстріму [ellite/scrob](https://github.com/ellite/scrob), на якій зібрано реліз. Беріть `:latest` / `:lampame`, щоб отримувати оновлення, або повний тег версії, щоб закріпитись на конкретному релізі.
+
 ### Docker Compose
 
-> Обрози розміщені на **Docker Hub** (`lampame/scrob`). Доступно також дзеркало на GHCR (`ghcr.io/lampame/scrob`), якщо віддаєте перевагу.
+> Образи розміщені в **GHCR** (`ghcr.io/trigor74/scrob`) — варіант оберіть у розділі [Варіанти збірки](#варіанти-збірки).
 
 1. Завантажте compose-файл:
 
 ```bash
-curl -o docker-compose.yaml https://raw.githubusercontent.com/lampame/scrob/main/docker-compose.yaml
+curl -o docker-compose.yaml https://raw.githubusercontent.com/trigor74/scrob/release/lampame-lp/docker-compose.yaml
 ```
 
 2. Відредагуйте `docker-compose.yaml` та замініть обов'язкові значення:
@@ -189,7 +200,7 @@ services:
 
   scrob:
     container_name: scrob
-    image: lampame/scrob:latest
+    image: ghcr.io/trigor74/scrob:latest
     restart: unless-stopped
     depends_on:
       scrob-db:
@@ -218,12 +229,12 @@ docker compose up -d
 
 Образ omnibus включає PostgreSQL всередині контейнера — не потрібен окремий сервіс бази даних. Це найпростіший спосіб почати, особливо на платформах як Unraid або Portainer, де керування кількома контейнерами незручне.
 
-> **Теги образів:** `lampame/scrob:latest-omnibus` / `ghcr.io/lampame/scrob:latest-omnibus`
+> **Теги образів:** `ghcr.io/trigor74/scrob:latest-omnibus` (або `:lampame-omnibus`)
 
 1. Завантажте omnibus compose-файл:
 
 ```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/lampame/scrob/main/docker-compose.omnibus.yml
+curl -o docker-compose.yml https://raw.githubusercontent.com/trigor74/scrob/release/lampame-lp/docker-compose.omnibus.yml
 ```
 
 2. Відредагуйте його та встановіть `SECRET_KEY`:
@@ -273,7 +284,7 @@ docker run -d \
   -e SECRET_KEY="$(openssl rand -hex 32)" \
   -e TZ=UTC \
   -v scrob_data:/app/backend/data \
-  lampame/scrob:latest
+  ghcr.io/trigor74/scrob:latest
 ```
 
 **Образ Omnibus** (PostgreSQL включено — не потрібен окремий контейнер):
@@ -287,7 +298,7 @@ docker run -d \
   -e TZ=UTC \
   -v scrob_data:/app/backend/data \
   -v scrob_db:/app/postgres/data \
-  lampame/scrob:latest-omnibus
+  ghcr.io/trigor74/scrob:latest-omnibus
 ```
 
 ### Перше налаштування

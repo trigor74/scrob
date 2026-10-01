@@ -6,11 +6,10 @@
   [**English**](README.md) | [**Українська**](README.uk.md)
 
   [![GitHub Stars](https://img.shields.io/github/stars/lampame/scrob?style=flat-square)](https://github.com/lampame/scrob/stargazers)
-  [![Docker Pulls](https://img.shields.io/docker/pulls/lampame/scrob?style=flat-square)](https://hub.docker.com/r/lampame/scrob)
   [![GitHub Contributors](https://img.shields.io/github/contributors/lampame/scrob?style=flat-square)](https://github.com/lampame/scrob/graphs/contributors)
   [![GitHub Sponsors](https://img.shields.io/github/sponsors/ellite?style=flat-square)](https://github.com/sponsors/ellite)
-  [![Latest Release](https://img.shields.io/github/v/release/lampame/scrob?style=flat-square)](https://github.com/lampame/scrob/releases/latest)
-  [![Build](https://github.com/lampame/scrob/actions/workflows/fork-release.yml/badge.svg?branch=main)](https://github.com/lampame/scrob/actions/workflows/fork-release.yml)
+  [![Latest Release](https://img.shields.io/github/v/release/trigor74/scrob?style=flat-square)](https://github.com/trigor74/scrob/releases/latest)
+  [![Build](https://github.com/trigor74/scrob/actions/workflows/fork-release.yml/badge.svg)](https://github.com/trigor74/scrob/actions/workflows/fork-release.yml)
   [![AI Ready](https://img.shields.io/badge/AI--Ready-yes-brightgreen?style=flat)](https://github.com/johnpapa/ai-ready)
 </div>
 
@@ -39,6 +38,7 @@ Scrob syncs your libraries from **Jellyfin**, **Plex**, **Emby**, **Nuvio**, **A
 - [Features](#features)
 - [Screenshots](#screenshots)
 - [Getting Started](#getting-started)
+  - [Release tracks](#release-tracks)
   - [Docker Compose](#docker-compose)
   - [Omnibus (single container)](#omnibus-single-container)
   - [Docker Run](#docker-run)
@@ -161,14 +161,25 @@ Scrob syncs your libraries from **Jellyfin**, **Plex**, **Emby**, **Nuvio**, **A
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
 - A [TMDB Read Access Token](https://www.themoviedb.org/settings/api) (free) - used for metadata, search, and images
 
+### Release tracks
+
+Images are published to **GHCR** only: `ghcr.io/trigor74/scrob`. Two variants are built from the same code:
+
+| Variant | Tags | What's inside |
+|---|---|---|
+| **lampame-lp** (recommended) | `:latest`, `:lampame-lp`, `:vX.Y.Z-lampame-lp[.N]` | everything from `lampame`, plus the Scrob Lampa plugin's integration with the [levende profiles plugin](https://github.com/levende/lampa-plugins) (`profiles.js`) |
+| **lampame** | `:lampame`, `:vX.Y.Z-lampame[.N]` | the same, without the levende profiles integration |
+
+Each variant also has an `-omnibus` image with PostgreSQL built in (`:latest-omnibus`, `:lampame-omnibus`, ...). `X.Y.Z` is the upstream [ellite/scrob](https://github.com/ellite/scrob) version the release is based on. Use `:latest` / `:lampame` to follow updates, or a full version tag to pin a release.
+
 ### Docker Compose
 
-> Images are hosted on **Docker Hub** (`lampame/scrob`). A mirror is also available on GHCR (`ghcr.io/lampame/scrob`) if you prefer.
+> Images are hosted on **GHCR** (`ghcr.io/trigor74/scrob`) - see [Release tracks](#release-tracks) to pick a variant.
 
 1. Download the compose file:
 
 ```bash
-curl -o docker-compose.yaml https://raw.githubusercontent.com/lampame/scrob/main/docker-compose.yaml
+curl -o docker-compose.yaml https://raw.githubusercontent.com/trigor74/scrob/release/lampame-lp/docker-compose.yaml
 ```
 
 2. Edit `docker-compose.yaml` and replace the required values:
@@ -193,7 +204,7 @@ services:
 
   scrob:
     container_name: scrob
-    image: lampame/scrob:latest
+    image: ghcr.io/trigor74/scrob:latest
     restart: unless-stopped
     depends_on:
       scrob-db:
@@ -222,12 +233,12 @@ docker compose up -d
 
 The omnibus image bundles PostgreSQL inside the container - no separate database service needed. It's the simplest way to get started, especially on platforms like Unraid or Portainer where managing multiple containers is cumbersome.
 
-> **Image tags:** `lampame/scrob:latest-omnibus` / `ghcr.io/lampame/scrob:latest-omnibus`
+> **Image tags:** `ghcr.io/trigor74/scrob:latest-omnibus` (or `:lampame-omnibus`)
 
 1. Download the omnibus compose file:
 
 ```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/lampame/scrob/main/docker-compose.omnibus.yml
+curl -o docker-compose.yml https://raw.githubusercontent.com/trigor74/scrob/release/lampame-lp/docker-compose.omnibus.yml
 ```
 
 2. Edit it and set your `SECRET_KEY`:
@@ -277,7 +288,7 @@ docker run -d \
   -e SECRET_KEY="$(openssl rand -hex 32)" \
   -e TZ=UTC \
   -v scrob_data:/app/backend/data \
-  lampame/scrob:latest
+  ghcr.io/trigor74/scrob:latest
 ```
 
 **Omnibus image** (PostgreSQL included - no separate container needed):
@@ -291,7 +302,7 @@ docker run -d \
   -e TZ=UTC \
   -v scrob_data:/app/backend/data \
   -v scrob_db:/app/postgres/data \
-  lampame/scrob:latest-omnibus
+  ghcr.io/trigor74/scrob:latest-omnibus
 ```
 
 ### First Setup
@@ -710,7 +721,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 ### Setup
 
 ```bash
-git clone https://github.com/lampame/scrob.git
+git clone https://github.com/trigor74/scrob.git
 cd scrob
 
 # Start a local database
