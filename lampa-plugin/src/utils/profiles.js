@@ -183,7 +183,8 @@ export function restoreIsolatedData(targetId) {
     var staleCursor = saved[LAMPAC_AREA_TAG] !== lampacArea
 
     ISOLATED_KEYS.forEach(function (key) {
-        var keep = key in saved && !(key === 'lampac_bookmark_version' && staleCursor)
+        var cursorKey = key === 'lampac_bookmark_version' || key === 'lampac_bookmark_scope'
+        var keep = key in saved && !(cursorKey && staleCursor)
         Lampa.Storage.set(key, keep ? saved[key] : defaultValue(key))
     })
 

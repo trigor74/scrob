@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-09-28
+ * Build: 2026-10-01
  * Source: https://github.com/ellite/scrob
  */
 (function () {
@@ -578,7 +578,12 @@
     // the profile's own `favorite` and lampac area (profiles.js's
     // applyLampacProfileId()), or the next page load asks the new area for
     // "changes since" a version number from a different area.
-    'lampac_bookmark_version'];
+    'lampac_bookmark_version',
+    // lampac 1.61.2+ (a3c9dbd): the account|uid|profile_id scope the cursor
+    // above was issued under - bookmark.js ignores a cursor whose stored
+    // scope differs from the current one and pulls a full /dump. Restored
+    // as a pair with the cursor, so a switch back keeps pulling deltas.
+    'lampac_bookmark_scope'];
 
     // Defaults applied when the target profile has no saved data yet.
     var DEFAULTS = {
@@ -608,7 +613,9 @@
       torrents_view: '[]',
       torrents_filter_data: '{}',
       // '0' = no cursor yet: lampac pulls a full /bookmark/dump of the area.
-      lampac_bookmark_version: '0'
+      lampac_bookmark_version: '0',
+      // '' = no scope yet: lampac treats the cursor as foreign → full /dump.
+      lampac_bookmark_scope: ''
     };
 
     // Backup storage key for ONE profile - a single JSON object holding all of
@@ -645,7 +652,8 @@
 
     // Default value for an isolated key.
     function defaultValue(key) {
-      return DEFAULTS[key] || '{}';
+      // `in`, not `||` - lampac_bookmark_scope's default is a legitimate ''.
+      return key in DEFAULTS ? DEFAULTS[key] : '{}';
     }
 
     // Server URL without trailing slash, '' when not set.
@@ -4076,7 +4084,8 @@
       // this one - drop it so lampac starts from a full dump.
       var staleCursor = saved[LAMPAC_AREA_TAG] !== lampacArea;
       ISOLATED_KEYS.forEach(function (key) {
-        var keep = key in saved && !(key === 'lampac_bookmark_version' && staleCursor);
+        var cursorKey = key === 'lampac_bookmark_version' || key === 'lampac_bookmark_scope';
+        var keep = key in saved && !(cursorKey && staleCursor);
         Lampa.Storage.set(key, keep ? saved[key] : defaultValue(key));
       });
       if (lampacChanged) requestLampacPull();
