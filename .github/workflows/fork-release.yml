@@ -1,18 +1,30 @@
 name: Fork Release
 
+# Дві версії продукту, кожна зі своєю релізною гілкою:
+#   v2.23.0-lampame[.N]    — з release/lampame    (звичайна)
+#   v2.23.0-lampame-lp[.N] — з release/lampame-lp (levende, вона ж latest)
+# Теги ставить make_gh_release.sh; збирання — лише на пуш тегу.
 on:
   push:
-    tags: ['v*-fork*']
+    tags:
+      - 'v*-lampame'
+      - 'v*-lampame.*'
+      - 'v*-lampame-lp'
+      - 'v*-lampame-lp.*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag, e.g. v2.6.0-fork.2 (required for manual runs)'
+        description: 'Наявний тег для перезбирання, напр. v2.23.0-lampame або v2.23.0-lampame-lp.2'
         required: true
         type: string
 
+concurrency:
+  group: fork-release-${{ github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build & push fork image
+    name: Build & push fork images
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -22,15 +34,91 @@ jobs:
       APP_VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
     steps:
-      - name: Checkout
+      - name: Checkout tag
         uses: actions/checkout@v4
         with:
+          ref: refs/tags/${{ env.APP_VERSION }}
           fetch-depth: 0
 
-      - name: Set git identity
+      - name: Resolve track, image tags and release branch
+        id: meta
         run: |
-          git config user.email "ci@lampame.dev"
-          git config user.name "fork-ci"
+          set -euo pipefail
+          V="$APP_VERSION"
+
+          # Порядок перевірок важливий: -lampame-lp раніше за -lampame
+          if [[ "$V" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-lampame-lp(\.[0-9]+)?$ ]]; then
+            TRACK="lampame-lp"
+          elif [[ "$V" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-lampame(\.[0-9]+)?$ ]]; then
+            TRACK="lampame"
+          else
+            echo "::error::Тег '$V' не відповідає жодному шаблону (vX.Y.Z-lampame[.N] / vX.Y.Z-lampame-lp[.N])"
+            exit 1
+          fi
+          BASE="v${BASH_REMATCH[1]}"
+
+          # Тег має стояти саме на своїй релізній гілці — інакше випадковий
+          # тег на робочій гілці зібрав би й опублікував неперевірений код.
+          BRANCH="release/${TRACK}"
+          if ! git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}" >/dev/null; then
+            echo "::error::Гілки ${BRANCH} немає в репозиторії — спершу запуште її"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$V" "origin/${BRANCH}"; then
+            echo "::error::Тег $V не належить гілці ${BRANCH} — реліз скасовано"
+            exit 1
+          fi
+
+          # Усі теги цієї версії продукту, від старшого до новішого
+          TRACK_RE="^v[0-9]+\.[0-9]+\.[0-9]+-${TRACK}(\.[0-9]+)?$"
+          TRACK_TAGS=$(git tag -l "v*-${TRACK}*" | grep -E "$TRACK_RE" | sort -V)
+          NEWEST=$(echo "$TRACK_TAGS" | tail -1)
+
+          # Плаваючі мітки (lampame / lampame-lp / latest) рухаємо лише для
+          # найновішого тегу — ручне перезбирання старого релізу не має
+          # відкочувати їх назад.
+          IS_NEWEST=false
+          [ "$V" = "$NEWEST" ] && IS_NEWEST=true
+
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/scrob"
+
+          STD="${IMAGE}:${V}"
+          OMNI="${IMAGE}:${V}-omnibus"
+          if [ "$IS_NEWEST" = true ]; then
+            STD="${STD}"$'\n'"${IMAGE}:${TRACK}"
+            OMNI="${OMNI}"$'\n'"${IMAGE}:${TRACK}-omnibus"
+            if [ "$TRACK" = "lampame-lp" ]; then
+              STD="${STD}"$'\n'"${IMAGE}:latest"
+              OMNI="${OMNI}"$'\n'"${IMAGE}:latest-omnibus"
+            fi
+          fi
+
+          # Позначка «Latest» на сторінці релізів — лише найновішому levende
+          GH_LATEST=false
+          [ "$TRACK" = "lampame-lp" ] && [ "$IS_NEWEST" = true ] && GH_LATEST=true
+
+          # Попередній реліз цієї ж версії продукту — для нотаток
+          PREV=$(echo "$TRACK_TAGS" | grep -B1 -xF "$V" | head -1)
+          [ "$PREV" = "$V" ] && PREV=""
+
+          {
+            echo "track=$TRACK"
+            echo "base=$BASE"
+            echo "branch=$BRANCH"
+            echo "prev=$PREV"
+            echo "gh_latest=$GH_LATEST"
+            echo "std_tags<<EOF"
+            echo "$STD"
+            echo "EOF"
+            echo "omni_tags<<EOF"
+            echo "$OMNI"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Track: $TRACK  base: $BASE  prev: ${PREV:-<немає>}  newest: $IS_NEWEST"
+          echo "Standard tags:"; echo "$STD"
+          echo "Omnibus tags:";  echo "$OMNI"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -45,12 +133,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Build and push standard image
         uses: docker/build-push-action@v6
         with:
@@ -59,13 +141,9 @@ jobs:
           push: true
           build-args: |
             APP_VERSION=${{ env.APP_VERSION }}
-          tags: |
-            lampame/scrob:${{ env.APP_VERSION }}
-            lampame/scrob:latest
-            ghcr.io/lampame/scrob:${{ env.APP_VERSION }}
-            ghcr.io/lampame/scrob:latest
-          cache-from: type=gha,scope=fork-release
-          cache-to: type=gha,mode=max,scope=fork-release
+          tags: ${{ steps.meta.outputs.std_tags }}
+          cache-from: type=gha,scope=fork-release-${{ steps.meta.outputs.track }}
+          cache-to: type=gha,mode=max,scope=fork-release-${{ steps.meta.outputs.track }}
 
       - name: Build and push omnibus image
         uses: docker/build-push-action@v6
@@ -76,99 +154,77 @@ jobs:
           push: true
           build-args: |
             APP_VERSION=${{ env.APP_VERSION }}
-          tags: |
-            lampame/scrob:${{ env.APP_VERSION }}-omnibus
-            lampame/scrob:latest-omnibus
-            ghcr.io/lampame/scrob:${{ env.APP_VERSION }}-omnibus
-            ghcr.io/lampame/scrob:latest-omnibus
-          cache-from: type=gha,scope=fork-release-omnibus
-          cache-to: type=gha,mode=max,scope=fork-release-omnibus
+          tags: ${{ steps.meta.outputs.omni_tags }}
+          cache-from: type=gha,scope=fork-release-${{ steps.meta.outputs.track }}-omnibus
+          cache-to: type=gha,mode=max,scope=fork-release-${{ steps.meta.outputs.track }}-omnibus
 
-      - name: Generate categorized release notes (upstream vs fork)
-        id: notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate release notes (upstream vs fork)
         run: |
           set -euo pipefail
 
           REPO="${{ github.repository }}"
-          CURRENT="${{ env.APP_VERSION }}"
-          PREV=$(git tag -l 'v*-fork*' --sort=-version:refname | grep -v "^${CURRENT}$" | head -1 || true)
+          CURRENT="$APP_VERSION"
+          PREV="${{ steps.meta.outputs.prev }}"
+          BASE="${{ steps.meta.outputs.base }}"
+
+          # Перший реліз версії продукту — від тегу апстріму, на якому він
+          # базується, а не з самого початку історії.
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..${CURRENT}"
+          elif git rev-parse --verify --quiet "refs/tags/${BASE}" >/dev/null; then
+            RANGE="${BASE}..${CURRENT}"
+          else
+            RANGE="${CURRENT}"
+          fi
+          echo "Range: $RANGE"
 
           UPSTREAM_FILE=$(mktemp)
           FORK_FILE=$(mktemp)
           UPSTREAM_HASHES=$(mktemp)
           trap 'rm -f "$UPSTREAM_FILE" "$FORK_FILE" "$UPSTREAM_HASHES"' EXIT
 
-          if [ -n "$PREV" ]; then
-            echo "Previous fork tag: $PREV"
-            RANGE="${PREV}..HEAD"
-          else
-            RANGE="HEAD"
-          fi
-
-          # 1) Find all sync merge commits and collect upstream commit hashes
-          #    Sync merges have "sync" or "upstream" in commit message
-          #    Commits introduced by the merge = parent1..parent2
+          # Мерджі апстріму: тема містить "upstream" (Merge upstream ellite/…,
+          # Merge main (upstream sync …), Merge tag 'upstream/…') або це старі
+          # sync-PR lampame. Слово "sync" саме по собі НЕ ознака — є власні
+          # гілки на кшталт feat/lampa-plugin-timeline-push-sync.
           while read -r hash p1 p2 rest; do
-            [ -z "$hash" ] && continue
+            [ -z "${p2:-}" ] && continue
             subject=$(git log -1 --format=%s "$hash")
-            if echo "$subject" | grep -qiE "(sync|upstream)"; then
-              # Collect all commit hashes introduced by this merge
-              git log --pretty=format:"%H" "${p1}..${p2}" >> "$UPSTREAM_HASHES" 2>/dev/null
+            if echo "$subject" | grep -qiE "upstream|from lampame/sync/"; then
+              git log --format="%H" "${p1}..${p2}" >> "$UPSTREAM_HASHES" 2>/dev/null || true
             fi
-          done < <(git log --merges --pretty=format:"%H %P" "$RANGE" 2>/dev/null)
+          done < <(git log --merges --format="%H %P" "$RANGE")
 
-          # 2) Add sync PR line to upstream (from generate-notes API)
-          NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
-            -f tag_name="$CURRENT" \
-            ${PREV:+-f previous_tag_name="$PREV"} \
-            -q .body 2>/dev/null || echo "")
-
-          while IFS= read -r line; do
-            [[ "$line" == \**\ by\ @* ]] || continue
-            title=$(echo "$line" | sed -E 's/^\* (.*) by @.*/\1/')
-            if echo "$title" | grep -qiE "(sync|upstream)"; then
-              echo "$line" >> "$UPSTREAM_FILE"
-            fi
-          done <<< "$NOTES"
-
-          # 3) Categorize non-merge commits: upstream if hash in sync PR, else fork
           while IFS='|' read -r hash subject; do
             [ -z "$hash" ] && continue
-            short="${hash:0:7}"
-            if grep -q "$hash" "$UPSTREAM_HASHES" 2>/dev/null; then
-              echo "- ${subject} (${short})" >> "$UPSTREAM_FILE"
+            if grep -qx "$hash" "$UPSTREAM_HASHES"; then
+              echo "- ${subject} (${hash:0:7})" >> "$UPSTREAM_FILE"
             else
-              echo "- ${subject} (${short})" >> "$FORK_FILE"
+              echo "- ${subject} (${hash:0:7})" >> "$FORK_FILE"
             fi
-          done < <(git log --no-merges --pretty=format:"%H|%s" "$RANGE" 2>/dev/null)
+          done < <(git log --no-merges --format="%H|%s" "$RANGE")
 
-          # --- Build markdown ---
           {
+            echo "Базується на upstream \`${BASE}\`."
+            echo ""
             echo "## What's Changed"
             echo ""
-
             if [ -s "$UPSTREAM_FILE" ]; then
               echo "### 🔄 Upstream Changes"
               echo ""
               cat "$UPSTREAM_FILE"
               echo ""
             fi
-
             if [ -s "$FORK_FILE" ]; then
               echo "### 🍴 Fork Changes"
               echo ""
               cat "$FORK_FILE"
               echo ""
             fi
-
             if [ ! -s "$UPSTREAM_FILE" ] && [ ! -s "$FORK_FILE" ]; then
               echo "_No changes found since previous release._"
               echo ""
             fi
-
-            # Full changelog link
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/${REPO}/compare/${PREV}...${CURRENT}"
             fi
@@ -176,13 +232,19 @@ jobs:
 
           echo "=== Generated release notes ==="
           cat release_notes.md
-          echo "================================"
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ env.APP_VERSION }}" \
-            --title "${{ env.APP_VERSION }}" \
-            --notes-file release_notes.md \
-            --latest
+          set -euo pipefail
+          # Ручне перезбирання наявного релізу — лише оновлюємо нотатки
+          if gh release view "$APP_VERSION" >/dev/null 2>&1; then
+            gh release edit "$APP_VERSION" --notes-file release_notes.md
+          else
+            gh release create "$APP_VERSION" \
+              --verify-tag \
+              --title "$APP_VERSION" \
+              --notes-file release_notes.md \
+              --latest=${{ steps.meta.outputs.gh_latest }}
+          fi
