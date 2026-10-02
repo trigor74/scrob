@@ -12,7 +12,7 @@ const isProduction = process.env.NODE_ENV === 'production'
 const banner = `/**
  * Scrob — Lampa plugin for self-hosted media tracking
  * Build: ${new Date().toISOString().split('T')[0]}
- * Source: https://github.com/ellite/scrob
+ * Source: https://github.com/trigor74/scrob
  */`
 
 /**
