@@ -2354,8 +2354,22 @@ async def mark_as_watched(
             .where(Media.show_id == show.id)
             .where(Media.season_number == event_in.season_number)
             .where(Media.episode_number == event_in.episode_number)
+            .order_by(Media.id)
         )
-        media = ep_result.scalars().first()
+        # Для одного епізоду може існувати кілька рядків Media (напр. рядок без
+        # tmdb_id від старту сесії й рядок з tmdb_id з іншого шляху). Раніше
+        # бралось .first() без сортування - тобто випадковий рядок, і ручна
+        # відмітка могла лягти не туди, звідки її читає вікно Watch History
+        # (/history/item-events шукає за tmdb_id, далі за media_id). Тому:
+        # спершу рядок з явно переданим tmdb_id, далі з media_id, далі будь-який
+        # з tmdb_id, інакше найстаріший.
+        ep_rows = ep_result.scalars().all()
+        media = (
+            next((m for m in ep_rows if event_in.tmdb_id and m.tmdb_id == event_in.tmdb_id), None)
+            or next((m for m in ep_rows if event_in.media_id and m.id == event_in.media_id), None)
+            or next((m for m in ep_rows if m.tmdb_id), None)
+            or (ep_rows[0] if ep_rows else None)
+        )
 
     if not media:
         media = await find_media(
@@ -3685,6 +3699,9 @@ async def _get_or_create_media_for_session(
         # Reusing avoids duplicate Media rows (which would break the frontend's
         # now-playing match by media_id / tmdb_id) and keeps the canonical
         # episode's runtime/title (design doc §4.1).
+        # show має бути визначений і без show_tmdb_id - нижче його читають
+        # (show.id if show else None); як в апстрімі ellite.
+        show = None
         show_id = None
         if body.show_tmdb_id:
             show_q = await db.execute(select(Show).where(Show.tmdb_id == body.show_tmdb_id))
@@ -3726,6 +3743,9 @@ async def _get_or_create_media_for_session(
                     Media.episode_number == body.episode_number,
                     Media.media_type == MediaType.episode,
                 )
+                # Якщо рядків кілька - детерміновано брати той, що має tmdb_id
+                # (саме за ним вікно Watch History читає перегляди).
+                .order_by(Media.tmdb_id.is_(None), Media.id)
             )
             media = existing_q.scalars().first()
             if media:
@@ -3735,6 +3755,13 @@ async def _get_or_create_media_for_session(
         # the real one (no video duration/metadata available at session-start time), and
         # that guess would otherwise get baked into this row permanently on creation.
         resolved_runtime = body.runtime
+        # Клієнт (плагін Lampa, імпорт з lampac) знає лише tmdb_id серіалу, а не
+        # власний tmdb_id епізоду, і як title шле назву картки - тобто серіалу.
+        # Рядок без tmdb_id не бачать шляхи, що шукають епізод лише за tmdb_id
+        # (колекція, списки, імпорти) - вони створюють другий рядок-дублікат.
+        # Тому беремо tmdb_id і назву епізоду з тієї ж відповіді TMDB.
+        resolved_tmdb_id = body.tmdb_id
+        resolved_title = body.title
         if (
             check_tmdb_key(api_key)
             and body.show_tmdb_id
@@ -3747,14 +3774,23 @@ async def _get_or_create_media_for_session(
                 )
                 if ep_data.get("runtime"):
                     resolved_runtime = ep_data["runtime"]
+                # Номери TVDB-канонічного серіалу - позиції TheTVDB, а не TMDB:
+                # їхній tmdb_id епізоду був би чужим, тож лишаємо як є.
+                if show is None or show.canonical_source != "tvdb":
+                    if resolved_tmdb_id is None and ep_data.get("id"):
+                        resolved_tmdb_id = ep_data["id"]
+                    if ep_data.get("name"):
+                        resolved_title = ep_data["name"]
             except Exception:
                 pass
 
+        # Якщо рядок з цим tmdb_id уже є (створений іншим шляхом),
+        # create_media_safely поверне його замість нового.
         media, _created = await create_media_safely(
             db,
-            body.tmdb_id,
+            resolved_tmdb_id,
             body.media_type,
-            title=body.title or "Unknown",
+            title=resolved_title or "Unknown",
             runtime=resolved_runtime,
             season_number=body.season_number,
             episode_number=body.episode_number,
