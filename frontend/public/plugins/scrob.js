@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-10-02
+ * Build: 2026-10-07
  * Source: https://github.com/trigor74/scrob
  */
 (function () {
@@ -4157,6 +4157,12 @@
     // all" - normal exits are covered by the short reset above once updates start
     // arriving, well before this ever fires.
     var EXTERNAL_CONTEXT_SAFETY_MS = 6 * 60 * 60 * 1000;
+    // Ручна позначка в Lampa (season-episode__viewed, «Просмотрено») викликає
+    // Timeline.update синхронно в обробнику натискання (hover:enter). Звіт
+    // зовнішнього плеєра приходить з Android (evaluateJavascript) без жодного
+    // введення в саму Lampa. Тому update, що настав у цьому вікні після
+    // натискання/кліку/дотику, вважається ручним, а решта - ні.
+    var USER_INPUT_WINDOW_MS = 1500;
     var running$1 = false;
     var listenersBound = false;
     var profileListener = null; // Profile change listener reference (engine.js has the same field, same reason)
@@ -4201,17 +4207,42 @@
     // Timeline.update is buffered as its own self-contained snapshot instead
     // (pendingItems - processed as one batch once the whole burst settles,
     // §5.1.1 backdating design, not fired individually as they arrive).
+    //
+    // Повторні звіти (lampa-app a8e7d70, 2026-10-05): Just+ Player тепер шле
+    // звіт кожні 2 хв і при кожному виході з плеєра, а не один результат при
+    // закритті. Кожен звіт - повний знімок сесії, тобто Timeline.update для
+    // КОЖНОЇ відкритої серії плейлиста. Без утримання сокета WebView спить, і
+    // накопичені звіти виконуються одним сплеском у хронологічному порядку.
+    // Тому контекст живе від 'external' до наступного 'external'/'start'/stop()
+    // (а не закривається після першого сплеску), у сплеску виграє ОСТАННЄ
+    // значення серії, а `sent` пам'ятає, що вже пішло на сервер за цей запуск -
+    // інакше кожен звіт давав дубль у історії (dedup сервера лише 5 хв) або
+    // сесію на паузі з ранньою позицією.
     var externalContext = {
       active: false,
       isSeries: false,
       originalName: null,
       card: null,
-      handledHashes: {},
       startedAt: null,
       // Date.now() at 'external' launch — hard lower bound for backdated watched_at (see flushExternalBatch())
+      lastFlushAt: null,
+      // кінець попереднього сплеску - нижня межа backdating для наступного
+      lastUpdateAt: 0,
+      // останній update цього контексту - ознака, що сплеск ще триває
+      sent: {},
+      // hash → {watched: true} | {time: секунди останнього надісланого прогресу}
+      pendingIndex: {},
+      // hash → індекс у pendingItems (останнє значення серії замінює попереднє)
       pendingItems: [] // buffered {identity, percent, time, runtimeMinutes} - processed as one batch at burst-end, not fired per-event
     };
     var externalResetTimer = null;
+    var lastUserInputAt = 0;
+    function onUserInput() {
+      lastUserInputAt = Date.now();
+    }
+    function recentUserInput() {
+      return Date.now() - lastUserInputAt < USER_INPUT_WINDOW_MS;
+    }
     function resetExternalContext() {
       if (externalResetTimer) clearTimeout(externalResetTimer);
       externalResetTimer = null;
@@ -4219,9 +4250,26 @@
       externalContext.isSeries = false;
       externalContext.originalName = null;
       externalContext.card = null;
-      externalContext.handledHashes = {};
       externalContext.startedAt = null;
+      externalContext.lastFlushAt = null;
+      externalContext.lastUpdateAt = 0;
+      externalContext.sent = {};
+      externalContext.pendingIndex = {};
       externalContext.pendingItems = [];
+    }
+
+    // Сплеск звітів ще триває (останній update щойно, debounce не спрацював).
+    function externalBurstInProgress() {
+      return externalContext.active && Date.now() - externalContext.lastUpdateAt < EXTERNAL_CONTEXT_RESET_MS;
+    }
+
+    // Кінець одного сплеску звітів: надіслати його, але контекст лишити
+    // активним для наступних звітів того ж запуску плеєра. Страховочний
+    // таймер переозброюється - контекст сам закриється через 6 год тиші.
+    function flushExternalBurst() {
+      flushExternalBatch();
+      if (externalResetTimer) clearTimeout(externalResetTimer);
+      externalResetTimer = externalContext.active ? setTimeout(flushAndResetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS) : null;
     }
 
     // Flush-then-reset - the only ways a burst legitimately ends: the debounce
@@ -4233,6 +4281,9 @@
     // logout/sync-disable) - that stays a bare discard, since firing async
     // requests while credentials may be mid-swap risks sending under the wrong
     // profile.
+    // Debounce-таймер тепер викликає flushExternalBurst() (контекст лишається
+    // для повторних звітів), тож тут лишились: 6-годинна тиша, новий запуск
+    // зовнішнього ('external') і старт вбудованого плеєра.
     function flushAndResetExternalContext() {
       flushExternalBatch();
       resetExternalContext();
@@ -4258,13 +4309,39 @@
       // after toggling sync off, mid-playlist).
       if (!running$1) {
         externalContext.pendingItems = [];
+        externalContext.pendingIndex = {};
         return;
       }
       var items = externalContext.pendingItems;
+      externalContext.pendingItems = [];
+      externalContext.pendingIndex = {};
       if (!items || !items.length) return;
+
+      // Нижня межа backdating цього сплеску: кінець попереднього (повторні
+      // звіти того ж запуску), а для першого - момент запуску плеєра.
+      var lowerBound = externalContext.lastFlushAt || externalContext.startedAt;
+      externalContext.lastFlushAt = Date.now();
+      var sent = externalContext.sent;
       var watched = [];
       for (var i = 0; i < items.length; i++) {
-        if (items[i].percent >= WATCHED_THRESHOLD_PERCENT$1) watched.push(items[i]);else pushExternalProgressSnapshot(items[i].identity, items[i].runtimeMinutes, items[i].time);
+        var item = items[i];
+        var prev = sent[item.hash];
+        // Уже позначена переглянутою за цей запуск - повторний звіт нічого не додає.
+        if (prev && prev.watched) continue;
+        if (item.percent >= WATCHED_THRESHOLD_PERCENT$1) {
+          sent[item.hash] = {
+            watched: true
+          };
+          watched.push(item);
+        } else if (!prev || prev.time !== Math.round(item.time)) {
+          // Прогрес лише якщо позиція змінилась. /session/start з тим самим
+          // епізодом відновлює ту саму сесію (ключ детермінований), а не
+          // створює нову.
+          sent[item.hash] = {
+            time: Math.round(item.time)
+          };
+          pushExternalProgressSnapshot(item.identity, item.runtimeMinutes, item.time);
+        }
       }
       var k = watched.length;
       if (k === 0) return;
@@ -4278,7 +4355,9 @@
       // every episode in the batch land on the same timestamp (live-tested
       // regression 2026-09-16, introduced together with the getNowPlaying
       // consolidation this same lookup is part of).
-      var startedAt = externalContext.startedAt || Date.now();
+      // Для повторного звіту межа - кінець попереднього сплеску (lowerBound
+      // вище), щоб нові серії не розмазувались назад по вже звітованому часу.
+      var startedAt = lowerBound || Date.now();
       var now = Date.now();
 
       // One shared now-playing snapshot for the whole batch (live discussion
@@ -4591,8 +4670,10 @@
       externalContext.isSeries = isSeries;
       externalContext.originalName = originalName || null;
       externalContext.card = card;
-      externalContext.handledHashes = {};
       externalContext.startedAt = Date.now();
+      externalContext.lastFlushAt = null;
+      externalContext.sent = {};
+      externalContext.pendingIndex = {};
       externalContext.pendingItems = [];
       if (externalResetTimer) clearTimeout(externalResetTimer);
       externalResetTimer = setTimeout(flushAndResetExternalContext, EXTERNAL_CONTEXT_SAFETY_MS);
@@ -4610,7 +4691,14 @@
         // (§5.1.1, handled below) or a manual click elsewhere with no
         // active player of any kind (§5.2.6: season-episode__viewed checkbox
         // or "Просмотрено" outside the player).
-        if (externalContext.active) handleExternalTimelineUpdate(e);else handleManualTimelineUpdate(e);
+        // Ручна позначка - лише та, що настала одразу після введення в Lampa
+        // (див. USER_INPUT_WINDOW_MS): так клік не сприймається як звіт плеєра,
+        // поки контекст зовнішнього плеєра ще активний, а звіт плеєра (і
+        // будь-який інший update без введення) - як ручний клік.
+        // Посеред сплеску звітів натискання не рахується: накопичені звіти
+        // виконуються одразу після повернення в Lampa, коли користувач уже
+        // може тиснути кнопки.
+        if (externalBurstInProgress()) handleExternalTimelineUpdate(e);else if (recentUserInput()) handleManualTimelineUpdate(e);else if (externalContext.active) handleExternalTimelineUpdate(e);else console.log('ScrobTimeline', 'timeline update without player or user input, ignored', e.data.hash);
         return;
       }
       var origName = session.card.original_name || session.card.original_title || session.card.title || session.card.name;
@@ -4675,17 +4763,20 @@
     // even needed) is only knowable once it settles (§5.1.1, live discussion
     // 2026-09-14). Actual network calls happen in flushExternalBatch(), once,
     // when the debounce window below finally closes.
+    // Серія може трапитись у сплеску кілька разів (накопичені звіти Just+) -
+    // виграє ОСТАННЄ значення, на місці першої появи (порядок перегляду для
+    // backdating). Раніше вигравало перше: рання часткова позиція.
     function handleExternalTimelineUpdate(e) {
       var hash = e.data.hash;
-      if (!hash || externalContext.handledHashes[hash]) return; // point 7: dedupe within one burst
-
+      if (!hash) return;
       var identity = resolveExternalIdentity(hash);
       if (!identity) return; // some other title's Timeline tick, not this context's
 
-      externalContext.handledHashes[hash] = true;
+      externalContext.lastUpdateAt = Date.now();
       // Still mid-burst (or a fresh one) — extend the debounce window (point 4).
+      // Кінець сплеску лише надсилає його - контекст лишається для наступних звітів.
       if (externalResetTimer) clearTimeout(externalResetTimer);
-      externalResetTimer = setTimeout(flushAndResetExternalContext, EXTERNAL_CONTEXT_RESET_MS);
+      externalResetTimer = setTimeout(flushExternalBurst, EXTERNAL_CONTEXT_RESET_MS);
       var road = e.data.road || {};
       var percent = parseFloat(road.percent || 0);
       var time = parseFloat(road.time || 0);
@@ -4699,12 +4790,20 @@
       });
       if (percent < 1.5) return; // nothing meaningful watched, same threshold as onPlayerDestroy()
 
-      externalContext.pendingItems.push({
+      var item = {
+        hash: hash,
         identity: identity,
         percent: percent,
         time: time,
         runtimeMinutes: duration > 0 ? Math.round(duration / 60) : null
-      });
+      };
+      var index = externalContext.pendingIndex[hash];
+      if (index !== undefined) {
+        externalContext.pendingItems[index] = item;
+      } else {
+        externalContext.pendingIndex[hash] = externalContext.pendingItems.length;
+        externalContext.pendingItems.push(item);
+      }
     }
 
     // Fully watched (§5.1.1, point 5) — one lightweight POST /history instead of
@@ -5803,7 +5902,13 @@
         document.addEventListener('playing', onNativeVideoPlaying, true);
         document.addEventListener('seeked', onNativeVideoSeeked, true);
         document.addEventListener('error', onNativeVideoError, true);
-        document.addEventListener('durationchange', onNativeVideoDurationChange, true);
+        document.addEventListener('durationchange', onNativeVideoDurationChange, true)
+        // Ознака ручної дії (див. recentUserInput()): пульт/клавіатура (Lampa
+        // Keypad слухає keydown/keyup на window), миша і дотик.
+    ;
+        ['keydown', 'keyup', 'mousedown', 'click', 'touchstart', 'touchend'].forEach(function (type) {
+          window.addEventListener(type, onUserInput, true);
+        });
         // engine.js owns the actual socket connection and calls handler.js's
         // registerHandlers() on it independently of this module's lifecycle -
         // this just makes sure playback_session.* events have somewhere to
