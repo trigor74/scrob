@@ -103,6 +103,9 @@ jobs:
           [ "$PREV" = "$V" ] && PREV=""
 
           {
+            # Версія для About - назва тегу без "v" (як і в локальних збірках
+            # build-orig.sh / build-profiles.sh). Теги образів лишаються з "v".
+            echo "app_version=${V#v}"
             echo "track=$TRACK"
             echo "base=$BASE"
             echo "branch=$BRANCH"
@@ -140,7 +143,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            APP_VERSION=${{ env.APP_VERSION }}
+            APP_VERSION=${{ steps.meta.outputs.app_version }}
           tags: ${{ steps.meta.outputs.std_tags }}
           cache-from: type=gha,scope=fork-release-${{ steps.meta.outputs.track }}
           cache-to: type=gha,mode=max,scope=fork-release-${{ steps.meta.outputs.track }}
@@ -153,7 +156,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            APP_VERSION=${{ env.APP_VERSION }}
+            APP_VERSION=${{ steps.meta.outputs.app_version }}
           tags: ${{ steps.meta.outputs.omni_tags }}
           cache-from: type=gha,scope=fork-release-${{ steps.meta.outputs.track }}-omnibus
           cache-to: type=gha,mode=max,scope=fork-release-${{ steps.meta.outputs.track }}-omnibus
