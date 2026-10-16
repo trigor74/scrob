@@ -49,6 +49,8 @@ class Token(BaseModel):
     token_type: str = "bearer"
     requires_2fa: bool = False
     temp_token: Optional[str] = None
+    # Seconds the access token is valid for, so the frontend can size the cookie.
+    expires_in: Optional[int] = None
 
 class TokenPayload(BaseModel):
     sub: Optional[int] = None
@@ -175,8 +177,10 @@ class UserSettings(BaseModel):
     simkl_sync_watched: Optional[bool] = None
     simkl_sync_ratings: Optional[bool] = None
     simkl_sync_lists: Optional[bool] = None
+    simkl_sync_dropped: Optional[bool] = None
     simkl_push_watched: Optional[bool] = None
     simkl_push_ratings: Optional[bool] = None
+    simkl_push_dropped: Optional[bool] = None
     simkl_scrobble: Optional[bool] = None
     simkl_auto_sync_interval: Optional[float] = None
     simkl_auto_push_interval: Optional[float] = None
