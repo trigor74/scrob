@@ -41,6 +41,7 @@ class User(Base):
     ratings           : Mapped[list["Rating"]]           = relationship(back_populates="user", cascade="all, delete-orphan")
     lists             : Mapped[list["List"]]             = relationship(back_populates="user", cascade="all, delete-orphan")
     totp_backup_codes : Mapped[list["TotpBackupCode"]]   = relationship(back_populates="user", cascade="all, delete-orphan")
+    oidc_identities   : Mapped[list["OidcIdentity"]]     = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class UserSettings(Base):
@@ -125,10 +126,12 @@ class UserSettings(Base):
     simkl_sync_watched       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,  server_default="true")
     simkl_sync_ratings       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,  server_default="true")
     simkl_sync_lists         : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,  server_default="true")
+    simkl_sync_dropped       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     # Simkl outbound push flags (Scrob → Simkl)
     simkl_push_watched       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     simkl_push_ratings       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    simkl_push_dropped       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     simkl_scrobble           : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     # Simkl auto sync/push interval, in hours (null = disabled)
@@ -164,6 +167,9 @@ class UserSettings(Base):
     # wetrakr_last_push_at, and the pull is skipped while WeTrakr's
     # /sync/last_activities "all" stamp still equals wetrakr_last_activity.
     wetrakr_last_push_at       : Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Own bookmark for list pushes, so a failing list never holds back (or
+    # forces a resend of) the watched/ratings push.
+    wetrakr_last_lists_push_at : Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     wetrakr_last_activity      : Mapped[Optional[str]]      = mapped_column(String(64), nullable=True)
 
     preferences    : Mapped[Optional[dict]] = mapped_column(JSONB)

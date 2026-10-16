@@ -387,6 +387,7 @@ export interface LoginResponse {
   token_type: string;
   requires_2fa: boolean;
   temp_token: string | null;
+  expires_in?: number | null;
 }
 
 export interface TotpSetupData {
@@ -423,15 +424,29 @@ export interface OidcConfig {
   enabled: boolean;
   provider_name: string;
   disable_password_login: boolean;
+  sso_logout_available: boolean;
+  logout_url: string | null;
+  pkce_enabled: boolean;
+  id_token_validation: boolean;
 }
 
 export interface OidcAuthorizeResponse {
   auth_url: string;
   state: string;
+  code_verifier: string | null;
+  nonce: string | null;
+}
+
+export interface OidcIdentity {
+  issuer: string;
+  provider_name: string | null;
+  created_at: string;
+  last_login_at: string | null;
 }
 
 export interface OidcExchangeResponse {
   access_token: string;
+  expires_in?: number;
 }
 
 export type PrivacyLevel = "public" | "friends_only" | "private";
@@ -496,8 +511,10 @@ export interface UserSettings {
   simkl_sync_watched: boolean;
   simkl_sync_ratings: boolean;
   simkl_sync_lists: boolean;
+  simkl_sync_dropped: boolean;
   simkl_push_watched: boolean;
   simkl_push_ratings: boolean;
+  simkl_push_dropped: boolean;
   simkl_scrobble: boolean;
 
   // WeTrakr — no client_id field: Scrob ships a single app-owned key server-side
@@ -1258,6 +1275,8 @@ export const api = {
       post<{ message: string }>("/auth/forgot-password", { email }),
     resetPassword: (token: string, new_password: string) =>
       post<{ message: string }>(`/auth/reset-password/${token}`, { new_password }),
+    renewSession: (token: string) =>
+      post<{ access_token: string | null; expires_in: number | null }>("/auth/session/renew", undefined, token),
     me: (token: string) =>
       get<UserProfile>("/auth/me", undefined, token),
     devicePending: (userCode: string, token: string) =>
@@ -1330,8 +1349,12 @@ export const api = {
       get<OidcConfig>("/auth/oidc/config"),
     oidcAuthorize: () =>
       get<OidcAuthorizeResponse>("/auth/oidc/authorize"),
-    oidcExchange: (code: string) =>
-      post<OidcExchangeResponse>("/auth/oidc/exchange", { code }),
+    oidcExchange: (body: { code: string; code_verifier?: string; nonce?: string; remember?: boolean }) =>
+      post<OidcExchangeResponse>("/auth/oidc/exchange", body),
+    oidcIdentities: (token: string) =>
+      get<OidcIdentity[]>("/auth/oidc/identities", undefined, token),
+    oidcUnlink: (body: { issuer: string }, token: string) =>
+      post<{ status: string }>("/auth/oidc/unlink", body, token),
   },
 
   trakt: {
