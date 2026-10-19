@@ -228,6 +228,7 @@ class UserSettings(BaseModel):
     blur_explicit: Optional[bool] = None
     time_format_24h: Optional[bool] = None
     use_hls_player: Optional[bool] = None
+    show_play_button: Optional[bool] = None
     shuffle_next_up: Optional[bool] = None
     minimalist_next_up: Optional[bool] = None
     hide_watched_from_recently_added: Optional[bool] = None
@@ -389,6 +390,10 @@ class ScrobbleConnectionResponse(ScrobbleConnectionCreate):
 class PasswordUpdate(BaseModel):
     current_password: Optional[str] = None
     new_password: str
+
+class EmailChange(BaseModel):
+    new_email: EmailStr
+    current_password: Optional[str] = None
 
 class WatchEventCreate(BaseModel):
     # Any one of media_id / tmdb_id / tvdb_id identifies the item (see
