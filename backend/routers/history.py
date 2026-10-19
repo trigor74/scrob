@@ -393,6 +393,7 @@ def format_event(event: WatchEvent | PlaybackProgress, media: Media) -> dict:
         "progress_percent": event.progress_percent,
         "completed": getattr(event, "completed", False),
         "play_count": getattr(event, "play_count", 1),
+        "source": getattr(event, "source", None),
     }
 
     if media.media_type == MediaType.episode and media.show:
@@ -1826,6 +1827,9 @@ def _iso_utc(dt: datetime | None) -> str | None:
 
 
 class DropShowRequest(BaseModel):
+    # dropped_shows stores local Show.id. A show opened straight from TMDB
+    # (nothing watched or collected yet) has no local row, so it sends
+    # tmdb_id and we resolve/create one (#480).
     show_id: int | None = None
     tmdb_id: int | None = None
 
@@ -1889,19 +1893,28 @@ async def drop_show(
     settings = settings_result.scalar_one_or_none()
     if not settings:
         raise HTTPException(status_code=404, detail="Settings not found")
-    show_id = await _resolve_show_id(db, current_user.id, body.show_id, body.tmdb_id, create=True)
-    if not show_id:
-        raise HTTPException(status_code=400, detail="show_id or tmdb_id is required")
-    dropped = list(settings.dropped_shows or []) if settings else []
 
-    if show_id not in dropped:
-        dropped.append(show_id)
+    show = None
+    if body.show_id and body.show_id > 0:
+        show = (await db.execute(select(Show).where(Show.id == body.show_id))).scalar_one_or_none()
+    elif body.tmdb_id:
+        show = (await db.execute(select(Show).where(Show.tmdb_id == body.tmdb_id))).scalars().first()
+        if not show:
+            from routers.trakt import _get_or_create_show
+            api_key = await get_user_tmdb_key(db, current_user.id)
+            show = await _get_or_create_show(db, body.tmdb_id, "", api_key)
+            if not show:
+                raise HTTPException(status_code=404, detail="Show not found on TMDB")
+    if not show:
+        raise HTTPException(status_code=400, detail="show_id or tmdb_id is required")
+
+    dropped = list(settings.dropped_shows or [])
+    if show.id not in dropped:
+        dropped.append(show.id)
         settings.dropped_shows = dropped
         flag_modified(settings, "dropped_shows")
-        await db.commit()
+    await db.commit()
 
-    show_result = await db.execute(select(Show).where(Show.id == show_id))
-    show = show_result.scalar_one_or_none()
     if show and show.tmdb_id:
         await _push_show_dropped_to_providers(db, settings, show.tmdb_id, remove=False)
 
@@ -1911,7 +1924,8 @@ async def drop_show(
         username=current_user.username,
         event_type="show.dropped",
         payload={
-            "show_id": body.show_id,
+            # show.id, бо при запиті за tmdb_id (#480) body.show_id — None
+            "show_id": show.id,
             "tmdb_id": show.tmdb_id if show else None,
             "title": show.title if show else None,
         },
@@ -2581,6 +2595,7 @@ async def mark_as_watched(
 
     event = WatchEvent(
         user_id=current_user.id,
+        source="manual",
         media_id=media.id,
         watched_at=watched_at,
         completed=event_in.completed,
@@ -2728,7 +2743,11 @@ async def get_item_events(
     return {
         "watched": watched,
         "events": [
-            {"id": e.id, "watched_at": e.watched_at.isoformat() if e.watched_at else None}
+            {
+                "id": e.id,
+                "watched_at": e.watched_at.isoformat() if e.watched_at else None,
+                "source": e.source,
+            }
             for e in events
         ],
         "media_id": media_id,
@@ -3124,6 +3143,7 @@ async def mark_season_watched(
         if ep.id not in already_watched:
             event = WatchEvent(
                 user_id=current_user.id,
+                source="manual",
                 media_id=ep.id,
                 watched_at=resolved_watched_at,
                 completed=True,
@@ -3348,6 +3368,7 @@ async def mark_show_watched(
             if ep.id not in already_watched:
                 event = WatchEvent(
                     user_id=current_user.id,
+                    source="manual",
                     media_id=ep.id,
                     watched_at=resolved_watched_at,
                     completed=True,
@@ -3456,6 +3477,7 @@ async def mark_show_watched(
                         if ep.id not in already_watched:
                             event = WatchEvent(
                                 user_id=current_user.id,
+                                source="manual",
                                 media_id=ep.id,
                                 watched_at=resolved_watched_at,
                                 completed=True,
@@ -4139,6 +4161,7 @@ async def auto_complete_manual_sessions(db: AsyncSession) -> None:
             continue
         event = WatchEvent(
             user_id=session.user_id,
+            source="scrob",
             media_id=session.media_id,
             watched_at=now,
             completed=True,
@@ -4233,6 +4256,7 @@ async def complete_manual_session(
 
     event = WatchEvent(
         user_id=current_user.id,
+        source="scrob",
         media_id=media_id,
         watched_at=now,
         completed=True,
