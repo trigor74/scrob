@@ -260,6 +260,7 @@ export interface WatchEvent {
   watched_at: string | null;
   completed: boolean;
   progress_percent: number | null;
+  source?: string | null;
 }
 
 export interface SyncJob {
@@ -326,6 +327,7 @@ export interface UserProfile {
   is_admin: boolean;
   api_key: string;
   totp_enabled: boolean;
+  has_password: boolean;
   created_at: string;
 }
 
@@ -545,6 +547,7 @@ export interface UserSettings {
   blur_explicit: boolean;
   time_format_24h: boolean;
   use_hls_player: boolean;
+  show_play_button: boolean;
   shuffle_next_up: boolean;
   minimalist_next_up: boolean;
   rate_prompt_movies: boolean;

@@ -11,6 +11,39 @@ export function formatEpisodesLeft(
   return `${label} · ${runtime}`;
 }
 
+export const WATCH_SOURCE_LABELS: Record<string, string> = {
+  plex: "Plex",
+  jellyfin: "Jellyfin",
+  emby: "Emby",
+  kodi: "Kodi",
+  nuvio: "Nuvio",
+  arvio: "Arvio",
+  stremio: "Stremio",
+  trakt: "Trakt",
+  simkl: "Simkl",
+  mdblist: "MDBList",
+  wetrakr: "WeTrakr",
+  bingebase: "Bingebase",
+  yamtrack: "Yamtrack",
+  manual: "Manual",
+  scrob: "Scrob",
+  import: "Import",
+};
+
+// Where a watch was recorded from (#477), or null for rows from before this
+// was tracked.
+export function watchSourceLabel(source?: string | null): string | null {
+  if (!source) return null;
+  return WATCH_SOURCE_LABELS[source] ?? source.charAt(0).toUpperCase() + source.slice(1);
+}
+
+export function formatWatchTime(minutes?: number | null): string | null {
+  if (!minutes || minutes <= 0) return null;
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+}
+
 export function formatSeasonTitle(seasonNumber: number, name?: string | null): string {
   const isSpecials = seasonNumber === 0;
   const fallback = isSpecials ? "Specials" : `Season ${seasonNumber}`;
