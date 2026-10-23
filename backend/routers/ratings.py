@@ -15,6 +15,9 @@ from dependencies import get_current_user, get_current_user_or_api_key
 from models.users import User
 from core.enrichment import enrich_media, create_media_safely
 from core.socket.manager import socket_manager
+from core.identity import find_media
+from core.episode_order import validate_episode_order, normalize_order_key, is_aired_order
+from core.timeutil import utcnow
 
 router = APIRouter()
 
@@ -135,7 +138,7 @@ async def submit_rating(
     if rating:
         rating.rating = body.rating
         rating.review = body.review
-        rating.rated_at = datetime.utcnow()
+        rating.rated_at = utcnow()
     else:
         is_new = True
         rating = Rating(
