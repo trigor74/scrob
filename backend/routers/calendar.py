@@ -35,12 +35,16 @@ from models.events import WatchEvent
 from models.media import Media
 from models.show import Show
 from models.users import User, UserSettings
+from core.timeutil import utcnow
 
 router = APIRouter()
 
 CALENDAR_TTL = timedelta(hours=24)
-CALENDAR_SCHEMA = 7
-CALENDAR_WINDOW_DAYS = 14
+CALENDAR_SCHEMA = 8
+# The cached payload always covers the longest horizon a user can pick (#467);
+# GET /calendar trims it down to the requested number of days.
+CALENDAR_WINDOW_DAYS = 90
+CALENDAR_DEFAULT_DAYS = 14
 CALENDAR_LOOKBACK_DAYS = 7
 FETCH_CONCURRENCY = 8
 
@@ -194,7 +198,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     ]
     if not candidates:
         return {
-            "schema": CALENDAR_SCHEMA, "generated_at": datetime.utcnow().isoformat(),
+            "schema": CALENDAR_SCHEMA, "generated_at": utcnow().isoformat(),
             "today": today.isoformat(), "shows_checked": 0, "entries": [],
         }
 
@@ -332,7 +336,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
     ))
     return {
         "schema": CALENDAR_SCHEMA,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
         "today": today.isoformat(),
         "shows_checked": len(candidates),
         "entries": entries,
@@ -340,7 +344,7 @@ async def compute_calendar(db: AsyncSession, user_id: int) -> dict:
 
 
 def _is_cache_fresh(row: UserCalendarCache | None) -> bool:
-    if not row or (datetime.utcnow() - row.computed_at) >= CALENDAR_TTL:
+    if not row or (utcnow() - row.computed_at) >= CALENDAR_TTL:
         return False
     payload = row.payload or {}
     if payload.get("schema") != CALENDAR_SCHEMA:
@@ -366,7 +370,7 @@ def _is_cache_usable(
     after local midnight on a full TMDB fan-out (#194). Deliberately ignores
     the day-match and the 24h TTL - staleness within max_age is the point.
     """
-    if not row or (datetime.utcnow() - row.computed_at) >= max_age:
+    if not row or (utcnow() - row.computed_at) >= max_age:
         return False
     return (row.payload or {}).get("schema") == CALENDAR_SCHEMA
 
@@ -381,9 +385,9 @@ async def _load_or_compute(db: AsyncSession, user_id: int, force: bool) -> dict:
     payload = await compute_calendar(db, user_id)
     if row:
         row.payload = payload
-        row.computed_at = datetime.utcnow()
+        row.computed_at = utcnow()
     else:
-        row = UserCalendarCache(user_id=user_id, payload=payload, computed_at=datetime.utcnow())
+        row = UserCalendarCache(user_id=user_id, payload=payload, computed_at=utcnow())
         db.add(row)
     await db.commit()
     await _resolve_watch_status(db, user_id, payload.get("entries", []))
@@ -407,9 +411,22 @@ async def _background_compute(user_id: int) -> None:
         _computing.discard(user_id)
 
 
+def _trim_window(result: dict, days: int) -> dict:
+    """The cached payload spans CALENDAR_WINDOW_DAYS ahead; hand back only the
+    first `days` of it (today counts as day one)."""
+    calendar = result.get("calendar") or {}
+    entries = calendar.get("entries")
+    if not entries or days >= CALENDAR_WINDOW_DAYS:
+        return result
+    today = calendar.get("today") or _server_today().isoformat()
+    last = (date.fromisoformat(today) + timedelta(days=days - 1)).isoformat()
+    return {**result, "calendar": {**calendar, "entries": [e for e in entries if e["air_date"] <= last]}}
+
+
 @router.get("")
 async def get_calendar(
     cached_only: bool = Query(False),
+    days: int = Query(CALENDAR_DEFAULT_DAYS, ge=1, le=CALENDAR_WINDOW_DAYS),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
@@ -429,15 +446,18 @@ async def get_calendar(
             await _resolve_watch_status(db, current_user.id, row.payload.get("entries", []))
             if not fresh:
                 asyncio.create_task(_background_compute(current_user.id))
-            return {"computed_at": row.computed_at.isoformat(), "cached": True, "calendar": row.payload}
+            return _trim_window(
+                {"computed_at": row.computed_at.isoformat(), "cached": True, "calendar": row.payload}, days
+            )
         asyncio.create_task(_background_compute(current_user.id))
         return {"computed_at": None, "cached": False, "calendar": {"entries": []}}
-    return await _load_or_compute(db, current_user.id, force=False)
+    return _trim_window(await _load_or_compute(db, current_user.id, force=False), days)
 
 
 @router.post("/refresh")
 async def refresh_calendar(
+    days: int = Query(CALENDAR_DEFAULT_DAYS, ge=1, le=CALENDAR_WINDOW_DAYS),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_or_api_key),
 ):
-    return await _load_or_compute(db, current_user.id, force=True)
+    return _trim_window(await _load_or_compute(db, current_user.id, force=True), days)
