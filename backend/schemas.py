@@ -1,4 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator, model_validator, ConfigDict
+import re
 from typing import Optional
 from datetime import datetime
 from models.base import UserRole, MediaType, PrivacyLevel
@@ -31,8 +32,7 @@ class User(UserBase):
     has_password: bool = True
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class UserLogin(BaseModel):
     username: str
@@ -90,8 +90,7 @@ class DeviceGrantItem(BaseModel):
     approved_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TotpSetupResponse(BaseModel):
     provisioning_uri: str
@@ -113,8 +112,7 @@ class TotpBackupCodeItem(BaseModel):
     code: str
     used: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TotpBackupCodesResponse(BaseModel):
     codes: list[TotpBackupCodeItem]
@@ -237,8 +235,7 @@ class UserSettings(BaseModel):
     rate_prompt_episodes: Optional[bool] = None
     watchlist_auto_remove_id: Optional[int] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NuvioLoginRequest(BaseModel):
@@ -359,8 +356,7 @@ class MediaServerConnectionResponse(MediaServerConnectionBase):
             self.token = ""
         return self
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ScrobbleConnectionCreate(BaseModel):
     type: str
@@ -383,8 +379,7 @@ class ScrobbleConnectionResponse(ScrobbleConnectionCreate):
     user_id: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PasswordUpdate(BaseModel):
@@ -413,6 +408,16 @@ class WatchEventCreate(BaseModel):
     # prompt (see the 409 duplicate_watch response from POST /history), to
     # record it despite an existing watch within the dedup window (#390).
     force: bool = False
+    # Where the watch came from, for API clients (#492). Omitted = "manual", the
+    # web UI's own button. Any slug is allowed, so a backfill script can say "plex".
+    source: str = "manual"
+
+    @field_validator("source")
+    @classmethod
+    def _validate_source(cls, v: str) -> str:
+        if not re.fullmatch(r"[a-z0-9_-]{1,16}", v):
+            raise ValueError("source must be 1-16 lowercase letters, digits, '_' or '-'")
+        return v
 
 
 class WatchStatusBatchItem(BaseModel):
@@ -476,8 +481,7 @@ class UserProfileResponse(BaseModel):
     def _none_to_list(cls, v: object) -> list:
         return v if v is not None else []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PublicProfileResponse(BaseModel):
     id: int
@@ -541,8 +545,7 @@ class GlobalSettings(BaseModel):
     socket_send_key      : Optional[str] = None
     socket_external_url  : Optional[str] = "wss://itty.ws/c/"
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MediaRequestOut(BaseModel):
@@ -557,8 +560,7 @@ class MediaRequestOut(BaseModel):
     created_at  : datetime
     updated_at  : datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminUserCreate(BaseModel):
@@ -578,8 +580,7 @@ class AdminUser(BaseModel):
     avatar_url : Optional[str] = None
     totp_enabled : bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AdminPasswordReset(BaseModel):
