@@ -554,6 +554,8 @@ export interface UserSettings {
   minimalist_next_up: boolean;
   rate_prompt_movies: boolean;
   rate_prompt_episodes: boolean;
+  duplicate_watch_window_minutes: number | null;
+  condense_history_by_show: boolean;
   watchlist_auto_remove_id: number | null;
 }
 
@@ -1260,6 +1262,7 @@ export interface CalendarPayload {
 }
 
 export interface CalendarResponse {
+  sonarr_configured?: boolean;
   computed_at: string | null;
   cached: boolean;
   calendar: CalendarPayload;
@@ -1686,8 +1689,8 @@ export const api = {
   },
 
   calendar: {
-    get: (token?: string, cachedOnly?: boolean, days?: number) =>
-      get<CalendarResponse>("/calendar", { ...(cachedOnly ? { cached_only: true } : {}), ...(days ? { days } : {}) }, token),
+    get: (token?: string, cachedOnly?: boolean, days?: number, sonarrOnly?: boolean, sonarrMonitored?: boolean) =>
+      get<CalendarResponse>("/calendar", { ...(cachedOnly ? { cached_only: true } : {}), ...(days ? { days } : {}), ...(sonarrOnly ? { sonarr_only: true } : {}), ...(sonarrMonitored ? { sonarr_monitored: true } : {}) }, token),
     refresh: (token?: string) =>
       post<CalendarResponse>("/calendar/refresh", undefined, token),
   },

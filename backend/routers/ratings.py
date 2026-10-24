@@ -170,7 +170,10 @@ async def submit_rating(
         },
     )
 
-    if effective_episode_order == "tvdb":
+    # A rating made under a non-aired ordering isn't pushed to external
+    # services - they'd misread the season number (same rule as the
+    # Rating.episode_order.is_(None) push filters in trakt/simkl/mdblist).
+    if effective_episode_order is not None:
         return format_rating(rating, media)
 
     settings_result = await db.execute(
@@ -278,7 +281,7 @@ async def delete_rating(
         },
     )
 
-    if effective_episode_order == "tvdb":
+    if effective_episode_order is not None:
         return {"status": "deleted"}
 
     settings_result = await db.execute(
