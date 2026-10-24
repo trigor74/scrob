@@ -233,7 +233,14 @@ class UserSettings(BaseModel):
     condense_history_by_show: Optional[bool] = None
     rate_prompt_movies: Optional[bool] = None
     rate_prompt_episodes: Optional[bool] = None
+    duplicate_watch_window_minutes: Optional[int] = Field(default=None, ge=0)
     watchlist_auto_remove_id: Optional[int] = None
+
+    @field_validator("rpdb_api_key", mode="before")
+    @classmethod
+    def normalize_rpdb_api_key(cls, value):
+        from core.rpdb import normalize_api_key
+        return normalize_api_key(value) if isinstance(value, str) or value is None else value
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -561,13 +568,6 @@ class MediaRequestOut(BaseModel):
     updated_at  : datetime
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class AdminUserCreate(BaseModel):
-    username : str
-    email    : EmailStr
-    password : str
-    is_admin : bool = False
 
 
 class AdminUser(BaseModel):

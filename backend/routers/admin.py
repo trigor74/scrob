@@ -1,7 +1,6 @@
 import gzip
 import io
 import json
-import secrets
 import struct
 from datetime import datetime
 
@@ -23,7 +22,6 @@ from models.media_request import MediaRequest, RequestStatus
 from models.users import UserSettings
 from dependencies import require_admin
 from core.url_validator import validate_service_url
-from core.security import get_password_hash
 from core.backup import asyncpg_conn, restore_backup
 import schemas
 from core.timeutil import utcnow
@@ -156,29 +154,47 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    result = await db.execute(
-        select(User).where((User.email == body.email) | (User.username == body.username))
+    """Manually provision a user. Unlike self-registration this ignores the
+    ENABLE_REGISTRATIONS gate and marks the email confirmed - the admin is
+    vouching for the account - so the user can sign in right away."""
+    from core.security import get_password_hash
+    from models.base import UserRole
+    from routers.auth import _generate_api_key
+
+    username = body.username.strip()
+    email = body.email.strip().lower()
+
+    existing = await db.execute(
+        select(User).where((User.email == email) | (User.username == username))
     )
-    if result.scalar_one_or_none():
+    if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User with this email or username already exists",
+            detail="A user with this email or username already exists",
         )
 
-    new_user = User(
-        email=body.email,
-        username=body.username,
+    user = User(
+        username=username,
+        email=email,
         password_hash=get_password_hash(body.password),
-        api_key=secrets.token_urlsafe(32),
+        api_key=_generate_api_key(),
         role=UserRole.admin if body.is_admin else UserRole.user,
         is_admin=body.is_admin,
-        # Admin-created accounts are trusted, so skip e-mail activation.
         email_confirmed=True,
     )
-    db.add(new_user)
+    db.add(user)
     await db.commit()
-    await db.refresh(new_user)
-    return new_user
+    await db.refresh(user)
+
+    return schemas.AdminUser(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        is_admin=user.is_admin,
+        api_key=user.api_key,
+        created_at=user.created_at,
+        avatar_url=None,
+    )
 
 
 @router.patch("/users/{user_id}/toggle-admin", response_model=schemas.AdminUser)

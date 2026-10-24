@@ -587,6 +587,10 @@ const sonarrUrl = `${origin}/api/proxy/sonarr-compat/${list?.id}`;
     const grid = document.getElementById('items-grid');
     if (!grid) return;
     let visible = 0;
+    // :scope > ... matters here: the remove button inside each card also
+    // carries data-item-id (for its own click handler), so an unscoped
+    // '[data-item-id]' query matches it too - hiding it outright the moment
+    // any non-"all" filter is active, pre-existing bug independent of sort.
     grid.querySelectorAll(':scope > [data-item-id]').forEach(card => {
       const type = card.getAttribute('data-type');
       const show = activeItemsFilter === 'all' || type === activeItemsFilter;
