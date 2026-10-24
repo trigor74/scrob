@@ -27,7 +27,6 @@ from core.translations import get_user_metadata_language, get_media_translations
 from core.rewatch import get_active_rewatch, get_active_rewatches_for_shows, record_rewatch_progress, get_already_watched_for_bulk_mark, capped_season_episode_counts
 from core.watch_dedup import get_dedup_window_minutes, find_duplicate_watch_event
 from core.enrichment import create_media_safely
-from core.episode_order import get_episode_orders_for_series, get_tmdb_to_tvdb_positions
 
 from dependencies import get_current_user, get_current_user_or_api_key
 from models.users import User
@@ -518,14 +517,14 @@ async def _build_now_playing_item(session: PlaybackSession, media: Media, db: As
         "updated_at": session.updated_at.isoformat(),
         "media": {
             "id": media.id,
-            "tmdb_id": media.tmdb_id,
+            "tmdb_id": media.tmdb_id, "tvdb_id": media.tvdb_id, "imdb_id": media.imdb_id,
             "type": media.media_type,
             "title": media.title,
             "poster_path": media.poster_path,
             "backdrop_path": media.backdrop_path,
             "season_number": media.season_number,
             "episode_number": media.episode_number,
-            "runtime": media.runtime,
+            "runtime": _effective_runtime(media),
             "tvdb_sourced": is_unmapped_tvdb_episode(media),
             "has_mid_credits_scene": (media.tmdb_data or {}).get("has_mid_credits_scene", False),
             "has_post_credits_scene": (media.tmdb_data or {}).get("has_post_credits_scene", False),
@@ -547,22 +546,67 @@ async def _build_now_playing_item(session: PlaybackSession, media: Media, db: As
     return item
 
 
+async def _build_now_playing_sessions(rows, db: AsyncSession, user_id: int) -> list[dict]:
+    """Елементи now-playing для рядків (PlaybackSession, Media) з мовою
+    метаданих глядача й обраним порядком епізодів (спільне для /now-playing і
+    /session/{tmdb_id}). Переклад і порядок - як в апстрімному get_now_playing."""
+    sessions = []
+    # media_id -> show_id, for the translation overlay below - not itself part
+    # of the response, just tracked alongside the loop that already knows it.
+    show_id_by_media_id: dict[int, int] = {}
+    for session, media in rows:
+        item = await _build_now_playing_item(session, media, db)
+        if "show_tmdb_id" in item["media"]:
+            show_id_by_media_id[media.id] = media.show_id
+        sessions.append(item)
+    # Apply the viewer's metadata language (#404 follow-up) - this endpoint
+    # builds its own dicts inline rather than going through the usual
+    # enrich_with_state + translation pass every other listing gets, so the
+    # Now Playing bar showed untranslated titles/names regardless of the
+    # user's setting. Movies/episodes translate via MediaTranslation on their
+    # own media id; the show name shown alongside an episode translates via
+    # ShowTranslation on the Show row instead (same split as Next Up/lists).
+    if sessions:
+        lang = await get_user_metadata_language(db, user_id)
+        if lang:
+            media_list = [s["media"] for s in sessions]
+            media_ids = [m["id"] for m in media_list if m.get("id")]
+            translations = await get_media_translations(db, media_ids, lang)
+            apply_media_translations(media_list, translations)
+            show_ids = set(show_id_by_media_id.values())
+            if show_ids:
+                show_translations = await get_show_translations(db, list(show_ids), lang)
+                for m in media_list:
+                    t = show_translations.get(show_id_by_media_id.get(m.get("id")))
+                    if t and t.get("title") and m.get("show_title"):
+                        m["show_title"] = t["title"]
+    await _apply_episode_order_to_sessions(sessions, db, user_id)
+    return sessions
+
+
 async def _apply_episode_order_to_sessions(sessions: list[dict], db: AsyncSession, user_id: int) -> None:
     """Episode-order preference / TVDB position translation (#186) for a list of now-playing items."""
+    # Episode-order preference / TVDB position translation (#186) - this
+    # endpoint builds its own dict inline rather than going through
+    # enrich_with_state, so it needs the same batched lookups + attach step
+    # done separately, in a second pass now that every session's show_tmdb_id
+    # is known. Session counts here are always small (active playback only),
+    # so a second pass over `sessions` costs nothing.
     series_ids = {
         s["media"]["show_tmdb_id"] for s in sessions if s["media"].get("show_tmdb_id")
     }
-    if not series_ids:
-        return
-    episode_orders = await get_episode_orders_for_series(db, user_id, list(series_ids))
-    tvdb_series_ids = [
-        sid for sid, pref in episode_orders.items() if pref.episode_order == "tvdb"
-    ]
-    tmdb_to_tvdb = (
-        await get_tmdb_to_tvdb_positions(db, tvdb_series_ids) if tvdb_series_ids else {}
-    )
-    for s in sessions:
-        _attach_episode_order_fields(s["media"], episode_orders, tmdb_to_tvdb)
+    if series_ids:
+        order_keys = await get_order_keys_for_series(db, user_id, list(series_ids))
+        order_positions: dict[tuple[int, int, int], object] = {}
+        if order_keys:
+            by_pair = await get_positions_for_series(
+                db, [(sid, key) for sid, key in order_keys.items()]
+            )
+            for (sid, _key), canon_map in by_pair.items():
+                for (cs, ce), pos in canon_map.items():
+                    order_positions[(sid, cs, ce)] = pos
+        for s in sessions:
+            _attach_episode_order_fields(s["media"], order_keys, order_positions)
 
 
 @router.get("/now-playing")
@@ -598,8 +642,7 @@ async def get_now_playing(
         .order_by(desc(PlaybackSession.updated_at))
     )
     rows = result.all()
-    sessions = [await _build_now_playing_item(session, media, db) for session, media in rows]
-    await _apply_episode_order_to_sessions(sessions, db, current_user.id)
+    sessions = await _build_now_playing_sessions(rows, db, current_user.id)
     return {"now_playing": sessions}
 
 
@@ -3927,6 +3970,10 @@ async def start_manual_session(
     title UPSERT the same session instead of resetting progress (design doc §3.1).
     Pass reset=true to explicitly clear progress and restart from 0.
     """
+    # A session completes into a watch event, which is movie/episode only - a
+    # series-type session would produce a bogus series-level watch event. #358.
+    if body.media_type not in (MediaType.movie, MediaType.episode):
+        raise HTTPException(status_code=422, detail="media_type must be 'movie' or 'episode'")
     media = await _get_or_create_media_for_session(db, body, current_user.id)
 
     # Always take a freshly-reported runtime over whatever's stored, not just when it's
@@ -4391,8 +4438,7 @@ async def get_sessions_for_title(
         .order_by(desc(PlaybackSession.updated_at))
     )
     rows = result.all()
-    sessions = [await _build_now_playing_item(session, media, db) for session, media in rows]
-    await _apply_episode_order_to_sessions(sessions, db, current_user.id)
+    sessions = await _build_now_playing_sessions(rows, db, current_user.id)
     return {"now_playing": sessions}
 
 
