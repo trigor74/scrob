@@ -2287,6 +2287,16 @@ def _apply_local_filters(
     return items
 
 
+def _expand_excluded_languages(codes: list[str]) -> set[str]:
+    """Lower-cased set of original-language codes to hide. TMDB files
+    Cantonese-language titles under "cn" rather than "zh", so excluding
+    Chinese has to cover both or those titles keep showing up."""
+    excluded = {c.strip().lower() for c in codes if c and c.strip()}
+    if "zh" in excluded:
+        excluded.add("cn")
+    return excluded
+
+
 def _paginate_matches(matched: list[dict], page: int, page_size: int) -> tuple[list[dict], int]:
     """Slice a full scanned-and-filtered match list into one fixed-size page.
 
@@ -2313,6 +2323,10 @@ async def get_tmdb_list(
     min_rating: float | None = Query(None),
     status: str | None = Query(None),
     original_language: str | None = Query(None),
+    # Original languages to leave out. TMDB's discover has no "without"
+    # counterpart to with_original_language, so these are dropped locally
+    # from each scanned page, like the collection/watch filters below.
+    exclude_language: list[str] = Query(default=[]),
     # Restrict discover to one TV network (with_networks, TV only) or one
     # production company (with_companies, movie or TV). Powers the
     # /network/{id} and /studio/{id} browse pages.
@@ -2463,7 +2477,9 @@ async def get_tmdb_list(
                 await enrich_with_state(db, current_user.id, enriched)
             return enriched
 
-        if not (collection or watch or arr or year or in_list):
+        excluded_languages = _expand_excluded_languages(exclude_language)
+
+        if not (collection or watch or arr or year or in_list or excluded_languages):
             data = await _fetch_tmdb_page(page)
             enriched = await _build_enriched(data.get("results", []))
             return {
@@ -2500,6 +2516,11 @@ async def get_tmdb_list(
                     if res["id"] not in seen_ids:
                         seen_ids.add(res["id"])
                         batch_results.append(res)
+            if excluded_languages:
+                batch_results = [
+                    r for r in batch_results
+                    if (r.get("original_language") or "").lower() not in excluded_languages
+                ]
             if batch_results:
                 enriched = await _build_enriched(batch_results)
                 matched.extend(_apply_local_filters(enriched, collection, watch, arr, year, in_list))

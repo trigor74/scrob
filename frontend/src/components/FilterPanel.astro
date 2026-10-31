@@ -12,6 +12,8 @@ interface FilterSection {
   dynamic?: boolean; // if true, options are fetched client-side on load
   endpoint?: string; // proxy API path to fetch { years: number[] } from — required when dynamic
   multi?: boolean; // false renders radios (single-select) instead of checkboxes; default true
+  tristate?: boolean; // checkboxes cycle include (check) -> exclude (cross) -> off; excluded values go in `exclude_<key>`
+  excluded?: string[]; // currently excluded values for a tristate section
 }
 
 interface Props {
@@ -23,7 +25,7 @@ interface Props {
 }
 
 const { id, basePath, currentSort, sections, extraParams } = Astro.props;
-const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
+const activeCount = sections.reduce((sum, s) => sum + s.selected.length + (s.excluded?.length ?? 0), 0);
 ---
 
 <div class="relative inline-flex items-stretch bg-zinc-900 border border-zinc-700 rounded-lg hover:border-zinc-600 transition" id={id} data-filter-panel-root data-base-path={basePath} data-current-sort={currentSort ?? ""} data-extra-params={JSON.stringify(extraParams ?? {})}>
@@ -73,12 +75,13 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
         {sections.map((section) => (
           <div data-dynamic-section={section.dynamic ? "true" : undefined} data-key={section.key} data-endpoint={section.endpoint} data-selected={section.selected.join(",")}>
             <button type="button" data-role="accordion-toggle" class="w-full flex items-center justify-between p-4 text-left text-sm font-medium text-zinc-200 cursor-pointer">
-              <span>{section.label}{section.selected.length > 0 && <span class="text-blue-500 font-normal"> ({section.selected.length})</span>}</span>
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class:list={["chevron w-4 h-4 transition-transform text-zinc-500", { "rotate-180": section.selected.length > 0 }]}>
+              <span>{section.label}{section.selected.length + (section.excluded?.length ?? 0) > 0 && <span class="text-blue-500 font-normal"> ({section.selected.length + (section.excluded?.length ?? 0)})</span>}</span>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class:list={["chevron w-4 h-4 transition-transform text-zinc-500", { "rotate-180": section.selected.length + (section.excluded?.length ?? 0) > 0 }]}>
                 <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
               </svg>
             </button>
-            <div data-role="accordion-content" class:list={["pb-2", { hidden: section.selected.length === 0 }]}>
+            <div data-role="accordion-content" class:list={["pb-2", { hidden: section.selected.length + (section.excluded?.length ?? 0) === 0 }]}>
+              {section.tristate && <p class="px-4 pt-1 pb-2 text-xs text-zinc-500">Click once to include, again to exclude.</p>}
               {section.dynamic ? (
                 <div class="px-4 py-3 text-sm text-zinc-500">Loading…</div>
               ) : (section.options ?? []).map((opt) => (
@@ -89,12 +92,19 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
                     value={opt.value}
                     checked={section.selected.includes(opt.value)}
                     data-filter-key={section.key}
+                    data-tristate={section.tristate ? "true" : undefined}
+                    data-excluded={section.tristate && section.excluded?.includes(opt.value) ? "true" : undefined}
                     class="peer sr-only"
                   />
-                  <span class="flex-1">{opt.label}</span>
+                  <span class="flex-1 label-text">{opt.label}</span>
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5 flex-shrink-0 text-blue-500 opacity-0 peer-checked:opacity-100 transition-opacity">
                     <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                   </svg>
+                  {section.tristate && (
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="exclude-icon w-5 h-5 flex-shrink-0 text-red-500 opacity-0 transition-opacity -ml-8">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                  )}
                 </label>
               ))}
             </div>
@@ -212,8 +222,25 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
       });
     });
 
+    // Tristate checkboxes (e.g. Language): none -> included (check) ->
+    // excluded (cross) -> none. The native toggle has already flipped
+    // `checked` by the time this runs, so work out where we came from.
+    root.querySelectorAll<HTMLInputElement>('input[data-tristate="true"]').forEach((cb) => {
+      cb.addEventListener("click", () => {
+        if (cb.dataset.excluded === "true") {
+          delete cb.dataset.excluded;
+          cb.checked = false;
+        } else if (!cb.checked) {
+          cb.dataset.excluded = "true";
+        }
+      });
+    });
+
     clearBtn?.addEventListener("click", () => {
-      root.querySelectorAll<HTMLInputElement>('input[type="checkbox"], input[type="radio"]').forEach((cb) => (cb.checked = false));
+      root.querySelectorAll<HTMLInputElement>('input[type="checkbox"], input[type="radio"]').forEach((cb) => {
+        cb.checked = false;
+        delete cb.dataset.excluded;
+      });
     });
 
     applyBtn?.addEventListener("click", () => {
@@ -223,6 +250,10 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
       root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked, input[type="radio"]:checked').forEach((cb) => {
         const key = cb.dataset.filterKey;
         if (key) params.append(key, cb.value);
+      });
+      root.querySelectorAll<HTMLInputElement>('input[data-excluded="true"]').forEach((cb) => {
+        const key = cb.dataset.filterKey;
+        if (key) params.append(`exclude_${key}`, cb.value);
       });
       window.location.href = `${basePath}?${params.toString()}`;
     });
@@ -234,6 +265,14 @@ const activeCount = sections.reduce((sum, s) => sum + s.selected.length, 0);
 </script>
 
 <style>
+  /* Excluded value: red cross instead of the blue check, struck-through label. */
+  input[data-excluded="true"] ~ .exclude-icon {
+    opacity: 1;
+  }
+  input[data-excluded="true"] ~ .label-text {
+    color: rgb(113 113 122);
+    text-decoration: line-through;
+  }
   .filter-panel-scroll {
     scrollbar-width: none;
     -ms-overflow-style: none;

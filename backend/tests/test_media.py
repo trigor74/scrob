@@ -129,7 +129,7 @@ class TmdbListStudioParamsTests(unittest.IsolatedAsyncioTestCase):
         base = dict(
             type=MediaType.movie, category="popular", page=1, genre=[], year=[],
             min_rating=None, status=None, original_language=None, network=None,
-            company=None, collection=[], watch=[], arr=[], in_list=[],
+            company=None, collection=[], watch=[], arr=[], in_list=[], exclude_language=[],
             db=SimpleNamespace(execute=AsyncMock(return_value=_FakeExecResult())),
             current_user=SimpleNamespace(id=7),
         )
@@ -165,6 +165,48 @@ class TmdbListStudioParamsTests(unittest.IsolatedAsyncioTestCase):
         shows.assert_awaited_once()
         self.assertIsNone(shows.await_args.kwargs["vote_count_min"])
         self.assertIsNone(shows.await_args.kwargs["with_networks"])
+
+
+class TmdbListExcludeLanguageTests(unittest.IsolatedAsyncioTestCase):
+    """exclude_language drops titles by original language from the plain
+    trending/popular list too (TMDB has no without_original_language), and
+    excluding Chinese also drops TMDB's separate Cantonese code."""
+
+    RESULTS = [
+        {"id": 1, "name": "English", "original_language": "en"},
+        {"id": 2, "name": "Mandarin", "original_language": "zh"},
+        {"id": 3, "name": "Cantonese", "original_language": "cn"},
+        {"id": 4, "name": "Japanese", "original_language": "ja"},
+        {"id": 5, "name": "Unknown"},
+    ]
+
+    async def _titles(self, exclude, category="trending"):
+        trending = AsyncMock(return_value={"results": self.RESULTS, "page": 1, "total_pages": 1, "total_results": 5})
+        with patch.object(media_router, "get_user_tmdb_key", AsyncMock(return_value="k")), \
+             patch.object(media_router, "check_tmdb_key", lambda _k: True), \
+             patch.object(media_router, "get_user_metadata_language", AsyncMock(return_value=None)), \
+             patch.object(media_router, "enrich_with_state", AsyncMock(side_effect=lambda db, uid, items: items)), \
+             patch.object(media_router.tmdb, "get_trending_shows", trending):
+            out = await media_router.get_tmdb_list(
+                type=MediaType.series, category=category, page=1, genre=[], year=[], min_rating=None,
+                status=None, original_language=None, network=None, company=None, collection=[],
+                watch=[], arr=[], in_list=[], exclude_language=exclude,
+                db=SimpleNamespace(execute=AsyncMock(return_value=_FakeExecResult())),
+                current_user=SimpleNamespace(id=7),
+            )
+        return [r["title"] for r in out["results"]]
+
+    async def test_no_exclusion_keeps_everything(self) -> None:
+        self.assertEqual(len(await self._titles([])), 5)
+
+    async def test_excluding_chinese_also_drops_cantonese(self) -> None:
+        self.assertEqual(await self._titles(["zh"]), ["English", "Japanese", "Unknown"])
+
+    async def test_several_languages_can_be_excluded(self) -> None:
+        self.assertEqual(await self._titles(["zh", "ja"]), ["English", "Unknown"])
+
+    async def test_codes_are_case_insensitive(self) -> None:
+        self.assertEqual(await self._titles(["EN"]), ["Mandarin", "Cantonese", "Japanese", "Unknown"])
 
 
 if __name__ == "__main__":
