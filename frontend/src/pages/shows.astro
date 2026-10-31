@@ -9,6 +9,7 @@ export const prerender = false;
 
 const category = Astro.url.searchParams.get("category") ?? "popular";
 const genre = Astro.url.searchParams.getAll("genre");
+const excludedGenres = Astro.url.searchParams.getAll("exclude_genre");
 const year = Astro.url.searchParams.getAll("year").map(Number);
 const minRating = Astro.url.searchParams.get("min_rating") ? Number(Astro.url.searchParams.get("min_rating")) : undefined;
 const status = Astro.url.searchParams.get("status") ?? "";
@@ -43,6 +44,7 @@ if (hasTmdbKey) {
       category,
       page,
       ...(genre.length ? { genre } : {}),
+      ...(excludedGenres.length ? { exclude_genre: excludedGenres } : {}),
       ...(year.length ? { year } : {}),
       ...(minRating ? { min_rating: minRating } : {}),
       ...(status ? { status } : {}),
@@ -93,6 +95,7 @@ const years = Array.from({ length: currentYear - 1949 }, (_, i) => currentYear -
 const baseParams = new URLSearchParams();
 baseParams.set("category", category);
 genre.forEach((v) => baseParams.append("genre", v));
+excludedGenres.forEach((v) => baseParams.append("exclude_genre", v));
 year.forEach((v) => baseParams.append("year", String(v)));
 if (minRating) baseParams.set("min_rating", String(minRating));
 if (status) baseParams.set("status", status);
@@ -137,7 +140,7 @@ const baseUrl = `/shows?${baseParams.toString()}`;
           basePath="/shows"
           extraParams={{ category }}
           sections={[
-            { key: "genre", label: "Genre", options: TV_GENRES.map((g) => ({ value: g, label: g })), selected: genre },
+            { key: "genre", label: "Genre", options: TV_GENRES.map((g) => ({ value: g, label: g })), selected: genre, excluded: excludedGenres, tristate: true },
             { key: "year", label: "Year", options: years.map((y) => ({ value: String(y), label: String(y) })), selected: year.map(String) },
             { key: "min_rating", label: "Rating", options: [9, 8, 7, 6, 5].map((r) => ({ value: String(r), label: `${r}+ Stars` })), selected: minRating ? [String(minRating)] : [], multi: false },
             { key: "status", label: "Status", options: TV_STATUSES.map((s) => ({ value: s, label: s })), selected: status ? [status] : [], multi: false },
