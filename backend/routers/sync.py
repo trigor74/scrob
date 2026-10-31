@@ -8958,9 +8958,24 @@ async def heal_duplicate_history(
             tier = 2
         return (tier, _effective_time(event))
 
-    by_media: dict[int, list[WatchEvent]] = {}
+    # Group by what was watched, not by Media row: the same episode can exist
+    # as two rows (a webhook and a Trakt import resolving it differently,
+    # #527), and those plays are duplicates of each other too.
+    positions = await db.execute(
+        select(Media.id, Media.show_id, Media.season_number, Media.episode_number).where(
+            Media.id.in_({e.media_id for e in events}),
+            Media.media_type == MediaType.episode,
+            Media.show_id.isnot(None),
+            Media.season_number.isnot(None),
+            Media.episode_number.isnot(None),
+        )
+    )
+    identity: dict[int, tuple] = {
+        media_id: ("episode", show_id, season, episode) for media_id, show_id, season, episode in positions.all()
+    }
+    by_media: dict[tuple, list[WatchEvent]] = {}
     for event in events:
-        by_media.setdefault(event.media_id, []).append(event)
+        by_media.setdefault(identity.get(event.media_id, ("media", event.media_id)), []).append(event)
 
     tolerance = timedelta(minutes=body.window_minutes).total_seconds()
     to_delete: list[int] = []
