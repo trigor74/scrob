@@ -468,6 +468,7 @@ async def discover_movies(
     page: int = 1,
     genre_id: int | None = None,
     genre_ids: list[int] | None = None,  # OR'd via TMDB's "|" syntax; takes priority over genre_id if both given
+    without_genre_ids: list[int] | None = None,  # genres to leave out; any match excludes ("|" = OR)
     year: int | None = None,
     min_rating: float | None = None,
     vote_count_min: int | None = None,
@@ -490,6 +491,8 @@ async def discover_movies(
         params["with_genres"] = "|".join(str(g) for g in genre_ids)
     elif genre_id:
         params["with_genres"] = genre_id
+    if without_genre_ids:
+        params["without_genres"] = "|".join(str(g) for g in without_genre_ids)
     if year:
         params["primary_release_year"] = year
     if min_rating:
@@ -512,6 +515,7 @@ async def discover_shows(
     page: int = 1,
     genre_id: int | None = None,
     genre_ids: list[int] | None = None,  # OR'd via TMDB's "|" syntax; takes priority over genre_id if both given
+    without_genre_ids: list[int] | None = None,  # genres to leave out; any match excludes ("|" = OR)
     year: int | None = None,
     min_rating: float | None = None,
     vote_count_min: int | None = None,
@@ -536,6 +540,8 @@ async def discover_shows(
         params["with_genres"] = "|".join(str(g) for g in genre_ids)
     elif genre_id:
         params["with_genres"] = genre_id
+    if without_genre_ids:
+        params["without_genres"] = "|".join(str(g) for g in without_genre_ids)
     if year:
         params["first_air_date_year"] = year
     if min_rating:
