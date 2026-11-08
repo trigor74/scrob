@@ -23,8 +23,11 @@ ENV TZ=UTC
 # embedded data directories were initialised by Debian's 17.x and a different
 # major would refuse to start on them. We manage our own data dir at
 # /app/postgres/data.
+# icu-data-full: повні дані ICU для Node - без них apk-пакет тягне лише
+# icu-data-en, і дати/числа на сервері (SSR) завжди форматуються англійською.
 RUN apk upgrade --no-cache && apk add --no-cache \
     "nodejs>=24.22.1" \
+    icu-data-full \
     postgresql17 \
     su-exec \
     tzdata
