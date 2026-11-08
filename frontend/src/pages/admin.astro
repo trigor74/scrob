@@ -19,6 +19,9 @@ const [globalSettings, users] = await Promise.all([
 ]);
 
 const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
+
+// Посилання для підказок секції WebSocket (вставляється в перекладені тексти через {link}).
+const ITTY_LINK = '<a href="https://ittysockets.com" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300">ittysockets.com</a>';
 ---
 
 <Base title={m.nav_admin()}>
@@ -371,7 +374,7 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
               <Fragment set:html={connectionIconHtml("websocket")} />
               <div class="flex flex-col gap-0.5">
                 <span class="font-medium text-zinc-200">WebSocket</span>
-                <span class="text-xs text-zinc-500">Real-time communication between instances</span>
+                <span class="text-xs text-zinc-500">{m.admin_socket_desc()}</span>
               </div>
             </div>
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="collapsible-chevron w-4 h-4 text-zinc-500 transition-transform pointer-events-none ml-1 shrink-0">
@@ -383,18 +386,18 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
               <div class="space-y-4">
                 <!-- Socket Mode -->
                 <div class="space-y-2">
-                  <label for="socket_mode" class="block text-sm font-medium text-zinc-400">Socket Mode</label>
+                  <label for="socket_mode" class="block text-sm font-medium text-zinc-400">{m.admin_socket_mode()}</label>
                   <select name="socket_mode" id="socket_mode"
                     class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all appearance-none">
-                    <option value="disabled" selected={globalSettings.socket_mode === 'disabled'}>Disabled</option>
-                    <option value="internal" selected={globalSettings.socket_mode === 'internal'}>Internal</option>
-                    <option value="external" selected={globalSettings.socket_mode === 'external'}>External</option>
+                    <option value="disabled" selected={globalSettings.socket_mode === 'disabled'}>{m.admin_socket_mode_disabled()}</option>
+                    <option value="internal" selected={globalSettings.socket_mode === 'internal'}>{m.admin_socket_mode_internal()}</option>
+                    <option value="external" selected={globalSettings.socket_mode === 'external'}>{m.admin_socket_mode_external()}</option>
                   </select>
-                  <p class="text-xs text-zinc-500">Disabled: no socket. Internal: self-hosted server. External: public relay (itty.ws).</p>
+                  <p class="text-xs text-zinc-500">{m.admin_socket_mode_hint()}</p>
                 </div>
                 <!-- Namespace -->
                 <div class="space-y-2">
-                  <label for="socket_namespace" class="block text-sm font-medium text-zinc-400">Namespace</label>
+                  <label for="socket_namespace" class="block text-sm font-medium text-zinc-400">{m.admin_socket_namespace()}</label>
                   <input
                     type="text"
                     name="socket_namespace"
@@ -403,11 +406,11 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
                     placeholder="my-app"
                     class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   />
-                  <p class="text-xs text-zinc-500">Optional. Creates a channel prefix like "my-app:user-&#123;username&#125;". Leave empty for no prefix.</p>
+                  <p class="text-xs text-zinc-500">{m.admin_socket_namespace_hint({ example: "my-app:user-{username}" })}</p>
                 </div>
                 <!-- External URL -->
                 <div class="space-y-2" id="socket-external-url-group">
-                  <label for="socket_external_url" class="block text-sm font-medium text-zinc-400">External Server URL</label>
+                  <label for="socket_external_url" class="block text-sm font-medium text-zinc-400">{m.admin_socket_external_url()}</label>
                   <input
                     type="url"
                     name="socket_external_url"
@@ -416,13 +419,13 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
                     placeholder="wss://itty.ws/c/"
                     class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   />
-                  <p class="text-xs text-zinc-500">WebSocket URL for external mode. Default: wss://itty.ws/c/</p>
+                  <p class="text-xs text-zinc-500">{m.admin_socket_external_url_hint({ url: "wss://itty.ws/c/" })}</p>
                 </div>
               </div>
               <div class="space-y-4">
                 <!-- Join Key -->
                 <div class="space-y-2">
-                  <label for="socket_join_key" class="block text-sm font-medium text-zinc-400">Join Key</label>
+                  <label for="socket_join_key" class="block text-sm font-medium text-zinc-400">{m.admin_socket_join_key()}</label>
                   <div class="relative group/field">
                     <input
                       type="password"
@@ -432,16 +435,16 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
                       placeholder="••••••••"
                       class="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-4 pr-10 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                     />
-                    <button type="button" class="password-toggle absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-1 cursor-pointer transition-colors" aria-label="Toggle visibility">
+                    <button type="button" class="password-toggle absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-1 cursor-pointer transition-colors" aria-label={m.admin_toggle_visibility()}>
                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 eye-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.644C3.412 7.943 7.213 5 12 5c4.787 0 8.588 2.943 9.964 6.678.066.18.066.362 0 .544C20.588 16.057 16.787 19 12 19c-4.787 0-8.588-2.943-9.964-6.678z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 eye-slash-icon hidden"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
                     </button>
                   </div>
-                  <p class="text-xs text-zinc-500">Key for reading from the channel. Get it from <a href="https://ittysockets.com" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300">ittysockets.com</a>.</p>
+                  <p class="text-xs text-zinc-500" set:html={m.admin_socket_join_key_hint({ link: ITTY_LINK })} />
                 </div>
                 <!-- Send Key -->
                 <div class="space-y-2">
-                  <label for="socket_send_key" class="block text-sm font-medium text-zinc-400">Send Key</label>
+                  <label for="socket_send_key" class="block text-sm font-medium text-zinc-400">{m.admin_socket_send_key()}</label>
                   <div class="relative group/field">
                     <input
                       type="password"
@@ -451,24 +454,24 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
                       placeholder="••••••••"
                       class="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-4 pr-10 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                     />
-                    <button type="button" class="password-toggle absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-1 cursor-pointer transition-colors" aria-label="Toggle visibility">
+                    <button type="button" class="password-toggle absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 p-1 cursor-pointer transition-colors" aria-label={m.admin_toggle_visibility()}>
                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 eye-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.644C3.412 7.943 7.213 5 12 5c4.787 0 8.588 2.943 9.964 6.678.066.18.066.362 0 .544C20.588 16.057 16.787 19 12 19c-4.787 0-8.588-2.943-9.964-6.678z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 eye-slash-icon hidden"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
                     </button>
                   </div>
-                  <p class="text-xs text-zinc-500">Key for writing to the channel. Get it from <a href="https://ittysockets.com" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300">ittysockets.com</a>.</p>
+                  <p class="text-xs text-zinc-500" set:html={m.admin_socket_send_key_hint({ link: ITTY_LINK })} />
                 </div>
                 <!-- Connection Info -->
                 <div class="p-4 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2">
-                  <h3 class="text-sm font-semibold text-zinc-200 mb-2">Connection Info</h3>
+                  <h3 class="text-sm font-semibold text-zinc-200 mb-2">{m.admin_socket_info()}</h3>
                   <div class="text-xs text-zinc-400 space-y-1">
-                    <div><span class="text-zinc-500">Mode:</span> <span id="socket-info-mode">{globalSettings.socket_mode ?? 'disabled'}</span></div>
-                    <div><span class="text-zinc-500">Namespace:</span> <span id="socket-info-namespace">{globalSettings.socket_namespace || '(none)'}</span></div>
-                    <div><span class="text-zinc-500">Join Key:</span> <span id="socket-info-join">{globalSettings.socket_join_key ? '••••••••' : '—'}</span></div>
-                    <div><span class="text-zinc-500">Send Key:</span> <span id="socket-info-send">{globalSettings.socket_send_key ? '••••••••' : '—'}</span></div>
-                    <div><span class="text-zinc-500">Server URL:</span> <span id="socket-info-url">{globalSettings.socket_mode === 'internal' ? 'ws://host:7332/c/' : (globalSettings.socket_external_url ?? 'wss://itty.ws/c/')}</span></div>
+                    <div><span class="text-zinc-500">{m.admin_socket_info_mode()}</span> <span id="socket-info-mode">{globalSettings.socket_mode ?? 'disabled'}</span></div>
+                    <div><span class="text-zinc-500">{m.admin_socket_info_namespace()}</span> <span id="socket-info-namespace">{globalSettings.socket_namespace || m.admin_socket_none()}</span></div>
+                    <div><span class="text-zinc-500">{m.admin_socket_info_join_key()}</span> <span id="socket-info-join">{globalSettings.socket_join_key ? '••••••••' : '—'}</span></div>
+                    <div><span class="text-zinc-500">{m.admin_socket_info_send_key()}</span> <span id="socket-info-send">{globalSettings.socket_send_key ? '••••••••' : '—'}</span></div>
+                    <div><span class="text-zinc-500">{m.admin_socket_info_server_url()}</span> <span id="socket-info-url">{globalSettings.socket_mode === 'internal' ? 'ws://host:7332/c/' : (globalSettings.socket_external_url ?? 'wss://itty.ws/c/')}</span></div>
                   </div>
-                  <p class="text-xs text-zinc-500 mt-2">Create a namespace on <a href="https://ittysockets.com" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300">ittysockets.com</a> to generate join and send keys.</p>
+                  <p class="text-xs text-zinc-500 mt-2" set:html={m.admin_socket_info_hint({ link: ITTY_LINK })} />
                 </div>
               </div>
             </div>
@@ -582,7 +585,7 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4 h-4">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
           </svg>
-          Add User
+          {m.admin_add_user()}
         </button>
       </div>
 
@@ -895,57 +898,57 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
 <div id="add-user-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div id="add-user-modal-backdrop" class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
   <div class="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
-    <h2 class="text-xl font-black text-zinc-100 mb-6">Add User</h2>
+    <h2 class="text-xl font-black text-zinc-100 mb-6">{m.admin_add_user()}</h2>
     <form id="add-user-form" class="space-y-4" novalidate>
       <div class="space-y-2">
-        <label for="new-user-username" class="block text-sm font-medium text-zinc-400">Username</label>
+        <label for="new-user-username" class="block text-sm font-medium text-zinc-400">{m.auth_username()}</label>
         <input type="text" id="new-user-username" autocomplete="off" placeholder="johndoe"
           class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
       </div>
       <div class="space-y-2">
-        <label for="new-user-email" class="block text-sm font-medium text-zinc-400">Email</label>
+        <label for="new-user-email" class="block text-sm font-medium text-zinc-400">{m.auth_email()}</label>
         <input type="email" id="new-user-email" autocomplete="off" placeholder="john@example.com"
           class="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
       </div>
       <div class="space-y-2">
-        <label for="new-user-password" class="block text-sm font-medium text-zinc-400">Password</label>
+        <label for="new-user-password" class="block text-sm font-medium text-zinc-400">{m.auth_password()}</label>
         <div class="relative group/field">
           <input type="password" id="new-user-password" autocomplete="new-password" spellcheck="false"
             class="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-4 pr-24 py-3 text-zinc-100 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" />
           <div class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
-            <button type="button" id="gen-password-btn" title="Generate password" aria-label="Generate password"
+            <button type="button" id="gen-password-btn" title={m.admin_generate_password()} aria-label={m.admin_generate_password()}
               class="p-1.5 text-zinc-500 hover:text-blue-400 rounded-md hover:bg-zinc-800 transition-colors cursor-pointer">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
               </svg>
             </button>
-            <button type="button" id="copy-password-btn" title="Copy password" aria-label="Copy password"
+            <button type="button" id="copy-password-btn" title={m.admin_copy_password()} aria-label={m.admin_copy_password()}
               class="p-1.5 text-zinc-500 hover:text-zinc-300 rounded-md hover:bg-zinc-800 transition-colors cursor-pointer">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.976a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
               </svg>
             </button>
-            <button type="button" class="password-toggle p-1 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer" aria-label="Toggle visibility">
+            <button type="button" class="password-toggle p-1 text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer" aria-label={m.admin_toggle_visibility()}>
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 eye-icon"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.644C3.412 7.943 7.213 5 12 5c4.787 0 8.588 2.943 9.964 6.678.066.18.066.362 0 .544C20.588 16.057 16.787 19 12 19c-4.787 0-8.588-2.943-9.964-6.678z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 eye-slash-icon hidden"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
             </button>
           </div>
         </div>
-        <p class="text-xs text-zinc-500">16 characters with uppercase, lowercase, numbers and symbols.</p>
+        <p class="text-xs text-zinc-500">{m.admin_generated_password_hint({ length: 16 })}</p>
       </div>
       <label class="flex items-center gap-3 cursor-pointer select-none pt-1">
         <input type="checkbox" id="new-user-is-admin"
           class="w-4 h-4 rounded border-zinc-600 bg-zinc-950 text-blue-500 focus:ring-blue-500 cursor-pointer" />
-        <span class="text-sm text-zinc-300">Make this user an admin</span>
+        <span class="text-sm text-zinc-300">{m.admin_make_user_admin()}</span>
       </label>
       <div class="flex gap-3 pt-2">
         <button type="button" id="add-user-cancel-btn"
           class="flex-1 px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold rounded-xl transition-colors text-sm cursor-pointer">
-          Cancel
+          {m.common_cancel()}
         </button>
         <button type="submit" id="add-user-submit-btn"
           class="flex-1 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-colors text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
-          Create User
+          {m.admin_create_user()}
         </button>
       </div>
     </form>
@@ -1720,7 +1723,7 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
   document.getElementById('copy-password-btn')?.addEventListener('click', async () => {
     if (!newPasswordInput.value) return;
     await navigator.clipboard.writeText(newPasswordInput.value);
-    showMessage('Password copied to clipboard.');
+    showMessage(m.admin_password_copied());
   });
 
   addUserForm.addEventListener('submit', async (e) => {
@@ -1729,7 +1732,7 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
     const email = newEmailInput.value.trim();
     const password = newPasswordInput.value;
     if (!username || !email || !password) {
-      showMessage('Username, email and password are required.', 'error');
+      showMessage(m.admin_add_user_required(), 'error');
       return;
     }
     addUserSubmitBtn.disabled = true;
@@ -1739,13 +1742,13 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, email, password, is_admin: newIsAdminInput.checked }),
       });
-      if (!res.ok) throw new Error((await res.json()).detail || 'Failed to create user');
+      if (!res.ok) throw new Error((await res.json()).detail || m.admin_create_user_failed());
       const created = await res.json();
       appendUserRow(created);
       closeAddUserModal();
-      showMessage(`User "${created.username}" created.`);
+      showMessage(m.admin_user_created({ username: created.username }));
     } catch (err: unknown) {
-      showMessage(err instanceof Error ? err.message : 'Failed to create user', 'error');
+      showMessage(err instanceof Error ? err.message : m.admin_create_user_failed(), 'error');
     } finally {
       addUserSubmitBtn.disabled = false;
     }
@@ -1774,12 +1777,12 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
         </td>
         <td class="px-4 py-3 text-zinc-400 hidden md:table-cell">${esc(u.email)}</td>
         <td class="px-4 py-3">
-          <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold border ${badgeClass}">${isAdmin ? 'Admin' : 'User'}</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold border ${badgeClass}">${isAdmin ? m.admin_role_admin() : m.admin_role_user()}</span>
         </td>
         <td class="px-4 py-3 text-right hidden md:table-cell">
           <div class="flex items-center justify-end gap-2">
-            <button class="${toggleBtnClass}">${isAdmin ? 'Remove Admin' : 'Make Admin'}</button>
-            <button class="delete-user-btn px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all active:scale-95 cursor-pointer">Delete</button>
+            <button class="${toggleBtnClass}">${isAdmin ? m.admin_remove_admin() : m.admin_make_admin()}</button>
+            <button class="delete-user-btn px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all active:scale-95 cursor-pointer">${m.common_delete()}</button>
           </div>
         </td>
         <td class="px-4 py-3 md:hidden">
@@ -1793,10 +1796,10 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
           <div class="space-y-3">
             <div class="md:hidden text-xs text-zinc-400">${esc(u.email)}</div>
             <div>
-              <div class="text-xs text-zinc-500 mb-1">API Key</div>
+              <div class="text-xs text-zinc-500 mb-1">${m.admin_api_key()}</div>
               <div class="flex items-center gap-2">
                 <code class="user-api-key flex-1 block bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300 font-mono break-all">${esc(u.api_key)}</code>
-                <button class="copy-api-key-btn shrink-0 p-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 rounded-lg transition-colors cursor-pointer" title="Copy API key" aria-label="Copy API key">
+                <button class="copy-api-key-btn shrink-0 p-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 rounded-lg transition-colors cursor-pointer" title="${m.admin_copy_api_key()}" aria-label="${m.admin_copy_api_key()}">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.976a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
                   </svg>
@@ -1804,8 +1807,8 @@ const adminCount = users.filter((u: AdminUser) => u.is_admin).length;
               </div>
             </div>
             <div class="flex flex-wrap gap-2 md:hidden">
-              <button class="${toggleBtnClass}">${isAdmin ? 'Remove Admin' : 'Make Admin'}</button>
-              <button class="delete-user-btn px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all active:scale-95 cursor-pointer">Delete</button>
+              <button class="${toggleBtnClass}">${isAdmin ? m.admin_remove_admin() : m.admin_make_admin()}</button>
+              <button class="delete-user-btn px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all active:scale-95 cursor-pointer">${m.common_delete()}</button>
             </div>
           </div>
         </td>

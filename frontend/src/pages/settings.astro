@@ -377,9 +377,9 @@ try {
           </div>
           <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
             <div>
-              <p class="text-sm font-semibold text-zinc-100 mb-1">Remove watched from Watchlist</p>
+              <p class="text-sm font-semibold text-zinc-100 mb-1">{m.settings_watchlist_auto_remove()}</p>
               <p class="text-xs text-zinc-400">
-                Watched titles will be automatically removed from your Watchlist.
+                {m.settings_watchlist_auto_remove_desc()}
               </p>
             </div>
             <label class="relative inline-flex items-center shrink-0 cursor-pointer mt-0.5">

@@ -46,7 +46,7 @@ const sonarrConfigured   = !!(settings.sonarr_url && settings.sonarr_token);
         <form id="connections-form" class="space-y-6">
           <!-- ======== EXTENSIONS SECTION ======== -->
           <div class="space-y-3 mt-8">
-            <h2 class="section-headline border-b border-zinc-800 pb-2">Extensions</h2>
+            <h2 class="section-headline border-b border-zinc-800 pb-2">{m.conn_extensions()}</h2>
             <div class="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
               <div class="flex items-center gap-4 px-6 py-4">
                 <span class="w-9 h-9 rounded-lg bg-purple-500/15 flex items-center justify-center shrink-0">
@@ -54,14 +54,14 @@ const sonarrConfigured   = !!(settings.sonarr_url && settings.sonarr_token);
                 </span>
                 <div class="flex-1 min-w-0">
                   <p class="font-medium text-zinc-200">Lampa</p>
-                  <p class="text-xs text-zinc-500">Paste this URL into Lampa → Settings → Extensions to install the Scrob plugin.</p>
+                  <p class="text-xs text-zinc-500">{m.conn_lampa_plugin_hint()}</p>
                 </div>
               </div>
               <div class="border-t border-zinc-800 px-6 py-4 space-y-2">
-                <label for="lampa-plugin-url" class="block text-sm font-medium text-zinc-400">Plugin URL</label>
+                <label for="lampa-plugin-url" class="block text-sm font-medium text-zinc-400">{m.conn_lampa_plugin_url()}</label>
                 <div class="flex gap-2">
                   <input type="text" readonly id="lampa-plugin-url" class="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-300 font-mono text-xs focus:outline-none cursor-default select-all" value="/plugins/scrob.js" />
-                  <button type="button" id="lampa-plugin-copy" title="Copy to clipboard" class="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg transition-colors cursor-pointer">
+                  <button type="button" id="lampa-plugin-copy" title={m.conn_copy_to_clipboard()} class="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg transition-colors cursor-pointer">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" /></svg>
                   </button>
                 </div>
@@ -5551,7 +5551,7 @@ const sonarrConfigured   = !!(settings.sonarr_url && settings.sonarr_token);
           await copyToClipboard(urlInput.value);
           flashCopied(copyBtn as HTMLElement);
         } catch {
-          showMessage('Could not copy to clipboard', 'error');
+          showMessage(m.conn_could_not_copy_to_clipboard(), 'error');
         }
       });
     }
