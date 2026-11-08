@@ -212,7 +212,7 @@ const COUNTRIES = [
               type="text"
               id="content_language_search"
               class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              placeholder="Search languages..."
+              placeholder={m.profile_settings_search_languages()}
               autocomplete="off"
               role="combobox"
               aria-expanded="false"
@@ -224,7 +224,7 @@ const COUNTRIES = [
               class="hidden absolute z-50 w-full mt-1 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl max-h-60 overflow-y-auto"
               role="listbox"
             >
-              <div class="px-4 py-3 text-zinc-500 text-sm cursor-pointer hover:bg-zinc-800" data-value="">— Any language —</div>
+              <div class="px-4 py-3 text-zinc-500 text-sm cursor-pointer hover:bg-zinc-800" data-value="">{m.profile_settings_any_language()}</div>
             </div>
           </div>
           <p class="text-xs text-zinc-500">
@@ -245,7 +245,7 @@ const COUNTRIES = [
               type="text"
               id="metadata_language_search"
               class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              placeholder="Search languages..."
+              placeholder={m.profile_settings_search_languages()}
               autocomplete="off"
               role="combobox"
               aria-expanded="false"
@@ -257,7 +257,7 @@ const COUNTRIES = [
               class="hidden absolute z-50 w-full mt-1 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl max-h-60 overflow-y-auto"
               role="listbox"
             >
-              <div class="px-4 py-3 text-zinc-500 text-sm cursor-pointer hover:bg-zinc-800" data-value="">English (default)</div>
+              <div class="px-4 py-3 text-zinc-500 text-sm cursor-pointer hover:bg-zinc-800" data-value="">{m.profile_settings_english_default()}</div>
             </div>
           </div>
           <p class="text-xs text-zinc-500">
@@ -759,13 +759,13 @@ const COUNTRIES = [
       searchId: 'metadata_language_search',
       hiddenId: 'metadata_language',
       listboxId: 'metadata-language-listbox',
-      defaultLabel: 'English (default)',
+      defaultLabel: m.profile_settings_english_default(),
     });
     initLanguageCombobox(token, {
       searchId: 'content_language_search',
       hiddenId: 'content_language',
       listboxId: 'content-language-listbox',
-      defaultLabel: '— Any language —',
+      defaultLabel: m.profile_settings_any_language(),
     });
 
     if (token) initStatus();

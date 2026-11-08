@@ -67,12 +67,12 @@ const viewerTz = getViewerTimeZone(Astro.cookies);
     <div class="max-w-md mx-auto mt-20 text-center">
       <div class="bg-red-500/10 border border-red-500/20 text-red-500 p-6 rounded-2xl mb-6">
         <p class="font-bold text-lg mb-2">{m.common_oops()}</p>
-        <p class="text-sm opacity-80">{notOnTmdb ? "TMDB has no such season for this show." : error}</p>
+        <p class="text-sm opacity-80">{notOnTmdb ? m.season_not_on_tmdb() : error}</p>
       </div>
       {notOnTmdb && (
         <p class="text-sm text-zinc-500 mb-6">
-          This usually means a library entry ended up under a season the show doesn't actually have — a media server splitting one long season into several, or numbering a sequel as a later season.{" "}
-          <a href={`/connections?remap=${id}:${season_number}&title=${encodeURIComponent(notOnTmdbTitle)}`} class="text-blue-500 hover:underline">Fix it under Connections → Active Season Remaps</a>
+          {m.season_not_on_tmdb_explainer()}{" "}
+          <a href={`/connections?remap=${id}:${season_number}&title=${encodeURIComponent(notOnTmdbTitle)}`} class="text-blue-500 hover:underline">{m.season_not_on_tmdb_fix_link()}</a>
         </p>
       )}
       <a href="/" class="text-blue-500 hover:underline">{m.common_return_to_dashboard()}</a>
