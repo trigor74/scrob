@@ -194,9 +194,8 @@ class UserSettings(Base):
     dropped_shows  : Mapped[Optional[list[int]]] = mapped_column(JSONB, server_default="'[]'")
     dropped_movies : Mapped[Optional[list[int]]] = mapped_column(JSONB, server_default="'[]'")
     hide_watched_from_recently_added : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    watchlist_auto_remove_id : Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("lists.id", ondelete="SET NULL"), nullable=True, default=None, server_default=None
-    )
+    # Прибирати переглянуте з нативного watchlist (core/watchlist_auto_remove.py)
+    watchlist_auto_remove : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     # Collapse consecutive same-show episodes within a date on the History
     # page into one row instead of listing each individually (#391).
     condense_history_by_show : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")

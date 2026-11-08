@@ -566,7 +566,7 @@ export interface UserSettings {
   next_up_by_recent_watch: boolean;
   rate_prompt_movies: boolean;
   rate_prompt_episodes: boolean;
-  watchlist_auto_remove_id: number | null;
+  watchlist_auto_remove: boolean;
   duplicate_watch_window_minutes: number | null;
   condense_history_by_show: boolean;
   /** Order key, or null to inherit server_episode_order. */

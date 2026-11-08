@@ -238,7 +238,7 @@ class UserSettings(BaseModel):
     condense_history_by_show: Optional[bool] = None
     rate_prompt_movies: Optional[bool] = None
     rate_prompt_episodes: Optional[bool] = None
-    watchlist_auto_remove_id: Optional[int] = None
+    watchlist_auto_remove: Optional[bool] = None
     duplicate_watch_window_minutes: Optional[int] = Field(default=None, ge=0)
     # NULL inherits server_episode_order, the admin-configured default below
     # (read-only, computed).

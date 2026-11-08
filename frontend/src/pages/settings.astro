@@ -377,15 +377,21 @@ try {
           </div>
           <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
             <div>
-              <p class="text-sm font-semibold text-zinc-100 mb-1">Watchlist</p>
+              <p class="text-sm font-semibold text-zinc-100 mb-1">Remove watched from Watchlist</p>
               <p class="text-xs text-zinc-400">
-                Select a list to use as your watchlist. Watched titles will be automatically removed from it.
+                Watched titles will be automatically removed from your Watchlist.
               </p>
             </div>
-            <select name="watchlist_auto_remove_id" id="watchlist-auto-remove-select" data-current-id={settings.watchlist_auto_remove_id ?? ''} class="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-200 max-w-[200px]">
-              <option value="">— Disabled —</option>
-              <!-- Populated dynamically -->
-            </select>
+            <label class="relative inline-flex items-center shrink-0 cursor-pointer mt-0.5">
+              <input
+                type="checkbox"
+                name="watchlist_auto_remove"
+                id="watchlist-auto-remove-toggle"
+                class="sr-only peer"
+                checked={settings.watchlist_auto_remove === true}
+              />
+              <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+            </label>
           </div>
           <div class="flex items-start justify-between gap-6 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
             <div>
@@ -2371,49 +2377,20 @@ try {
   }
 
   // Watchlist auto-remove setting
-  const watchlistSelect = document.getElementById('watchlist-auto-remove-select') as HTMLSelectElement | null;
-  if (watchlistSelect) {
-    // Store current value from server-rendered settings
-    const currentWatchlistId = watchlistSelect.dataset.currentId || '';
-
-    async function populateWatchlistSelect() {
-      try {
-        const tok = (document.getElementById('app-data') as HTMLElement | null)?.dataset.token ?? '';
-        const res = await fetch('/api/proxy/lists', {
-          headers: { 'Authorization': `Bearer ${tok}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const lists = data.lists || data;
-          watchlistSelect.innerHTML = '<option value="">— Disabled —</option>';
-          for (const list of lists) {
-            const option = document.createElement('option');
-            option.value = String(list.id);
-            option.textContent = list.name + (list.item_count != null ? ` (${list.item_count})` : '');
-            if (String(list.id) === currentWatchlistId) option.selected = true;
-            watchlistSelect.appendChild(option);
-          }
-        }
-      } catch (e) {
-        console.error('Failed to load lists:', e);
-      }
-    }
-
-    watchlistSelect.addEventListener('change', async () => {
-      const value = watchlistSelect.value ? parseInt(watchlistSelect.value) : null;
+  const watchlistAutoRemoveToggle = document.getElementById('watchlist-auto-remove-toggle') as HTMLInputElement | null;
+  if (watchlistAutoRemoveToggle) {
+    watchlistAutoRemoveToggle.addEventListener('change', async () => {
       try {
         const tok = (document.getElementById('app-data') as HTMLElement | null)?.dataset.token ?? '';
         await fetch('/api/proxy/auth/settings', {
           method: 'PATCH',
           headers: { 'Authorization': `Bearer ${tok}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ watchlist_auto_remove_id: value }),
+          body: JSON.stringify({ watchlist_auto_remove: watchlistAutoRemoveToggle.checked }),
         });
       } catch (e) {
         console.error('Failed to save watchlist setting:', e);
       }
     });
-
-    populateWatchlistSelect();
   }
 
   setupExportData();
