@@ -168,6 +168,9 @@ export interface Season {
   tmdb_rating?: number | null;
   episodes: EpisodeItem[];
   season_number: number;
+  play_count: number;
+  watch_time_minutes: number;
+  last_watched_at?: string | null;
   episode_order?: string;
   show_watched: boolean;
   season_watched: boolean;
@@ -206,6 +209,7 @@ export interface EpisodeDetail {
   collection_pct: number;
   user_rating?: number | null;
   play_count?: number;
+  watch_time_minutes?: number;
   last_watched_at?: string | null;
   cast: CastMember[];
   crew: CrewMember[];
@@ -292,6 +296,9 @@ export interface UserList {
   name: string;
   description: string | null;
   privacy_level: PrivacyLevel;
+  // The user's native watchlist: every service's watchlist syncs with it,
+  // and it can't be deleted.
+  is_watchlist?: boolean;
   item_count: number;
   created_at: string;
   updated_at: string;
@@ -362,6 +369,7 @@ export interface GlobalSettings {
   sonarr_season_folder: boolean;
   radarr_require_approval: boolean;
   sonarr_require_approval: boolean;
+  default_episode_order: string | null;
   image_cache_enabled: boolean;
   image_cache_limit_gb: number | null;
   enable_logged_out_navigation: boolean;
@@ -548,15 +556,23 @@ export interface UserSettings {
   preferences: UserPreferences | null;
   blur_explicit: boolean;
   time_format_24h: boolean;
+  // Web UI language, one of the locales listed in project.inlang/settings.json;
+  // null = follow the browser.
+  ui_language: string | null;
   use_hls_player: boolean;
   show_play_button: boolean;
   shuffle_next_up: boolean;
   minimalist_next_up: boolean;
+  next_up_by_recent_watch: boolean;
   rate_prompt_movies: boolean;
   rate_prompt_episodes: boolean;
+  watchlist_auto_remove: boolean;
   duplicate_watch_window_minutes: number | null;
   condense_history_by_show: boolean;
-  watchlist_auto_remove_id: number | null;
+  /** Order key, or null to inherit server_episode_order. */
+  default_episode_order: string | null;
+  /** What default_episode_order = null resolves to (admin-configured). */
+  server_episode_order: string;
 }
 
 export interface MediaServerConnection {
@@ -578,6 +594,8 @@ export interface MediaServerConnection {
   push_ratings: boolean;
   auto_sync_interval: number | null;
   auto_push_interval: number | null;
+  plex_sync_watchlist?: boolean;
+  plex_push_watchlist?: boolean;
   created_at: string;
 }
 
@@ -756,6 +774,7 @@ export interface MediaItem {
   request_enabled?: boolean;
   user_rating?: number | null;
   play_count?: number;
+  watch_time_minutes?: number;
   library: {
     resolution: string;
     video_codec: string;
@@ -928,6 +947,7 @@ export interface TvdbEpisodeDetail {
   watched: boolean;
   user_rating: number | null;
   play_count: number;
+  watch_time_minutes: number;
   last_watched_at?: string | null;
   in_lists: number[];
   library: {
@@ -955,6 +975,9 @@ export interface TvdbSeason {
   backdrop_path: string | null;
   air_date: string | null;
   episodes: TvdbEpisode[];
+  play_count: number;
+  watch_time_minutes: number;
+  last_watched_at?: string | null;
   season_in_library: boolean;
   season_watch_pct: number;
   season_watch_started?: boolean;
@@ -1030,6 +1053,9 @@ export interface TvdbShow {
   request_enabled: boolean;
   request_status: string | null;
   user_rating: number | null;
+  play_count: number;
+  watch_time_minutes: number;
+  last_watched_at?: string | null;
   season_states: Record<number, SeasonState>;
   where_to_watch: { type: string; name: string; logo: string | null }[];
   rewatch?: ShowRewatch | null;
@@ -1078,6 +1104,9 @@ export interface Show {
   imdb_id?: string | null;
   adult?: boolean;
   user_rating?: number | null;
+  play_count?: number;
+  watch_time_minutes?: number;
+  last_watched_at?: string | null;
   first_air_date: string | null;
   last_air_date: string | null;
   where_to_watch?: { type: string; name: string; logo: string | null }[];
@@ -1399,7 +1428,7 @@ export const api = {
   },
 
   media: {
-    list: (params?: { type?: string; sort?: string; page?: number; genre?: string[]; year?: number[]; watched?: string[]; in_list?: string }, token?: string) =>
+    list: (params?: { type?: string; sort?: string; page?: number; genre?: string[]; year?: number[]; watched?: string[]; in_list?: string; my_rating?: number[] }, token?: string) =>
       get<{ page: number; page_size: number; total_pages: number; total_results: number; results: MediaItem[] }>("/media", params, token),
 
     years: (type: string, token?: string) =>
@@ -1434,7 +1463,7 @@ export const api = {
     getCompany: (companyId: number, token?: string) =>
       get<StudioHeader>(`/media/company/${companyId}`, undefined, token),
 
-    tmdbList: (params: { type: string; category?: string; page?: number; genre?: string[]; exclude_genre?: string[]; year?: number[]; min_rating?: number; status?: string; collection?: string[]; watch?: string[]; arr?: string[]; original_language?: string; exclude_language?: string[]; in_list?: string[]; network?: number; company?: number }, token?: string) =>
+    tmdbList: (params: { type: string; category?: string; page?: number; genre?: string[]; exclude_genre?: string[]; year?: number[]; min_rating?: number; status?: string; collection?: string[]; watch?: string[]; arr?: string[]; my_rating?: number[]; original_language?: string; exclude_language?: string[]; in_list?: string[]; network?: number; company?: number }, token?: string) =>
       get<{ results: MediaItem[]; page: number; total_pages: number; total_results: number }>("/media/tmdb/list", params, token),
 
     search: (q: string, type?: string, page: number = 1, year?: number, token?: string, inLibrary?: boolean) =>
@@ -1496,7 +1525,7 @@ export const api = {
   },
 
   shows: {
-    list: (params?: { sort?: string; page?: number; page_size?: number; genre?: string[]; year?: number[]; status?: string[]; watched?: string[]; in_list?: string }, token?: string) =>
+    list: (params?: { sort?: string; page?: number; page_size?: number; genre?: string[]; year?: number[]; status?: string[]; watched?: string[]; in_list?: string; my_rating?: number[] }, token?: string) =>
       get<{ page: number; page_size: number; total_results: number; total_pages: number; results: any[] }>("/shows", params, token),
 
     years: (token?: string) =>
@@ -1539,6 +1568,22 @@ export const api = {
         { episode_order: orderKey, order_label: opts?.label ?? null, force_refresh: opts?.forceRefresh ?? false },
         token,
       ),
+
+    applyDefaultEpisodeOrder: (episodeOrder: "tmdb" | "tvdb", token: string) =>
+      post<{
+        status: "started" | "noop";
+        job_id?: number;
+        shows: number;
+        episode_order: "tmdb" | "tvdb";
+      }>(`/shows/episode-order/apply-default`, { order: episodeOrder }, token),
+
+    getEpisodeOrderJob: (jobId: number, token: string) =>
+      get<{
+        status: string;
+        total_items: number | null;
+        processed_items: number | null;
+        stats: { episode_order?: string; switched?: number; failed?: number } | null;
+      }>(`/shows/episode-order/jobs/${jobId}`, undefined, token),
 
     getTvdb: (tvdbId: number, token?: string) =>
       get<TvdbShow>(`/shows/tvdb/${tvdbId}`, undefined, token),

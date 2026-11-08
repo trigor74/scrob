@@ -101,7 +101,10 @@ class UserSettings(Base):
     # Trakt list import/export
     trakt_sync_lists         : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     trakt_push_lists         : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    trakt_watchlist_split    : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    trakt_watchlist_split    : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")  # unused since the native watchlist
+    # Typed keys ("movie:603") as of the last watchlist reconcile with Trakt
+    # (core/watchlist_reconcile.py). NULL = never reconciled.
+    trakt_watchlist_synced_keys : Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     # Trakt auto sync/push interval, in hours (null = disabled)
     trakt_auto_sync_interval : Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -127,6 +130,8 @@ class UserSettings(Base):
     simkl_sync_ratings       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,  server_default="true")
     simkl_sync_lists         : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,  server_default="true")
     simkl_sync_dropped       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Same as trakt_watchlist_synced_keys, for the Simkl plan-to-watch list.
+    simkl_watchlist_synced_keys : Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     # Simkl outbound push flags (Scrob → Simkl)
     simkl_push_watched       : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -179,6 +184,7 @@ class UserSettings(Base):
     show_play_button : Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     shuffle_next_up : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     minimalist_next_up : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    next_up_by_recent_watch : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     next_up_hidden_shows : Mapped[Optional[list[int]]] = mapped_column(JSONB, server_default="'[]'")
     # Dropped is stronger than hidden - unlike next_up_hidden_shows, dropped
     # items are also excluded from the Calendar and from Discover/
@@ -188,9 +194,16 @@ class UserSettings(Base):
     dropped_shows  : Mapped[Optional[list[int]]] = mapped_column(JSONB, server_default="'[]'")
     dropped_movies : Mapped[Optional[list[int]]] = mapped_column(JSONB, server_default="'[]'")
     hide_watched_from_recently_added : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    watchlist_auto_remove_id : Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("lists.id", ondelete="SET NULL"), nullable=True, default=None, server_default=None
-    )
+    # Прибирати переглянуте з нативного watchlist (core/watchlist_auto_remove.py)
+    watchlist_auto_remove : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Collapse consecutive same-show episodes within a date on the History
+    # page into one row instead of listing each individually (#391).
+    condense_history_by_show : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Web UI language (e.g. "fr"). Null means the default, English.
+    # Distinct from profile.metadata_language, which only
+    # localizes TMDB/TVDB titles and overviews. The frontend mirrors it into
+    # the ui_language cookie so SSR can render in it without an extra call.
+    ui_language : Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     # Prompt to rate an item right after it finishes playing (homepage Now
     # Playing bar drops the session -> star-rating popup), separately per type (#177).
     rate_prompt_movies   : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -206,6 +219,11 @@ class UserSettings(Base):
     # (#390). NULL/0 means "use the built-in minimum only" - see
     # core.watch_dedup.DEFAULT_DEDUP_WINDOW_MINUTES.
     duplicate_watch_window_minutes : Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Order key new shows start on when this user has made no per-show choice
+    # - see UserShowEpisodeOrder, which always wins. NULL inherits the
+    # server-wide default from GlobalSettings, the same override chain as
+    # tvdb_api_key above.
+    default_episode_order : Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
 
     # MDBList — API key authentication
     mdblist_api_key: Mapped[Optional[str]] = mapped_column(String(255))
@@ -216,6 +234,8 @@ class UserSettings(Base):
     mdblist_push_watched: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     mdblist_push_ratings: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     mdblist_push_watchlist: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Same as trakt_watchlist_synced_keys, for the MDBList watchlist.
+    mdblist_watchlist_synced_keys: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     mdblist_push_collection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     mdblist_push_dropped: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     mdblist_scrobble: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

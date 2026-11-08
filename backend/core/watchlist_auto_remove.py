@@ -1,6 +1,5 @@
-"""Auto-remove watched titles from user's selected watchlist."""
+"""Auto-remove watched titles from the user's native watchlist."""
 
-import asyncio
 import logging
 from typing import Optional
 
@@ -8,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from models.lists import List, ListItem
+from models.lists import ListItem
 from models.media import Media
 from models.show import Show
 from models.users import UserSettings
@@ -22,30 +21,35 @@ async def auto_remove_from_watchlist(
     media_id: int,
 ) -> None:
     """
-    Remove a title from the user's selected auto-remove watchlist.
+    Remove a title from the user's native watchlist (List.is_watchlist).
     Called after successful WatchEvent creation for completed watches.
     """
-    # 1. Get user's auto-remove list setting
+    # 1. Чи увімкнено автоприбирання у користувача
     result = await db.execute(
-        select(UserSettings.watchlist_auto_remove_id).where(
+        select(UserSettings.watchlist_auto_remove).where(
             UserSettings.user_id == user_id
         )
     )
-    list_id: Optional[int] = result.scalar_one_or_none()
-
-    if list_id is None:
-        logger.debug("Auto-remove disabled for user %s (no watchlist_auto_remove_id)", user_id)
+    if not result.scalar_one_or_none():
+        logger.debug("Auto-remove disabled for user %s", user_id)
         return  # Auto-remove disabled
+
+    # Нативний watchlist апстріму (#512) — один на користувача
+    from core.native_watchlist import get_watchlist
+
+    lst = await get_watchlist(db, user_id)
+    if lst is None:
+        logger.debug("User %s has no native watchlist yet", user_id)
+        return
+    list_id = lst.id
 
     # 2. Find the list item (by media_id for movies, or by show_id for series)
     result = await db.execute(
         select(ListItem)
-        .options(selectinload(ListItem.media), selectinload(ListItem.list))
-        .join(List, List.id == ListItem.list_id)
+        .options(selectinload(ListItem.media))
         .where(
             ListItem.list_id == list_id,
             ListItem.media_id == media_id,
-            List.user_id == user_id,  # Security: ensure ownership
         )
     )
     item = result.scalar_one_or_none()
@@ -78,12 +82,10 @@ async def auto_remove_from_watchlist(
                 if show_media_id is not None:
                     result = await db.execute(
                         select(ListItem)
-                        .options(selectinload(ListItem.media), selectinload(ListItem.list))
-                        .join(List, List.id == ListItem.list_id)
+                        .options(selectinload(ListItem.media))
                         .where(
                             ListItem.list_id == list_id,
                             ListItem.media_id == show_media_id,
-                            List.user_id == user_id,
                         )
                     )
                     item = result.scalar_one_or_none()
@@ -96,7 +98,6 @@ async def auto_remove_from_watchlist(
         return  # Title not in watchlist
 
     # 3. Capture data before delete
-    lst = item.list if hasattr(item, "list") else None
     media = item.media
     season_number = item.season_number
 
@@ -121,7 +122,7 @@ async def auto_remove_from_watchlist(
         event_type="list.item_removed",
         payload={
             "list_id": list_id,
-            "list_name": lst.name if lst else None,
+            "list_name": lst.name,
             "media_id": media_id,
             "media_tmdb_id": media.tmdb_id if media else None,
             "media_type": media.media_type if media else None,
@@ -129,34 +130,12 @@ async def auto_remove_from_watchlist(
         },
     )
 
-    # 6. Push to providers (fire-and-forget, errors are non-fatal)
-    tasks = []
+    # 6. Push to providers (errors are non-fatal) — так само, як апстрімний
+    # remove_list_item для нативного watchlist: Trakt + MDBList + Plex
+    if media:
+        from routers.lists import _push_watchlist_item
 
-    if lst and lst.trakt_slug and media:
-        from routers.lists import _push_list_item_to_trakt
-
-        tasks.append(
-            _push_list_item_to_trakt(
-                db, user_id, lst.trakt_slug, media, season_number=season_number, remove=True
-            )
-        )
-        if lst.trakt_slug == "__plex_watchlist__":
-            from routers.lists import _push_list_item_to_plex_watchlist
-
-            tasks.append(
-                _push_list_item_to_plex_watchlist(
-                    db, user_id, media, season_number=season_number, remove=True
-                )
-            )
-
-    if lst and lst.mdblist_slug and media:
-        from routers.lists import _push_list_item_to_mdblist
-
-        tasks.append(
-            _push_list_item_to_mdblist(
-                db, user_id, lst.mdblist_slug, media, season_number=season_number, remove=True
-            )
-        )
-
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await _push_watchlist_item(db, user_id, media, season_number=season_number, remove=True)
+        except Exception:
+            logger.warning("Watchlist push failed for user %s, media %s", user_id, media_id, exc_info=True)
