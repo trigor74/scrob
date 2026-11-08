@@ -20,8 +20,11 @@ ENV TZ=UTC
 
 # nodejs runs the Astro server, su-exec drops privileges in the entrypoint,
 # tzdata backs the TZ setting. Healthcheck uses busybox wget, so no curl.
+# icu-data-full: повні дані ICU для Node - без них apk-пакет тягне лише
+# icu-data-en, і дати/числа на сервері (SSR) завжди форматуються англійською.
 RUN apk upgrade --no-cache && apk add --no-cache \
     "nodejs>=24.22.1" \
+    icu-data-full \
     su-exec \
     tzdata
 
