@@ -107,6 +107,11 @@ var CUSTOM_CATEGORIES_KEY = 'scrob_custom_categories'
 // from main.js) or the fallback timer armed alongside it.
 var pending = null
 
+// true, поки синхронізацію зупинено в stageProfile() на справжньому
+// перемиканні профілю, а doApply() ще не запустив її знову (див.
+// haltSyncForSwitch() нижче).
+var haltedForSwitch = false
+
 // Persisted (not just in-memory) because both flags must already read
 // correctly at the very first updateHeaderButton()/settingsListener check of
 // a fresh page load - restoreSession() runs synchronously before levende's
@@ -337,6 +342,17 @@ function doApplyUnsafe(profile) {
         // staged but never actually written to storage. Confirmed live
         // via console tracing on a cleared localStorage: both previousId
         // and profile.profileId logged as ''.
+        //
+        // Синхронізацію могли зупинити в stageProfile() заради перемикання,
+        // яке так і не відбулося (A→B→A до того, як застосувався B) - тоді
+        // запускаємо її знову, інакше вона лишилася б зупиненою.
+        if (haltedForSwitch) {
+            haltedForSwitch = false
+            if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
+                sync.start()
+                timelineSync.start()
+            }
+        }
         return
     }
 
@@ -407,12 +423,41 @@ function doApplyUnsafe(profile) {
     Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId)
     Lampa.Storage.set(HAS_APPLIED_KEY, true)
 
+    haltedForSwitch = false
     if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
         sync.start()
         timelineSync.start()
     }
 
     if (onApplyCallback) onApplyCallback()
+}
+
+// Зупиняє обидва рушії синхронізації одразу на 'profile'/'changed', якщо це
+// справжнє перемикання на інший профіль. levende ставить нову область lampac
+// (lampac_profile_id) і підміняє file_view/favorite відразу після цієї події,
+// а doApply() міняє облікові дані й KEYS.ACTIVE_PROFILE_ID лише на наступному
+// 'state:changed' або через APPLY_FALLBACK_DELAY_MS. Поки синхронізація працює
+// в цьому вікні, відповідь сервера для СТАРОГО акаунта записалася б у file_view
+// НОВОГО профілю - з прив'язкою card, тож TimeCode-плагін lampac вивантажив би
+// її в область нового профілю (а lampac-export - далі в його акаунт Scrob).
+// profileSnapshot() у timeline.js цього не ловить: ACTIVE_PROFILE_ID у вікні
+// ще старий. Після stop() його перевірка running уже відкидає такі відповіді,
+// а prefetch - prefetchGeneration. Запускає знову doApply() (обидві гілки).
+// Повторне 'changed' для того самого профілю (levende шле його й на старті)
+// синхронізацію не зупиняє.
+function haltSyncForSwitch(profileId) {
+    try {
+        if (!Lampa.Storage.get(HAS_APPLIED_KEY, false)) return
+        if (String(Lampa.Storage.get(CURRENT_PROFILE_KEY, '')) === String(profileId)) return
+
+        sync.stop()
+        timelineSync.stop()
+        haltedForSwitch = true
+    } catch (err) {
+        // Ми всередині обробника levende ('profile'/'changed' шле його
+        // onSelect) - виняток звідси не має зірвати саме перемикання.
+        console.error('ScrobLevendeBridge', 'haltSyncForSwitch failed:', err)
+    }
 }
 
 // Called from the 'profile' Listener in main.js.
@@ -437,6 +482,8 @@ export function stageProfile(e) {
         apiKey: apiKey
     }
     pending = profile
+
+    haltSyncForSwitch(profile.profileId)
 
     // Fallback: see the module comment above for why the real signal can be
     // delayed or skipped entirely.
