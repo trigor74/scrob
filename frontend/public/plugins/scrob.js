@@ -4480,8 +4480,13 @@
     // а TimeCode-плагін lampac впізнає запис без закладок. Ключ будує сама Lampa,
     // щоб формат лишався однаковим; стара Lampa без Timeline.link - null, запис
     // лишається лише за хешем, як раніше. tmdbId - id фільму або серіалу (не серії).
+    // При синхронізації з акаунтом CUB прив'язку не пишемо: тоді прогрес лежить у
+    // file_view_<профіль CUB>, який не входить в ISOLATED_KEYS і спільний для всіх
+    // профілів Scrob, - з прив'язкою lampac вивантажив би його в область того
+    // профілю Scrob, що активний зараз. Без неї для CUB усе як до прив'язки.
     function buildLink(item) {
       if (!item.tmdbId || typeof Lampa.Timeline.link !== 'function') return null;
+      if (timelineStorageKey() !== 'file_view') return null;
       var card = {
         id: item.tmdbId,
         source: 'tmdb'
@@ -4547,10 +4552,14 @@
     // тоді прогрес попереднього профілю записався б у file_view нового (а через
     // прив'язку card TimeCode-плагін lampac вивантажив би його в область нового
     // профілю). Той самий захист, що prefetchGeneration для prefetch нижче.
+    // Ключ Timeline теж порівнюємо: при синхронізації з CUB профіль CUB могли
+    // перемкнути в самій Lampa без зміни профілю Scrob, і тоді відповідь
+    // записалася б у file_view_<новий профіль CUB>.
     function profileSnapshot() {
       var profileId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
+      var storageKey = timelineStorageKey();
       return function () {
-        return running$1 && String(Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)) === String(profileId);
+        return running$1 && String(Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)) === String(profileId) && timelineStorageKey() === storageKey;
       };
     }
     function writeTimelineSilent(writes) {
@@ -5805,9 +5814,15 @@
     // chunk failing must not lose whatever earlier chunks already collected -
     // same "already-applied chunks are harmless to keep" intent the old
     // per-item-write design had).
-    function runPrefetchChunks(chunks, index, gen, collector) {
+    function runPrefetchChunks(chunks, index, gen, collector, sameProfile) {
       if (gen !== prefetchGeneration) return; // superseded mid-flight - see prefetchGeneration above
-
+      // Профіль CUB перемкнули посеред prefetch (зміну профілю Scrob уже ловить
+      // prefetchGeneration) - зібране належить попередньому, відкидаємо все.
+      // prefetched лишається false, тож наступний вхід на main почне заново.
+      if (!sameProfile()) {
+        prefetchInFlight = false;
+        return;
+      }
       if (index >= chunks.length) {
         writeTimelineSilent(collector);
         if (collector.length) scheduleMainRepaint();
@@ -5832,9 +5847,13 @@
       getBatchWatchStatus(chunks[index], function (items) {
         if (gen !== prefetchGeneration) return; // ditto - a stale response landed after the check above too
         for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector);
-        runPrefetchChunks(chunks, index + 1, gen, collector);
+        runPrefetchChunks(chunks, index + 1, gen, collector, sameProfile);
       }, function (err) {
         if (gen !== prefetchGeneration) return;
+        if (!sameProfile()) {
+          prefetchInFlight = false;
+          return;
+        }
         // All-or-nothing (SYNC-ARCHITECTURE-PLAN.md §9 п.6): deliberately NOT
         // queued through enqueueRetry (§5.1's retry queue is for mutations;
         // this is a read-only snapshot) - `prefetched` just stays false, so
@@ -5866,7 +5885,7 @@
         chunks.push(candidates.slice(i, i + PREFETCH_CHUNK_SIZE));
       }
       console.log('ScrobTimeline', 'prefetch starting,', candidates.length, 'candidate(s),', chunks.length, 'chunk(s)');
-      runPrefetchChunks(chunks, 0, gen, []);
+      runPrefetchChunks(chunks, 0, gen, [], profileSnapshot());
     }
 
     // Separate 'activity' listener from onActivityStart() above (that one only
@@ -8700,7 +8719,7 @@
         component: 'scrob'
       };
       addLang();
-      Lampa.Template.add('scrob_style', '<style>@charset "UTF-8";\n/* Scrob plugin styles */\n/* Header profile button avatar */\n.scrob-avatar {\n  width: 1.8em;\n  height: 1.8em;\n  border-radius: 50%;\n  object-fit: cover;\n  display: block;\n}\n\n/* Letter avatar: first letter of username on colored background */\n.scrob-avatar--letter {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #fff;\n  font-weight: 700;\n  font-size: 0.9em;\n  line-height: 1;\n  text-transform: uppercase;\n  user-select: none;\n}\n\n/* Larger avatar inside the profile selectbox list */\n.selectbox-item .scrob-avatar {\n  width: 2.6em;\n  height: 2.6em;\n  font-size: 1em;\n}\n\n/* QR device-pairing modal */\n.scrob-qr-wrap {\n  text-align: center;\n  padding: 1.5em 1em;\n}\n\n.scrob-qr-code {\n  display: flex;\n  justify-content: center;\n  margin: 0 auto 1em;\n}\n\n.scrob-qr-code svg {\n  width: 14em;\n  height: 14em;\n  background: #fff;\n  padding: 0.6em;\n  border-radius: 0.3em;\n}\n\n.scrob-qr-user-code {\n  font-size: 1.8em;\n  font-weight: 700;\n  letter-spacing: 0.15em;\n  margin-bottom: 0.6em;\n}\n\n.scrob-qr-hint {\n  font-size: 0.9em;\n  color: #bbbbbb;\n  max-width: 26em;\n  margin: 0 auto;\n}\n\n.scrob-qr-manual {\n  font-size: 0.85em;\n  color: #888888;\n  max-width: 26em;\n  margin: 0.6em auto 0;\n  word-break: break-all;\n}\n\n/* "Останній переглянутий епізод" бейдж на повній картці серіалу */\n.full-start-new__details.scrob-last-episode {\n  display: flex;\n  align-items: center;\n  color: #fff;\n}\n\n.scrob-last-episode__icon {\n  width: 18px;\n  height: 18px;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n  margin-right: 0.5em;\n}\n\n.scrob-last-episode__icon svg {\n  width: 100%;\n  height: 100%;\n  display: block;\n}\n\n.scrob-last-episode__new {\n  display: inline-flex;\n  align-items: center;\n  margin-left: 0.7em;\n  color: #C147D8;\n  font-weight: 600;\n}\n\n.scrob-last-episode__dot {\n  width: 0.5em;\n  height: 0.5em;\n  border-radius: 50%;\n  background: #C147D8;\n  margin-right: 0.4em;\n  flex-shrink: 0;\n}</style>');
+      Lampa.Template.add('scrob_style', '<style>.scrob-avatar{width:1.8em;height:1.8em;border-radius:50%;object-fit:cover;display:block}.scrob-avatar--letter{display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:.9em;line-height:1;text-transform:uppercase;user-select:none}.selectbox-item .scrob-avatar{width:2.6em;height:2.6em;font-size:1em}.scrob-qr-wrap{text-align:center;padding:1.5em 1em}.scrob-qr-code{display:flex;justify-content:center;margin:0 auto 1em}.scrob-qr-code svg{width:14em;height:14em;background:#fff;padding:.6em;border-radius:.3em}.scrob-qr-user-code{font-size:1.8em;font-weight:700;letter-spacing:.15em;margin-bottom:.6em}.scrob-qr-hint{font-size:.9em;color:#bbb;max-width:26em;margin:0 auto}.scrob-qr-manual{font-size:.85em;color:#888;max-width:26em;margin:.6em auto 0;word-break:break-all}.full-start-new__details.scrob-last-episode{display:flex;align-items:center;color:#fff}.scrob-last-episode__icon{width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;margin-right:.5em}.scrob-last-episode__icon svg{width:100%;height:100%;display:block}.scrob-last-episode__new{display:inline-flex;align-items:center;margin-left:.7em;color:#c147d8;font-weight:600}.scrob-last-episode__dot{width:.5em;height:.5em;border-radius:50%;background:#c147d8;margin-right:.4em;flex-shrink:0}</style>');
       $('body').append(Lampa.Template.get('scrob_style', {}, true));
 
       // Nested page templates
