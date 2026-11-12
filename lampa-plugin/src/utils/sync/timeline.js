@@ -414,8 +414,13 @@ function buildHash(isSeries, originalName, season, episode) {
 // а TimeCode-плагін lampac впізнає запис без закладок. Ключ будує сама Lampa,
 // щоб формат лишався однаковим; стара Lampa без Timeline.link - null, запис
 // лишається лише за хешем, як раніше. tmdbId - id фільму або серіалу (не серії).
+// При синхронізації з акаунтом CUB прив'язку не пишемо: тоді прогрес лежить у
+// file_view_<профіль CUB>, який не входить в ISOLATED_KEYS і спільний для всіх
+// профілів Scrob, - з прив'язкою lampac вивантажив би його в область того
+// профілю Scrob, що активний зараз. Без неї для CUB усе як до прив'язки.
 function buildLink(item) {
     if (!item.tmdbId || typeof Lampa.Timeline.link !== 'function') return null
+    if (timelineStorageKey() !== 'file_view') return null
     var card = { id: item.tmdbId, source: 'tmdb' }
     if (item.isSeries) card.original_name = item.originalName
     try {
@@ -478,10 +483,15 @@ function timelineStorageKey() {
 // тоді прогрес попереднього профілю записався б у file_view нового (а через
 // прив'язку card TimeCode-плагін lampac вивантажив би його в область нового
 // профілю). Той самий захист, що prefetchGeneration для prefetch нижче.
+// Ключ Timeline теж порівнюємо: при синхронізації з CUB профіль CUB могли
+// перемкнути в самій Lampa без зміни профілю Scrob, і тоді відповідь
+// записалася б у file_view_<новий профіль CUB>.
 function profileSnapshot() {
     var profileId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)
+    var storageKey = timelineStorageKey()
     return function () {
-        return running && String(Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)) === String(profileId)
+        return running && String(Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)) === String(profileId) &&
+            timelineStorageKey() === storageKey
     }
 }
 
@@ -1701,8 +1711,15 @@ function collectPrefetchCandidates() {
 // chunk failing must not lose whatever earlier chunks already collected -
 // same "already-applied chunks are harmless to keep" intent the old
 // per-item-write design had).
-function runPrefetchChunks(chunks, index, gen, collector) {
+function runPrefetchChunks(chunks, index, gen, collector, sameProfile) {
     if (gen !== prefetchGeneration) return // superseded mid-flight - see prefetchGeneration above
+    // Профіль CUB перемкнули посеред prefetch (зміну профілю Scrob уже ловить
+    // prefetchGeneration) - зібране належить попередньому, відкидаємо все.
+    // prefetched лишається false, тож наступний вхід на main почне заново.
+    if (!sameProfile()) {
+        prefetchInFlight = false
+        return
+    }
 
     if (index >= chunks.length) {
         writeTimelineSilent(collector)
@@ -1728,9 +1745,13 @@ function runPrefetchChunks(chunks, index, gen, collector) {
     api.getBatchWatchStatus(chunks[index], function (items) {
         if (gen !== prefetchGeneration) return // ditto - a stale response landed after the check above too
         for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector)
-        runPrefetchChunks(chunks, index + 1, gen, collector)
+        runPrefetchChunks(chunks, index + 1, gen, collector, sameProfile)
     }, function (err) {
         if (gen !== prefetchGeneration) return
+        if (!sameProfile()) {
+            prefetchInFlight = false
+            return
+        }
         // All-or-nothing (SYNC-ARCHITECTURE-PLAN.md §9 п.6): deliberately NOT
         // queued through enqueueRetry (§5.1's retry queue is for mutations;
         // this is a read-only snapshot) - `prefetched` just stays false, so
@@ -1764,7 +1785,7 @@ function runPrefetch() {
         chunks.push(candidates.slice(i, i + PREFETCH_CHUNK_SIZE))
     }
     console.log('ScrobTimeline', 'prefetch starting,', candidates.length, 'candidate(s),', chunks.length, 'chunk(s)')
-    runPrefetchChunks(chunks, 0, gen, [])
+    runPrefetchChunks(chunks, 0, gen, [], profileSnapshot())
 }
 
 // Separate 'activity' listener from onActivityStart() above (that one only
