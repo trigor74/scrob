@@ -4473,6 +4473,27 @@
       return Lampa.Utils.hash([season, sep, episode, originalName].join(''));
     }
 
+    // Прив'язка запису до картки ({card: 'tv_1851', season, episode} або
+    // {card: 'movie_674'}) - та сама, що Lampa ставить сама через Timeline.link().
+    // З нею Timeline.view(hash, meta) знаходить прогрес, навіть якщо хеш не збігся
+    // (назва в Scrob відрізняється від original_name картки або TMDB її змінив),
+    // а TimeCode-плагін lampac впізнає запис без закладок. Ключ будує сама Lampa,
+    // щоб формат лишався однаковим; стара Lampa без Timeline.link - null, запис
+    // лишається лише за хешем, як раніше. tmdbId - id фільму або серіалу (не серії).
+    function buildLink(item) {
+      if (!item.tmdbId || typeof Lampa.Timeline.link !== 'function') return null;
+      var card = {
+        id: item.tmdbId,
+        source: 'tmdb'
+      };
+      if (item.isSeries) card.original_name = item.originalName;
+      try {
+        return Lampa.Timeline.link(card, item.season, item.episode) || null;
+      } catch (e) {
+        return null;
+      }
+    }
+
     // Duration fallback chain for a pulled item — a manual "watched" mark can
     // leave both the real playback duration AND the TMDB runtime unknown
     // (§5.2.4). 0 (not a guessed constant) in that case — the real value, once
@@ -4521,6 +4542,17 @@
     // this replaces calling the real Lampa.Timeline.update() for pulled data).
     // One Storage.get/set pair for the whole batch, not one per item - matters
     // for a large prefetch run (hundreds of entries) on a weak device.
+    // Знімок активного профілю на момент запиту: повертає перевірку, яку
+    // викликають у колбеку відповіді. Профіль могли перемкнути, поки запит ішов, і
+    // тоді прогрес попереднього профілю записався б у file_view нового (а через
+    // прив'язку card TimeCode-плагін lampac вивантажив би його в область нового
+    // профілю). Той самий захист, що prefetchGeneration для prefetch нижче.
+    function profileSnapshot() {
+      var profileId = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID);
+      return function () {
+        return running$1 && String(Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID)) === String(profileId);
+      };
+    }
     function writeTimelineSilent(writes) {
       if (!writes || !writes.length) return;
       var key = timelineStorageKey();
@@ -4539,6 +4571,13 @@
         road.time = Math.round(w.time);
         road.duration = Math.round(w.duration);
         road.updated = w.updated;
+        // Прив'язка до картки - як у Lampa.Timeline.update(): лише коли вона є,
+        // наявну (поставлену самою Lampa) не прибираємо.
+        if (w.link) {
+          road.card = w.link.card + '';
+          if (typeof w.link.season !== 'undefined') road.season = w.link.season;
+          if (typeof w.link.episode !== 'undefined') road.episode = w.link.episode;
+        }
         viewed[w.hash] = road;
       }
       Lampa.Storage.set(key, viewed);
@@ -4585,7 +4624,8 @@
         percent: percent,
         time: time,
         duration: duration,
-        updated: force ? Date.now() : serverTime || Date.now()
+        updated: force ? Date.now() : serverTime || Date.now(),
+        link: buildLink(item)
       };
       if (collector) collector.push(write);else writeTimelineSilent([write]);
     }
@@ -5171,7 +5211,9 @@
     // nothing) instead of guessing, and bypasses the LWW guard that Lampa's own
     // synchronous local uncheck would otherwise trip (see pullWriteTimeline()).
     function restoreTimelineFromServer(identity) {
+      var sameProfile = profileSnapshot();
       getWatchStatus(identity.seriesTmdbId, 'tv', function (items) {
+        if (!sameProfile()) return;
         for (var i = 0; i < items.length; i++) {
           var item = items[i];
           if (item.media_type === 'episode' && item.season_number === identity.season && item.episode_number === identity.episode) {
@@ -5534,6 +5576,7 @@
     function applyWatchStatusItem(item, force, collector) {
       pullWriteTimeline({
         isSeries: item.media_type === 'episode',
+        tmdbId: item.media_type === 'episode' ? item.series_tmdb_id : item.tmdb_id,
         originalName: item.original_name,
         season: item.season_number,
         episode: item.episode_number,
@@ -5556,6 +5599,7 @@
       var isSeries = media.type === 'episode';
       pullWriteTimeline({
         isSeries: isSeries,
+        tmdbId: isSeries ? media.show_tmdb_id : media.tmdb_id,
         originalName: isSeries ? media.show_original_title : media.original_title,
         season: media.season_number,
         episode: media.episode_number,
@@ -5577,7 +5621,9 @@
     // existing Lampa.Timeline.read()/Lampa.Favorite.read() calls.
     function pullContinueWatching() {
       if (!running$1) return;
+      var sameProfile = profileSnapshot();
       getContinueWatching(function (items) {
+        if (!sameProfile()) return;
         var collector = [];
         for (var i = 0; i < items.length; i++) applyContinueWatchingItem(items[i], collector);
         writeTimelineSilent(collector);
@@ -5597,7 +5643,9 @@
       var card = e.object && (e.object.card || e.object.data && e.object.data.movie || e.object.movie);
       if (!card || !card.id) return;
       var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
+      var sameProfile = profileSnapshot();
       getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        if (!sameProfile()) return;
         var collector = [];
         for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector);
         writeTimelineSilent(collector);
@@ -5622,7 +5670,9 @@
       var card = active.card_data || active.card || active.movie;
       if (!card || !card.id) return;
       var isSeries = !!(card.number_of_seasons || card.first_air_date || card.type === 'tv');
+      var sameProfile = profileSnapshot();
       getWatchStatus(card.id, isSeries ? 'tv' : 'movie', function (items) {
+        if (!sameProfile()) return;
         var collector = [];
         for (var i = 0; i < items.length; i++) applyWatchStatusItem(items[i], false, collector);
         writeTimelineSilent(collector);
