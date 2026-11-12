@@ -175,9 +175,14 @@ function parseTimecodeResponse(raw) {
             percent: parseFloat(entry.percent) || 0,
             // Lampa.Timeline.update()'s own `updated` field (ms since epoch,
             // Date.now() on the client that wrote it) - lampac stores it
-            // verbatim as SqlModel.watched_at and echoes it back here
-            // unchanged (TimeCode/Controller.cs's RoadJson()/Write()) - never
-            // a lampac invention, just never read here before. 0 means it was
+            // verbatim as SqlModel.watched_at (TimeCode/Controller.cs's
+            // Write()). Сюди (RoadJson()) lampac до #348 повертав саме
+            // watched_at; з #348 (features.timecode = 4) - штамп арбітражу:
+            // changed_at, а без нього watched_at. Для записів веб-Lampa
+            // changed_at немає, тож це той самий watched_at; лише нативний
+            // клієнт із позначкою заднім числом дасть тут час зміни, а не
+            // перегляду. На lampac з /timecode/dump (timecode >= 3) цей шлях
+            // не використовується. 0 means it was
             // never actually set (legacy row/no native write yet); addHistoryEvent's
             // own `if (watchedAt)` check already treats that as "unknown date"
             // and omits the field, so no extra handling is needed for it here.
@@ -502,7 +507,11 @@ function dumpRowsToCandidates(rows, favorite) {
             duration: parseFloat(row.duration) || 0,
             time: parseFloat(row.position) || 0,
             percent: parseFloat(row.percent) || 0,
-            // Same value /timecode/all returns as road.updated (ms since epoch).
+            // Дата перегляду (мс від epoch), яку клієнт записав у watched_at.
+            // Не changed_at (lampac #348): той - час, коли позначку поставили
+            // чи зняли, і для позначки заднім числом він не дата перегляду.
+            // /timecode/all з #348 віддає в road.updated саме changed_at
+            // (якщо він є), тож значення двох шляхів можуть різнитися.
             updated: parseFloat(row.watched_at) || 0
         }
         identity = parseDumpIdentity(row.id)
