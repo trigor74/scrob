@@ -1,6 +1,6 @@
 /**
  * Scrob — Lampa plugin for self-hosted media tracking
- * Build: 2026-11-12
+ * Build: 2026-11-15
  * Source: https://github.com/trigor74/scrob
  */
 (function () {
