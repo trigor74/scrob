@@ -6311,9 +6311,13 @@
       // levende PROFILE ID uniquely picks the backup snapshot circulating
       // here, so there's no "same slot, different account" risk to guard
       // against the way accsdb's own live-editable params have for B).
-      if (!Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID, '')) {
-        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profileId);
-      }
+      //
+      // Тепер підпис завжди 'levende_<профіль>', і для входу логіном/паролем
+      // теж (див. syncLabel()): відновлене з бекапу значення (голий id акаунта
+      // або старий 'levende_<профіль>') лише підказує, звідки перенести дані.
+      var legacyLabel = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID, '');
+      Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, syncLabel(profileId));
+      migrateLegacyLabel(legacyLabel, syncLabel(profileId));
       restoreSettingsFields(profileId);
       restoreCustomCategories(profileId);
     }
@@ -6329,6 +6333,123 @@
         hash = (hash * 33 ^ str.charCodeAt(i)) >>> 0;
       }
       return hash.toString(36);
+    }
+
+    // ─── Підпис локальних даних синхронізації ─────────────────
+    //
+    // mirror.js і mapstore.js зберігають дзеркало, прапорець початкової
+    // синхронізації, ручні прив'язки категорій і зламані прив'язки під
+    // KEYS.ACTIVE_PROFILE_ID ("підпис"). Раніше підпис залежав від способу входу:
+    // accsdb - 'levende_<id>_<відбиток>', API-ключ/QR - 'levende_<id>', логін і
+    // пароль - голий id акаунта Scrob (completeLogin()). В останньому випадку два
+    // профілі levende, що увійшли в ОДИН акаунт, ділили одне дзеркало при різному
+    // локальному вибраному - видалення в одному профілі тоді відкочувалося іншим
+    // (картка є локально, але вже викреслена зі спільного дзеркала → push назад).
+    // Тепер підпис - лише профіль levende, за будь-якого способу входу. Щоб дані
+    // одного акаунта не потрапили в зошит іншого, поруч зберігається позначка
+    // облікових даних (credentialStamp()); змінилися - зошит очищається.
+    var CREDENTIAL_STAMP_PREFIX = 'scrob_levende_cred_';
+
+    // Суфікси ключів mirror.js/mapstore.js: 'scrob_sync_<суфікс>_<підпис>'.
+    // map і broken - налаштування користувача, з сервера не відновлюються.
+    var LABEL_DATA_SUFFIXES = ['mirror', 'initial_done', 'map', 'broken'];
+    var LABEL_CONFIG_SUFFIXES = ['map', 'broken'];
+    function syncLabel(profileId) {
+      return 'levende_' + profileId;
+    }
+    function labelDataKey(suffix, label) {
+      return 'scrob_sync_' + suffix + '_' + label;
+    }
+    function hasLabelData(label) {
+      for (var i = 0; i < LABEL_DATA_SUFFIXES.length; i++) {
+        if (Lampa.Storage.get(labelDataKey(LABEL_DATA_SUFFIXES[i], label), 'none') !== 'none') return true;
+      }
+      return false;
+    }
+
+    // Одноразовий перенос даних зі старого підпису на новий. Новий підпис, у
+    // якого вже є хоч якісь дані, не перезаписується (напр. після відкату версії
+    // й повернення). Старий 'levende_...' належав лише цьому профілю - переносимо
+    // все й прибираємо старі ключі. Голий id акаунта міг бути спільним для кількох
+    // профілів (і для звичайного режиму без levende) - копіюємо лише налаштування
+    // (map/broken), дзеркало не беремо: профіль один раз пройде повну синхронізацію
+    // (вона нічого не видаляє), а старі ключі лишаються.
+    function migrateLegacyLabel(legacyLabel, label) {
+      legacyLabel = legacyLabel ? String(legacyLabel) : '';
+      if (!legacyLabel || legacyLabel === label || legacyLabel === 'default') return;
+      if (hasLabelData(label)) return;
+      var ownedByProfile = legacyLabel.indexOf('levende_') === 0;
+      var suffixes = ownedByProfile ? LABEL_DATA_SUFFIXES : LABEL_CONFIG_SUFFIXES;
+      var moved = [];
+      suffixes.forEach(function (suffix) {
+        var from = labelDataKey(suffix, legacyLabel);
+        var value = Lampa.Storage.get(from, 'none');
+        if (value === 'none' || value === '') return;
+        Lampa.Storage.set(labelDataKey(suffix, label), value);
+        moved.push(suffix);
+        if (ownedByProfile) {
+          Lampa.Storage.set(from, '');
+          try {
+            window.localStorage.removeItem(from);
+          } catch (e) {}
+        }
+      });
+      if (moved.length) {
+        console.log('ScrobLevendeBridge', 'migrated ' + legacyLabel + ' → ' + label + ':', moved.join(', ') + (ownedByProfile ? '' : ' (mirror reset)'));
+      }
+    }
+
+    // Позначка того, з якими обліковими даними заповнено зошит поточного підпису.
+    // Самі ключі не зберігаються - лише відбиток (credentialFingerprint()).
+    // Однаковий API-ключ дає однакову позначку незалежно від того, звідки він
+    // (accsdb, ручне введення, api_key з логіну). QR - лише сервер: токени
+    // пристрою оновлюються самі, а нове спарювання й так очищає дані (main.js).
+    function credentialStamp() {
+      var server = String(Lampa.Storage.get(KEYS.SERVER_URL, '') || '').trim();
+      var apiKey = Lampa.Storage.get(KEYS.OWN_API_KEY, '');
+      if (apiKey) return 'key:' + credentialFingerprint(server, apiKey);
+      var me = getMe();
+      if (Lampa.Storage.get(KEYS.ACCESS_TOKEN, '') && me.id) return 'me:' + credentialFingerprint(server, String(me.id));
+      if (Lampa.Storage.get(KEYS.DEVICE_ACCESS_TOKEN, '')) return 'device:' + credentialFingerprint(server, '');
+      return '';
+    }
+
+    // resetIfChanged: позначка вже була, не порожня, і відрізняється від поточних
+    // облікових даних - це інший вхід під тим самим профілем levende, тож дзеркало
+    // й прив'язки попереднього очищаються (як sync.resetLocalState() при новому
+    // ключі чи QR у main.js). Порожня позначка (після виходу) нічого не очищає -
+    // вихід уже очистив сам. Викликати, коли синхронізацію зупинено.
+    function adoptCredentials(resetIfChanged) {
+      var key = CREDENTIAL_STAMP_PREFIX + Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID, '');
+      var current = credentialStamp();
+      var stored = Lampa.Storage.get(key, 'none');
+      if (resetIfChanged && stored !== 'none' && stored && current && stored !== current) {
+        resetLocalState();
+        console.log('ScrobLevendeBridge', 'credentials changed, local sync state reset');
+      }
+      Lampa.Storage.set(key, current);
+    }
+
+    // Підпис, який має стояти в KEYS.ACTIVE_PROFILE_ID під levende, або null, якщо
+    // levende не активний чи ще жоден профіль не застосовано (тоді діє звичайна
+    // логіка main.js, а підпис виправить наступний doApply()).
+    function activeSyncLabel() {
+      if (!levendeActive || !Lampa.Storage.get(HAS_APPLIED_KEY, false)) return null;
+      return syncLabel(Lampa.Storage.get(CURRENT_PROFILE_KEY, ''));
+    }
+
+    // Для main.js після входу (логін/пароль): очищає дані, якщо під цим
+    // профілем раніше був інший вхід, і запам'ятовує новий.
+    function checkCredentials() {
+      if (activeSyncLabel() === null) return;
+      adoptCredentials(true);
+    }
+
+    // Для main.js після виходу, нового ключа чи QR - там дані вже очищено
+    // (sync.resetLocalState()), лишається запам'ятати поточні облікові дані.
+    function noteCredentials() {
+      if (activeSyncLabel() === null) return;
+      adoptCredentials(false);
     }
 
     // Actually switches credentials for `profile` (an object shaped like what
@@ -6396,6 +6517,20 @@
         // Синхронізацію могли зупинити в stageProfile() заради перемикання,
         // яке так і не відбулося (A→B→A до того, як застосувався B) - тоді
         // запускаємо її знову, інакше вона лишилася б зупиненою.
+        //
+        // Підпис не той, що має бути (перший запуск після переходу на
+        // syncLabel(), або вхід логіном/паролем до першого doApply() поставив
+        // голий id акаунта) - зупиняємо синхронізацію, переносимо дані й
+        // ставимо правильний; блок нижче запустить її знову.
+        if (String(Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID, '')) !== syncLabel(profile.profileId)) {
+          stop$1();
+          stop();
+          var legacyLabel = Lampa.Storage.get(KEYS.ACTIVE_PROFILE_ID, '');
+          Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, syncLabel(profile.profileId));
+          migrateLegacyLabel(legacyLabel, syncLabel(profile.profileId));
+          adoptCredentials(true);
+          haltedForSwitch = true;
+        }
         if (haltedForSwitch) {
           haltedForSwitch = false;
           if (Lampa.Storage.get(KEYS.SYNC_ENABLED)) {
@@ -6457,7 +6592,14 @@
         // themselves means a genuine rotation gets a fresh, correctly
         // isolated namespace, while reverting to a previously-used account
         // correctly reuses its own still-valid mirror/map data.
-        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, 'levende_' + profile.profileId + '_' + credentialFingerprint(profile.server, profile.apiKey));
+        //
+        // Тепер підпис - лише профіль (syncLabel()), як і для решти способів
+        // входу; ротацію облікових даних accsdb ловить позначка
+        // (adoptCredentials() нижче) і очищає дзеркало. Старий підпис з
+        // відбитком - лише джерело одноразового переносу даних.
+        var legacyLabel = 'levende_' + profile.profileId + '_' + credentialFingerprint(profile.server, profile.apiKey);
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, syncLabel(profile.profileId));
+        migrateLegacyLabel(legacyLabel, syncLabel(profile.profileId));
         // Credentials come from accsdb, not a backup - but the prefetch
         // candidate-list settings and the custom-category registry still
         // need their own per-profile restore (see SETTINGS_FIELDS and
@@ -6467,6 +6609,10 @@
       } else {
         restoreProfile(profile.profileId);
       }
+
+      // Під новим підписом - перевірити, чи зошит заповнено з тими самими
+      // обліковими даними (синхронізацію вище зупинено).
+      adoptCredentials(true);
       Lampa.Storage.set(CURRENT_PROFILE_KEY, profile.profileId);
       Lampa.Storage.set(HAS_APPLIED_KEY, true);
       haltedForSwitch = false;
@@ -7893,7 +8039,21 @@
       // synchronously, and the sync engine restarts on ACTIVE_PROFILE_ID
       // changing, so the key must already be correct by then.
       Lampa.Storage.set(KEYS.ACTIVE_API_KEY, me.api_key || '');
-      Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, me.id);
+      // Під levende підпис локальних даних синхронізації - профіль levende, а не
+      // id акаунта (див. syncLabel() у levende-bridge.js): інакше кілька профілів
+      // з входом в один акаунт ділили б одне дзеркало. Підпис тут зазвичай не
+      // змінюється, тож рушії самі не перезапустяться - зупиняємо їх, щоб
+      // перевірка облікових даних очистила дзеркало без гонки; finish() нижче
+      // запускає їх знову.
+      var levendeLabel = activeSyncLabel();
+      if (levendeLabel !== null) {
+        stop$1();
+        stop();
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, levendeLabel);
+        checkCredentials();
+      } else {
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, me.id);
+      }
       // Store credentials for socket re-authentication
       if (username) Lampa.Storage.set(KEYS.USERNAME, username);
       if (password) Lampa.Storage.set(KEYS.PASSWORD, password);
@@ -8008,6 +8168,8 @@
         // switch (see doLogout()'s comment) - re-confirming the same value,
         // or clearing the field, isn't worth a full mirror/mapstore wipe.
         if (newKey && newKey !== previousKey) resetLocalState();
+        // Під levende - запам'ятати, з яким ключем тепер заповнюється зошит профілю.
+        noteCredentials();
         updateHeaderButton();
         refreshSettings();
         Lampa.Controller.toggle(returnTo);
@@ -8053,7 +8215,12 @@
       // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
       // 'default' key and leak into whichever Scrob account signs in next on
       // this device (see resetLocalState()).
+      // Під levende clearSession() стер і підпис профілю - повертаємо його, щоб
+      // resetLocalState() очистив зошит саме цього профілю, а не спільний 'default'.
+      var levendeLabel = activeSyncLabel();
+      if (levendeLabel !== null) Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, levendeLabel);
       resetLocalState();
+      noteCredentials();
       removeHeaderButton();
       refreshSettings();
       Lampa.Noty.show(Lampa.Lang.translate('scrob_logout_success'));
@@ -8140,6 +8307,8 @@
             // rotation - always a deliberate new-sign-in action, so always
             // reset (see doLogout()'s comment on the shared 'default' key).
             resetLocalState();
+            // Під levende - запам'ятати новий вхід для зошита профілю.
+            noteCredentials();
             Lampa.Modal.close();
             Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'));
             updateHeaderButton();
