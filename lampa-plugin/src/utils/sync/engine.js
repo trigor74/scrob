@@ -17,7 +17,8 @@ import {
     elementKey, parseElementKey,
     resolveKeyForListId, resolveKeyForListName,
     localElementSet, scrobElementSet,
-    applyRemoteAdd, applyRemoteRemove, cardFromScrobMedia
+    applyRemoteAdd, applyRemoteRemove, cardFromScrobMedia,
+    MARK_KEYS
 } from './mapping'
 import * as mirror from './mirror'
 import * as mapstore from './mapstore'
@@ -46,6 +47,16 @@ var dropActivityBound = false // 'activity' listener (dropped-status refresh, §
 var DEBOUNCE_MS = 500
 var RETRY_DELAY = 5000
 var RETRY_MAX = 3
+
+// Свіжі локальні видалення: 'lampaKey|tmdbId' → час. Поки видалення не дійшло до
+// сервера (чекає в черзі, уже в польоті або в черзі повторів), сервер і дзеркало ще
+// містять картку - convergeOneList() не повинен повертати її локально, інакше після
+// успішного видалення вона пішла б на сервер знову як локальне додавання. Мітку
+// оновлюють на кожному кроці (push, processQueue, повтор), тож вона живе, поки
+// видалення в роботі; після останньої невдалої спроби спливає, і картку, що
+// лишилася на сервері, буде повернуто - так обидві сторони знову збігаються.
+var REMOVE_GUARD_MS = 60000
+var recentRemoves = {}
 
 // ─── Conflict detection ───────────────────────────────────
 
@@ -351,7 +362,60 @@ function onStateChanged(e) {
     push(method, e.type, e.card)
 }
 
+function markRecentRemove(lampaKey, tmdbId) {
+    if (!lampaKey || !tmdbId) return
+    recentRemoves[lampaKey + '|' + tmdbId] = Date.now()
+}
+
+// Чи є ще не доведене до сервера локальне видалення картки elemKey зі списку lampaKey.
+function hasPendingRemove(lampaKey, elemKey) {
+    var tmdbId = String(parseElementKey(elemKey).tmdbId)
+    for (var q = 0; q < pushQueue.length; q++) {
+        if (pushQueue[q].lampaKey === lampaKey && pushQueue[q].method === 'remove' &&
+            String(pushQueue[q].card.id) === tmdbId) return true
+    }
+    var tag = lampaKey + '|' + tmdbId
+    var at = recentRemoves[tag]
+    if (!at) return false
+    if (Date.now() - at > REMOVE_GUARD_MS) {
+        delete recentRemoves[tag]
+        return false
+    }
+    return true
+}
+
+function hasLocalId(list, id) {
+    if (!Array.isArray(list)) return false
+    for (var i = 0; i < list.length; i++) {
+        if (parseInt(list[i], 10) === id) return true
+    }
+    return false
+}
+
+// Чи повертати локально картку, яка є на сервері й у дзеркалі, але її немає в
+// localElementSet(). Не повертаємо, якщо:
+// - є ще не доведене до сервера видалення від користувача (hasPendingRemove);
+// - id уже лежить у цій категорії (картку лише не впізнано в localElementSet -
+//   інший тип або немає її опису в favorite.card): дописувати нічого, а
+//   повторне "відновлення" писало б favorite на кожному опитуванні;
+// - це взаємовиключна позначка, а картка локально вже має іншу: на сервері списки
+//   позначок не взаємовиключні (веб-інтерфейс), і картка, що лежить у двох,
+//   перекидалася б між ними на кожному опитуванні (applyRemoteAdd знімає інші).
+function shouldRestoreLocally(favorite, lampaKey, elemKey) {
+    var id = parseInt(parseElementKey(elemKey).tmdbId, 10)
+    if (!id) return false
+    if (hasPendingRemove(lampaKey, elemKey)) return false
+    if (hasLocalId(favorite[lampaKey], id)) return false
+    if (MARK_KEYS.indexOf(lampaKey) !== -1) {
+        for (var m = 0; m < MARK_KEYS.length; m++) {
+            if (MARK_KEYS[m] !== lampaKey && hasLocalId(favorite[MARK_KEYS[m]], id)) return false
+        }
+    }
+    return true
+}
+
 function push(method, lampaKey, card) {
+    if (method === 'remove') markRecentRemove(lampaKey, card && card.id)
     pushQueue.push({ method: method, lampaKey: lampaKey, card: card })
     if (outboundTimer) clearTimeout(outboundTimer)
     outboundTimer = setTimeout(processQueue, DEBOUNCE_MS)
@@ -369,6 +433,7 @@ function processQueue() {
     pushRunning = true
 
     var op = pushQueue.shift()
+    if (op.method === 'remove') markRecentRemove(op.lampaKey, op.card && op.card.id)
     writeOne(op, function () {
         pushRunning = false
         if (pushQueue.length > 0) {
@@ -429,7 +494,7 @@ function writeOne(op, done) {
                         done()
                     }, function (err) {
                         if (isAuthError(err)) { pauseSync('Authentication expired'); done(); return }
-                        enqueueRetry({ type: 'remove', listId: target.listId, listName: target.listName, key: key, itemId: rid })
+                        enqueueRetry({ type: 'remove', listId: target.listId, listName: target.listName, key: key, itemId: rid, lampaKey: op.lampaKey, tmdbId: cardId })
                         done()
                     })
                 } else {
@@ -445,7 +510,7 @@ function writeOne(op, done) {
             done()
         }, function (err) {
             if (isAuthError(err)) { pauseSync('Authentication expired'); done(); return }
-            enqueueRetry({ type: 'remove', listId: target.listId, listName: target.listName, key: key, itemId: itemId })
+            enqueueRetry({ type: 'remove', listId: target.listId, listName: target.listName, key: key, itemId: itemId, lampaKey: op.lampaKey, tmdbId: cardId })
             done()
         })
     }
@@ -754,14 +819,26 @@ function convergeOneList(listName, listId, lampaKey, favorite, callback) {
 
         // Remote-first: additions and removals relative to the converged mirror.
         var toAddLocal = []
+        var restored = 0
         for (var sk in scrobSet) {
             if (typeof mirrorItems[sk] === 'undefined' && !localSet[sk]) {
                 toAddLocal.push({ key: sk, media: scrobSet[sk].media })
             } else if (typeof mirrorItems[sk] === 'undefined' && localSet[sk]) {
                 // Both sides added the same item while offline — adopt the server item_id.
                 mirror.setItemId(listName, sk, scrobSet[sk].itemId)
+            } else if (!localSet[sk] && shouldRestoreLocally(favorite, lampaKey, sk)) {
+                // Є на сервері й у дзеркалі, але зникла локально, і видалення від
+                // користувача немає (свої видалення плагін одразу шле на сервер через
+                // Favorite.listener; обрізання історії й очищення категорії в Lampa
+                // теж ідуть через Favorite.remove). Отже, картку стерли повз Lampa.Favorite -
+                // напр. старий bookmark.js lampac до 7941d27 накладав дельту на порожній
+                // favorite, коли Lampa перенесла його з localStorage в IndexedDB.
+                // Повертаємо із сервера, інакше розбіжність лишилася б назавжди.
+                toAddLocal.push({ key: sk, media: scrobSet[sk].media })
+                restored++
             }
         }
+        if (restored) console.log('ScrobSync', 'restored locally missing items:', listName, restored)
         var toRemoveLocal = []
         for (var mk in mirrorItems) {
             if (!scrobSet[mk] && localSet[mk]) {
@@ -996,6 +1073,7 @@ function processRetryOp(op) {
             if (op.retries <= RETRY_MAX) retryQueue.push(op)
         })
     } else if (op.type === 'remove') {
+        markRecentRemove(op.lampaKey, op.tmdbId)
         var itemId = op.itemId || mirror.getItemId(op.listName, op.key)
         if (!itemId) {
             // Resolve the real item_id first — deletes never use a null mark.
@@ -1383,6 +1461,7 @@ export function stop() {
     updateRunning = false
     pushRunning = false
     pushQueue = []
+    recentRemoves = {}
 
     // Dropped-status throttle state (§5.3.2) - reset so a stale timestamp
     // from the profile/session just left doesn't linger into the next one
