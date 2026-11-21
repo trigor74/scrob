@@ -235,7 +235,21 @@ function completeLogin(token, me, username, password) {
     // synchronously, and the sync engine restarts on ACTIVE_PROFILE_ID
     // changing, so the key must already be correct by then.
     Lampa.Storage.set(KEYS.ACTIVE_API_KEY, me.api_key || '')
-    Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, me.id)
+    // Під levende підпис локальних даних синхронізації - профіль levende, а не
+    // id акаунта (див. syncLabel() у levende-bridge.js): інакше кілька профілів
+    // з входом в один акаунт ділили б одне дзеркало. Підпис тут зазвичай не
+    // змінюється, тож рушії самі не перезапустяться - зупиняємо їх, щоб
+    // перевірка облікових даних очистила дзеркало без гонки; finish() нижче
+    // запускає їх знову.
+    var levendeLabel = levende.activeSyncLabel()
+    if (levendeLabel !== null) {
+        sync.stop()
+        timelineSync.stop()
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, levendeLabel)
+        levende.checkCredentials()
+    } else {
+        Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, me.id)
+    }
     // Store credentials for socket re-authentication
     if (username) Lampa.Storage.set(KEYS.USERNAME, username)
     if (password) Lampa.Storage.set(KEYS.PASSWORD, password)
@@ -353,6 +367,8 @@ function openApiKeyInput(returnTo) {
         // switch (see doLogout()'s comment) - re-confirming the same value,
         // or clearing the field, isn't worth a full mirror/mapstore wipe.
         if (newKey && newKey !== previousKey) sync.resetLocalState()
+        // Під levende - запам'ятати, з яким ключем тепер заповнюється зошит профілю.
+        levende.noteCredentials()
         updateHeaderButton()
         refreshSettings()
         Lampa.Controller.toggle(returnTo)
@@ -397,7 +413,12 @@ function doLogout() {
     // both never set ACTIVE_PROFILE_ID) they'd otherwise sit under the shared
     // 'default' key and leak into whichever Scrob account signs in next on
     // this device (see resetLocalState()).
+    // Під levende clearSession() стер і підпис профілю - повертаємо його, щоб
+    // resetLocalState() очистив зошит саме цього профілю, а не спільний 'default'.
+    var levendeLabel = levende.activeSyncLabel()
+    if (levendeLabel !== null) Lampa.Storage.set(KEYS.ACTIVE_PROFILE_ID, levendeLabel)
     sync.resetLocalState()
+    levende.noteCredentials()
     removeHeaderButton()
     refreshSettings()
     Lampa.Noty.show(Lampa.Lang.translate('scrob_logout_success'))
@@ -497,6 +518,8 @@ function showQrAuthModal(data, returnTo) {
                 // rotation - always a deliberate new-sign-in action, so always
                 // reset (see doLogout()'s comment on the shared 'default' key).
                 sync.resetLocalState()
+                // Під levende - запам'ятати новий вхід для зошита профілю.
+                levende.noteCredentials()
                 Lampa.Modal.close()
                 Lampa.Noty.show(Lampa.Lang.translate('scrob_auth_success'))
                 updateHeaderButton()
