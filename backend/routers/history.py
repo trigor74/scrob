@@ -30,7 +30,7 @@ from core.rewatch import get_active_rewatch, record_rewatch_progress, get_alread
 from core.media_runtime import effective_runtime_expression
 from core.watch_dedup import get_dedup_window_minutes, find_duplicate_watch_event, expand_to_same_episode_media_ids
 from core.enrichment import create_media_safely
-from core.episode_order import get_episode_orders_for_series, get_tmdb_to_tvdb_positions
+from core.episode_order import get_episode_orders_for_series, get_tmdb_to_tvdb_positions, to_simkl_positions
 
 from dependencies import get_current_user, get_current_user_or_api_key
 from models.users import User
@@ -167,12 +167,16 @@ async def _push_watch_state(
                 show_res = await db.execute(select(Show).where(Show.id == media.show_id))
                 show = show_res.scalar_one_or_none()
                 if show and show.tmdb_id:
+                    # Simkl indexes episodes by TVDB's layout (#453).
+                    _, simkl_season, simkl_episode = (
+                        await to_simkl_positions(db, [(show.tmdb_id, media.season_number, media.episode_number)])
+                    )[0]
                     if watched:
                         watched_at = resolved_watched_at.get(media.id)
                         if watched_at is not None:
-                            tasks.append((f"simkl add episode {show.tmdb_id} S{media.season_number}E{media.episode_number}", simkl_client.add_episode_to_history(settings.simkl_client_id, settings.simkl_access_token, show.tmdb_id, media.season_number, media.episode_number, watched_at)))
+                            tasks.append((f"simkl add episode {show.tmdb_id} S{media.season_number}E{media.episode_number}", simkl_client.add_episode_to_history(settings.simkl_client_id, settings.simkl_access_token, show.tmdb_id, simkl_season, simkl_episode, watched_at)))
                     else:
-                        tasks.append((f"simkl remove episode {show.tmdb_id} S{media.season_number}E{media.episode_number}", simkl_client.remove_episode_from_history(settings.simkl_client_id, settings.simkl_access_token, show.tmdb_id, media.season_number, media.episode_number)))
+                        tasks.append((f"simkl remove episode {show.tmdb_id} S{media.season_number}E{media.episode_number}", simkl_client.remove_episode_from_history(settings.simkl_client_id, settings.simkl_access_token, show.tmdb_id, simkl_season, simkl_episode)))
 
     trakt_token: str | None = None
     if push_trakt and settings.trakt_client_id:
@@ -847,6 +851,36 @@ def _compute_next_episode(seasons: list[dict], season: int, episode: int) -> tup
     return None
 
 
+def _next_up_gap_show_ids(
+    next_per_show: dict[int, "Media"],
+    last_per_show: dict[int, tuple[int, int]],
+    skip_show_ids: set[int],
+) -> set[int]:
+    """Shows whose locally stored "next" episode is not the real next one.
+
+    The candidate query returns the first episode row that exists after the last
+    watched one. When only some episodes are collected (S02E01-E03 missing, S02E04
+    present), that row sits *past* the actual next episode, so Next Up skipped
+    straight over the unwatched ones (#564). Compare it with the position the
+    show's season metadata says should come next and report the shows where the
+    stored row is strictly later, so the caller can create the true next episode.
+    A show without season metadata, or a row at or before the expected position
+    (stale episode counts), is left alone.
+    """
+    gaps: set[int] = set()
+    for show_id, media in next_per_show.items():
+        if show_id in skip_show_ids or show_id not in last_per_show:
+            continue
+        show = getattr(media, "show", None)
+        seasons = (getattr(show, "tmdb_data", None) or {}).get("seasons")
+        if not seasons or media.season_number is None or media.episode_number is None:
+            continue
+        expected = _compute_next_episode(seasons, *last_per_show[show_id])
+        if expected is not None and (media.season_number, media.episode_number) > expected:
+            gaps.add(show_id)
+    return gaps
+
+
 def _group_last_watched(
     rows: list[tuple[int, int, int, datetime | None]],
     by_recent: bool = False,
@@ -1251,6 +1285,79 @@ async def _refresh_next_episode_air_dates(
         await db.commit()
 
 
+async def _drop_ghost_tvdb_candidates(
+    db: AsyncSession,
+    user_id: int,
+    candidates: list[Media],
+    last_per_show: dict[int, tuple[int, int]],
+) -> list[Media]:
+    """#581: drop an uncollected TVDB-sourced next-episode candidate on a
+    TMDB-canonical show when the user is on TMDB aired order and their last
+    watched episode there is TMDB-numbered - it is a leftover ghost (TVDB
+    split an episode TMDB doesn't have), so the TMDB next-episode fallback
+    decides instead. Collected rows, TVDB-canonical shows, `tvdb:*` orders and
+    users whose last watched episode is itself TVDB-sourced (#426) keep it."""
+    suspects = [m for m in candidates if is_unmapped_tvdb_episode(m)]
+    if not suspects:
+        return candidates
+    show_ids = {m.show_id for m in suspects}
+    shows = {
+        s.id: s for s in (await db.execute(select(Show).where(Show.id.in_(show_ids)))).scalars().all()
+    }
+    tmdb_shows = {sid: s for sid, s in shows.items() if not _is_tvdb_canonical(s)}
+    if not tmdb_shows:
+        return candidates
+    from core.episode_order import get_episode_orders_for_series, is_aired_order
+
+    orders = await get_episode_orders_for_series(
+        db, user_id, [s.tmdb_id for s in tmdb_shows.values()]
+    )
+    ghost_media_ids: set[int] = set()
+    for m in suspects:
+        show = tmdb_shows.get(m.show_id)
+        if show is None:
+            continue
+        row = orders.get(show.tmdb_id)
+        if not is_aired_order(row.episode_order if row else None):
+            continue
+        ghost_media_ids.add(m.id)
+    if not ghost_media_ids:
+        return candidates
+
+    collected = {
+        r[0] for r in (await db.execute(
+            select(Collection.media_id).where(
+                Collection.user_id == user_id, Collection.media_id.in_(ghost_media_ids)
+            )
+        )).all()
+    }
+    drop: set[int] = set()
+    last_tmdb_by_show: dict[int, bool] = {}
+    for ghost in suspects:
+        if ghost.id not in ghost_media_ids or ghost.id in collected:
+            continue
+        show_id = ghost.show_id
+        if show_id not in last_tmdb_by_show:
+            season, episode = last_per_show[show_id]
+            last_tmdb_by_show[show_id] = (await db.scalar(
+                select(Media.id)
+                .join(WatchEvent, WatchEvent.media_id == Media.id)
+                .where(
+                    WatchEvent.user_id == user_id,
+                    Media.show_id == show_id,
+                    Media.season_number == season,
+                    Media.episode_number == episode,
+                    Media.tmdb_id.isnot(None),
+                )
+                .limit(1)
+            )) is not None
+        # An active rewatch's position has no watch-event row of its own
+        # to inspect, so it only counts when a TMDB-sourced event matches.
+        if last_tmdb_by_show[show_id]:
+            drop.add(ghost.id)
+    return [m for m in candidates if m.id not in drop]
+
+
 @router.get("/next-up")
 async def get_next_up(
     db: AsyncSession = Depends(get_db),
@@ -1320,6 +1427,9 @@ async def get_next_up(
     # Step 2: the immediately next episode per show, picked in the database.
     candidates_result = await db.execute(_next_episode_candidates_stmt(last_per_show))
     candidates = candidates_result.scalars().all()
+    candidates = await _drop_ghost_tvdb_candidates(
+        db, current_user.id, candidates, last_per_show
+    )
 
     # Take only the immediately next episode per show
     next_per_show: dict[int, Media] = {}
@@ -1341,6 +1451,9 @@ async def get_next_up(
     # synced next-episode row still surfaces fine under "Show hidden" below;
     # only the on-demand computation is skipped for it.
     missing_show_ids = set(last_per_show) - set(next_per_show) - dropped_show_ids
+    # Shows whose stored next row skips unwatched episodes are handled by the
+    # same on-demand creation below; if that fails the stored row stays.
+    missing_show_ids |= _next_up_gap_show_ids(next_per_show, last_per_show, dropped_show_ids)
     if missing_show_ids:
         api_key = await get_user_tmdb_key(db, current_user.id)
         if check_tmdb_key(api_key):
