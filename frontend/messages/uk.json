@@ -39,6 +39,8 @@
   "admin_make_user_admin": "Зробити цього користувача адміністратором",
   "admin_password_copied": "Пароль скопійовано в буфер обміну.",
   "admin_add_user_required": "Потрібні ім'я користувача, email і пароль.",
+  "about_fork_of": "Форк {link}",
+  "about_original_repo": "Оригінальний проєкт - {repo}",
   "settings_ui_language_title": "Мова інтерфейсу",
   "settings_ui_language_description": "Мова меню, кнопок і повідомлень. Назви та описи відображаються мовою метаданих, вибраною у вашому профілі.",
   "settings_ui_language_save_failed": "Не вдалося зберегти мову інтерфейсу.",

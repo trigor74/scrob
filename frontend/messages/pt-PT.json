@@ -39,6 +39,8 @@
   "admin_make_user_admin": "Tornar este utilizador administrador",
   "admin_password_copied": "Palavra-passe copiada para a área de transferência.",
   "admin_add_user_required": "O nome de utilizador, o email e a palavra-passe são obrigatórios.",
+  "about_fork_of": "Fork de {link}",
+  "about_original_repo": "Projeto original - {repo}",
   "settings_ui_language_title": "Idioma da interface",
   "settings_ui_language_description": "Idioma dos menus, botões e mensagens. Os títulos e sinopses seguem o idioma dos metadados definido no seu perfil.",
   "settings_ui_language_save_failed": "Não foi possível guardar o idioma da interface.",
