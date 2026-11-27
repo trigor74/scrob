@@ -39,6 +39,8 @@
   "admin_make_user_admin": "Faire de cet utilisateur un administrateur",
   "admin_password_copied": "Mot de passe copié dans le presse-papiers.",
   "admin_add_user_required": "Le nom d’utilisateur, l’e-mail et le mot de passe sont obligatoires.",
+  "about_fork_of": "Fork de {link}",
+  "about_original_repo": "Projet d’origine - {repo}",
   "settings_ui_language_title": "Langue de l’interface",
   "settings_ui_language_description": "Langue des menus, boutons et messages. Les titres et résumés suivent la langue des métadonnées définie dans votre profil.",
   "settings_ui_language_save_failed": "Impossible d’enregistrer la langue de l’interface.",
