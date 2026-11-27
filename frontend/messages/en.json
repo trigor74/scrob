@@ -39,6 +39,8 @@
   "admin_make_user_admin": "Make this user an admin",
   "admin_password_copied": "Password copied to clipboard.",
   "admin_add_user_required": "Username, email and password are required.",
+  "about_fork_of": "Fork of {link}",
+  "about_original_repo": "Original project - {repo}",
   "settings_ui_language_title": "Interface language",
   "settings_ui_language_description": "Language of menus, buttons, and messages. Titles and overviews follow the metadata language set in your profile.",
   "settings_ui_language_save_failed": "Failed to save the interface language.",
